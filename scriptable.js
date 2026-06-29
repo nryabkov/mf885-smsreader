@@ -1,9 +1,9 @@
 // ZMI MF855 SMS Reader + Sender for Scriptable iPhone
-// Чтение SMS, красивый WebView, копирование из карточек, отправка SMS.
+// Reads SMS, shows a polished WebView, copies from message cards, and sends SMS.
 //
-// Важно:
-// Это НЕ читает и НЕ отправляет SMS через iPhone Messages.
-// Это работает с SMS-модулем ZMI/MF885 роутера.
+// Important:
+// This does NOT read or send SMS through iPhone Messages.
+// It works with the SMS module in the ZMI/MF885 router.
 
 const ROUTER_HOST = "192.168.21.1";
 const USERNAME = "admin";
@@ -29,18 +29,13 @@ async function main() {
       return;
     }
 
-    if (action === "sendAndInbox") {
-      await sendFlow(auth, { showInboxAfterSend: true });
-      return;
-    }
-
     await inboxFlow(auth);
   } catch (e) {
     console.error(String(e));
 
     await showSmsWebView([], {
       title: "ZMI SMS Error",
-      subtitle: "Ошибка",
+      subtitle: "Error",
       error: String(e)
     });
   }
@@ -53,20 +48,17 @@ async function main() {
 async function chooseAction() {
   const a = new Alert();
   a.title = "ZMI SMS";
-  a.message = "Что сделать?";
+  a.message = "What would you like to do?";
 
-  a.addAction("Открыть входящие");
-  a.addAction("Отправить SMS");
-  a.addAction("Отправить и открыть входящие");
-  a.addCancelAction("Отмена");
+  a.addAction("Open inbox");
+  a.addAction("Send SMS");
+  a.addCancelAction("Cancel");
 
   const r = await a.presentSheet();
 
   if (r === 0) return "inbox";
   if (r === 1) return "send";
-  if (r === 2) return "sendAndInbox";
-
-  throw new Error("Отменено");
+  throw new Error("Canceled");
 }
 
 async function inboxFlow(auth) {
@@ -85,23 +77,23 @@ async function inboxFlow(auth) {
   if (!messages.length) {
     await showSmsWebView([], {
       title: "ZMI SMS",
-      subtitle: "SMS не найдены",
-      error: "Роутер ответил, но сообщения не были найдены в XML."
+      subtitle: "No SMS found",
+      error: "The router responded, but no messages were found in the XML."
     });
     return;
   }
 
   await showSmsWebView(messages, {
     title: "ZMI SMS Inbox",
-    subtitle: `Найдено сообщений: ${messages.length}`
+    subtitle: `Messages found: ${messages.length}`
   });
 }
 
-async function sendFlow(auth, options = {}) {
+async function sendFlow(auth) {
   const draft = await askSmsDraft();
 
   if (!draft) {
-    throw new Error("Отправка отменена");
+    throw new Error("Sending canceled");
   }
 
   console.log("Sending SMS...");
@@ -112,14 +104,9 @@ async function sendFlow(auth, options = {}) {
 
   const sendResult = parseSendResult(resultXml);
 
-  if (options.showInboxAfterSend) {
-    await inboxFlow(auth);
-    return;
-  }
-
   await showSendResultWebView({
     ok: sendResult.ok,
-    title: sendResult.ok ? "SMS отправлена" : "SMS не отправлена",
+    title: sendResult.ok ? "SMS sent" : "SMS not sent",
     to: draft.to,
     text: draft.text,
     raw: resultXml,
@@ -130,14 +117,14 @@ async function sendFlow(auth, options = {}) {
 
 async function askSmsDraft() {
   const a = new Alert();
-  a.title = "Отправить SMS";
-  a.message = "Введите номер получателя и текст сообщения.";
+  a.title = "Send SMS";
+  a.message = "Enter the recipient number and message text.";
 
-  a.addTextField("Номер, например +79991234567", "");
-  a.addTextField("Текст SMS", "");
+  a.addTextField("Number, for example +15551234567", "");
+  a.addTextField("SMS text", "");
 
-  a.addAction("Отправить");
-  a.addCancelAction("Отмена");
+  a.addAction("Send");
+  a.addCancelAction("Cancel");
 
   const r = await a.present();
 
@@ -147,11 +134,11 @@ async function askSmsDraft() {
   const text = a.textFieldValue(1).trim();
 
   if (!to) {
-    throw new Error("Не указан номер получателя");
+    throw new Error("Recipient number is missing");
   }
 
   if (!text) {
-    throw new Error("Не указан текст SMS");
+    throw new Error("SMS text is missing");
   }
 
   return { to, text };
@@ -190,7 +177,7 @@ async function getAuthChallenge() {
     console.log(JSON.stringify(headers, null, 2));
 
     throw new Error(
-      "Не найден WWW-Authenticate от /login.cgi. Проверь IP роутера и подключение к Wi‑Fi ZMI."
+      "WWW-Authenticate was not found from /login.cgi. Check the router IP address and the connection to the ZMI Wi-Fi network."
     );
   }
 
@@ -199,7 +186,7 @@ async function getAuthChallenge() {
   const qop = getDigestValue(www, "qop") || "auth";
 
   if (!realm || !nonce) {
-    throw new Error("Не удалось разобрать digest challenge: " + www);
+    throw new Error("Could not parse the digest challenge: " + www);
   }
 
   return {
@@ -425,8 +412,8 @@ function parseSendResult(xml) {
   const status = tag(xml, "sms_cmd_status_result") || tag(xml, "send_status") || "";
   const result = tag(xml, "sms_result") || "";
 
-  // На MF855 успешный ответ может отличаться между прошивками.
-  // Часто отсутствие явной ошибки уже означает, что команда принята.
+  // On the MF855, a successful response can differ between firmware versions.
+  // Often, the absence of an explicit error already means the command was accepted.
   const lower = String(xml).toLowerCase();
 
   const hasError =
@@ -450,8 +437,8 @@ function parseSendResult(xml) {
     ok,
     status,
     message: ok
-      ? "Команда отправки SMS принята роутером."
-      : "Роутер вернул ответ, который похож на ошибку отправки."
+      ? "The SMS send command was accepted by the router."
+      : "The router returned a response that looks like a sending error."
   };
 }
 
@@ -1155,7 +1142,7 @@ function buildSmsHtml(messages, options) {
                 id="search"
                 class="search"
                 type="search"
-                placeholder="Поиск по отправителю и тексту…"
+                placeholder="Search by sender and text…"
                 autocomplete="off"
               >
               <div class="search-icon">⌕</div>
@@ -1360,8 +1347,8 @@ function renderEmptyState(error) {
   return `
 <div class="empty">
   <div class="empty-icon">${error ? "⚠️" : ""}</div>
-  <div class="empty-title">${error ? "Не получилось прочитать SMS" : "SMS не найдены"}</div>
-  <div class="empty-text">${escapeHtml(error || "В ответе роутера нет сообщений для отображения.")}</div>
+  <div class="empty-title">${error ? "Could not read SMS" : "No SMS found"}</div>
+  <div class="empty-text">${escapeHtml(error || "The router response does not contain messages to display.")}</div>
 </div>
   `;
 }
@@ -1391,7 +1378,7 @@ function buildSendResultHtml(result) {
             ZMI Router
           </div>
           <h1>${escapeHtml(result.title)}</h1>
-          <div class="subtitle">Отправка SMS через MF855</div>
+          <div class="subtitle">Sending SMS through MF855</div>
         </div>
 
         <div class="counter">
