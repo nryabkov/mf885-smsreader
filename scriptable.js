@@ -34,7 +34,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run };
+module.exports = { run, parseDigestChallenge };
 
 async function main() {
   try {
@@ -178,11 +178,8 @@ async function getAuthChallenge() {
   const challengeKey = Object.keys(headers).find(key => key.toLowerCase() === "www-authenticate");
   const challenge = challengeKey ? headers[challengeKey] : undefined;
   if (!challenge) throw new Error("No authentication challenge. Check the ZMI Wi-Fi connection and router address.");
-  const realm = digestValue(challenge, "realm");
-  const nonce = digestValue(challenge, "nonce");
-  const qop = digestValue(challenge, "qop") || "auth";
-  if (!realm || !nonce) throw new Error("Could not parse the Digest authentication challenge");
-  return { realm, nonce, qop, nc: 1, ha1: md5(`${USERNAME}:${realm}:${PASSWORD}`) };
+  const auth = parseDigestChallenge(challenge);
+  return Object.assign(auth, { nc: 1, ha1: md5(`${USERNAME}:${auth.realm}:${PASSWORD}`) });
 }
 
 async function login(auth) {
@@ -264,7 +261,57 @@ function requestHeaders(auth, method) {
 }
 function baseHeaders() { return { Expires: "-1", "Cache-Control": "no-store, no-cache, must-revalidate", Pragma: "no-cache" }; }
 function unauthorized(xml) { return String(xml || "").toLowerCase().includes("unauthorized"); }
-function digestValue(header, key) { const hit = String(header).match(new RegExp(`${key}="?([^",]+)"?`, "i")); return hit ? hit[1] : ""; }
+function parseDigestChallenge(header) {
+  const parameters = digestParameters(header);
+  const realm = parameters.realm || "";
+  const nonce = parameters.nonce || "";
+  if (!realm || !nonce) throw new Error("Could not parse the Digest authentication challenge");
+  if (!Object.prototype.hasOwnProperty.call(parameters, "qop") || !parameters.qop.trim()) {
+    throw new Error("Unsupported Digest challenge: qop is required (RFC 2069 no-qop authentication is not implemented)");
+  }
+
+  const offeredQop = parameters.qop.split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
+  if (!offeredQop.includes("auth")) {
+    if (offeredQop.includes("auth-int")) {
+      throw new Error("Unsupported Digest challenge: auth-int requires entity-body hashing; qop=auth was not offered");
+    }
+    throw new Error(`Unsupported Digest challenge qop: ${parameters.qop}`);
+  }
+  return { realm, nonce, qop: "auth" };
+}
+
+// Parse authentication parameters without treating commas inside quoted values
+// (notably qop="auth-int,auth") as parameter separators.
+function digestParameters(header) {
+  const source = String(header || "").replace(/^\s*Digest\s+/i, "");
+  const result = {};
+  let offset = 0;
+  while (offset < source.length) {
+    while (offset < source.length && /[\s,]/.test(source[offset])) offset++;
+    const keyStart = offset;
+    while (offset < source.length && /[!#$%&'*+.^_`|~0-9A-Za-z-]/.test(source[offset])) offset++;
+    const key = source.slice(keyStart, offset).toLowerCase();
+    while (offset < source.length && /\s/.test(source[offset])) offset++;
+    if (!key || source[offset] !== "=") break;
+    offset++;
+    while (offset < source.length && /\s/.test(source[offset])) offset++;
+    let value = "";
+    if (source[offset] === '"') {
+      offset++;
+      while (offset < source.length) {
+        if (source[offset] === '"') { offset++; break; }
+        if (source[offset] === "\\" && offset + 1 < source.length) offset++;
+        value += source[offset++];
+      }
+    } else {
+      const valueStart = offset;
+      while (offset < source.length && source[offset] !== ",") offset++;
+      value = source.slice(valueStart, offset).trim();
+    }
+    result[key] = value;
+  }
+  return result;
+}
 function randomCnonce() { return md5(String(Math.random()) + Date.now()).slice(0, 16); }
 function formEncode(value) { return Object.keys(value).map(key => `${encodeURIComponent(key)}=${encodeURIComponent(value[key])}`).join("&"); }
 
