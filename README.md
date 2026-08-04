@@ -1,16 +1,18 @@
 # MF885 SMS Reader
 
-MF885 SMS Reader is a [Scriptable](https://scriptable.app/) script for iPhone that connects to a ZMI/MF885-family mobile router and works with the router's built-in SMS module.
+MF885 SMS Reader is an English-language [Scriptable](https://scriptable.app/) dashboard for iPhone that connects directly to a ZMI MF855/MF885-family mobile router.
 
 The script does **not** read or send messages through Apple Messages on the iPhone. Instead, it talks directly to the router over its local web interface, authenticates with HTTP Digest authentication, and uses the router XML API to read and send SMS messages stored on or sent through the router.
 
 ## What it does
 
-- Prompts you to either open the SMS inbox or send an SMS.
-- Logs in to the router at the configured local IP address.
-- Retrieves received SMS messages from the router XML API.
-- Displays messages in a mobile-friendly WebView with search, copy-all, copy-text, and copy-full actions.
-- Sends SMS messages through the router and displays the router response.
+- Loads every available SMS page, removes duplicate messages, and guards against firmware that repeats pages.
+- Refreshes the dashboard automatically to check for new messages and router status changes.
+- Displays cellular network, signal, battery, and mobile traffic information.
+- Sends SMS messages and provides copy actions in a mobile-friendly WebView.
+- Deletes individual SMS messages from the router after confirmation.
+- Resets total WAN traffic and provides confirmed restart and power-off controls.
+- Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive.
 - Decodes router SMS fields that are returned as UTF-16BE hexadecimal strings.
 
 ## Prerequisites
@@ -21,36 +23,45 @@ The script does **not** read or send messages through Apple Messages on the iPho
 - The router administrator username and password.
 - The router's local IP address. The script defaults to `192.168.21.1`.
 
-## Setup
+## Recommended setup: self-updating loader
 
-1. Copy `scriptable.js` into a new script in the Scriptable iOS app.
-2. Edit the configuration constants at the top of the script:
+The repository keeps the updater, manifest, application, and feature modules side by side:
+
+- `loader.js` is the Scriptable entry point that you install once.
+- `manifest.json` is the loader's only remote endpoint and lists every file in a release.
+- `scriptable.js` is the application module downloaded by the loader.
+- `modules/ussd.js` contains the firmware-specific USSD probing and request variants.
+
+1. Copy `loader.js` into a new script in the Scriptable iOS app.
+2. In `loader.js`, verify the repository and router settings:
 
    ```javascript
-   const ROUTER_HOST = "192.168.21.1";
-   const USERNAME = "admin";
-   const PASSWORD = "YOUR_PASSWORD_HERE";
-   const PAGE = 1;
+   const MANIFEST_URL =
+     "https://raw.githubusercontent.com/nryabkov/mf885-smsreader/main/manifest.json";
+   const ROUTER_IP = "192.168.21.1";
+   const DEFAULT_ROUTER_PASSWORD = "zimifi";
+   const USE_ICLOUD = false;
    ```
 
-3. Replace `PASSWORD` with your own router administrator password before running the script; the placeholder value will not work.
-4. Change `ROUTER_HOST` if your router uses a different local IP address.
-5. Keep the iPhone connected to the router Wi-Fi network while running the script.
+3. Run the loader. It reads the single manifest endpoint, expands its file list into a local application directory, and starts the entry module's exported `run(options)` function.
+4. The loader stores the router password in iOS Keychain on first run. If you change the router password later, remove the `zmifi_pass_<router IP>` Keychain entry or update it from a temporary Scriptable script.
+5. Keep the iPhone connected to the router Wi-Fi network while using the dashboard.
+
+The loader uses Scriptable's local storage by default. Set `USE_ICLOUD` to `true` only if you want the downloaded application and its last known Git commit to be synchronized through iCloud Drive.
 
 ## Run instructions
 
 There is no package manifest or build step in this repository. Run the script directly in Scriptable:
 
 1. Open Scriptable on the iPhone.
-2. Open the script containing `scriptable.js`.
+2. Open the script containing `loader.js`.
 3. Tap Run.
-4. Choose one of the actions in the prompt:
-   - Open inbox
-   - Send SMS
+4. Use the **SMS** and **Router** tabs to view messages and device status. Actions that change router state ask for confirmation.
 
 For local development, you can run a JavaScript syntax check with Node.js:
 
 ```bash
+node --check loader.js
 node --check scriptable.js
 ```
 
