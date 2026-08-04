@@ -100,6 +100,7 @@ async function main() {
   let manifest = null;
   let syncWarning = null;
   try {
+    await showSyncProgress("Checking for dashboard updates…");
     console.log("[Sync] Looking up configured branch HEAD on GitHub...");
     const sha = await lookupHead(config, token);
     console.log(`[Sync] Loading manifest for ${abbreviate(sha)}...`);
@@ -137,6 +138,7 @@ async function main() {
 }
 
 async function synchronize(context) {
+  await showSyncProgress("Downloading and installing dashboard update…");
   const { fm, appDir, statePath, legacyPath, state, sha, manifest, config, token, loader } = context;
   const urls = artifactUrls(config, sha, manifest);
   console.log(`[Sync] Loading loader artifact for ${abbreviate(sha)}...`);
@@ -185,6 +187,7 @@ async function installApplication(fm, appDir, statePath, priorState, sha, manife
     for (let i = 0; i < manifest.files.length; i++) {
       const destination = safeDestination(fm, stage, manifest.files[i]);
       ensureDirectory(fm, destination.slice(0, destination.lastIndexOf("/")));
+      await showSyncProgress(`Downloading update file ${i + 1}/${manifest.files.length}…`);
       console.log(`[Sync] Downloading application file ${i + 1}/${manifest.files.length}: ${manifest.files[i]}`);
       const data = await loadString(urls.files[i], token);
       if (!data.trim()) throw new Error(`Downloaded empty application file ${manifest.files[i]}`);
@@ -220,6 +223,13 @@ function describeNetworkFailure(operation, request, error) {
   const detail = String(error && (error.message || error));
   if (/internet|network|offline|timed? ?out|could not connect|not connected|dns|host/i.test(detail)) return `${operation} failed: no internet connection, DNS failure, or GitHub is unreachable (${detail})`;
   return `${operation} failed: ${detail}`;
+}
+
+async function showSyncProgress(message) {
+  console.log(`[Sync] ${message}`);
+  if (typeof Timer !== "undefined" && Timer.schedule) {
+    await new Promise(resolve => { const timer = Timer.schedule(0.05, false, () => { timer.invalidate(); resolve(); }); });
+  } else await Promise.resolve();
 }
 
 async function requestString(url, token, githubApi, operation) {

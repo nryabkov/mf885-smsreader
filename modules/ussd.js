@@ -69,7 +69,7 @@ async function execute(api, capability, code) {
         return {
           ok: true,
           title: "USSD command accepted",
-          message: "The firmware accepted the request but did not expose response text.",
+          message: "The router accepted the USSD request, but this firmware did not expose response text.",
           diagnostics: attempts.join("\n")
         };
       }
@@ -81,9 +81,19 @@ async function execute(api, capability, code) {
   return {
     ok: false,
     title: "USSD request failed",
-    message: "The firmware rejected all known USSD request variants.",
+    message: ussdFailureMessage(attempts),
     diagnostics: attempts.join("\n")
   };
+}
+
+function ussdFailureMessage(attempts) {
+  const text = attempts.join("\n");
+  if (!attempts.length) return "The router does not expose a known USSD endpoint.";
+  if (/timed? ?out|timeout|no firmware response/i.test(text)) return "No USSD response was returned before the timeout.";
+  if (/network|offline|could not connect|not connected|dns|host|connection/i.test(text)) return "The USSD request could not be completed because the router or network connection was lost.";
+  if (/not.?found|unknown.?file|not.?support|unsupported|invalid.?file/i.test(text)) return "This firmware does not appear to expose a supported USSD endpoint.";
+  if (/status>\s*(?:2|3|4|5|-1)|error|fail|denied/i.test(text)) return "The router rejected the USSD command.";
+  return "The USSD command was not completed by the firmware.";
 }
 
 function parseResponse(xml, code, api) {

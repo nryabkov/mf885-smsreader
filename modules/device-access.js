@@ -5,7 +5,7 @@
 const CAPABILITIES = [
   {
     id: "tryEnableAdb",
-    title: "Try enable ADB",
+    title: "Try to enable ADB",
     description: "Attempt to enable the firmware ADB/debug bridge, if this build exposes it.",
     probes: ["adb", "adb_enable", "debug", "debug_adb", "device_debug"],
     attempts: [
@@ -16,7 +16,7 @@ const CAPABILITIES = [
   },
   {
     id: "tryEnableTelnet",
-    title: "Try enable Telnet",
+    title: "Try to enable Telnet",
     description: "Attempt to enable a Telnet service, if supported by the firmware.",
     probes: ["telnet", "telnet_enable", "debug_telnet", "device_debug"],
     attempts: [
@@ -27,8 +27,8 @@ const CAPABILITIES = [
   },
   {
     id: "tryOpenShell",
-    title: "Try open shell",
-    description: "Attempt to open a vendor shell/debug service, if present.",
+    title: "Try to enable vendor shell",
+    description: "Attempt to enable a vendor shell/debug service, if present.",
     probes: ["shell", "open_shell", "debug_shell", "device_debug"],
     attempts: [
       { type: "routerCall", path: "debug", method: "open_shell" },
@@ -67,13 +67,13 @@ async function execute(api, capability, action) {
         : await api.xmlRequest("POST", attempt.file, buildRequest(attempt, api.escapeXml), true, 15);
       attempts.push(`${attemptName(attempt)}: ${compact(response)}`);
       if (accepted(response)) {
-        return { ok: true, title: item.title, message: "The firmware accepted the experimental command.", diagnostics: attempts.join("\n") };
+        return { ok: true, title: item.title, message: "The router accepted the experimental debug command. If the feature exists, it may take a few seconds to become reachable.", diagnostics: attempts.join("\n") };
       }
     } catch (error) {
       attempts.push(`${attemptName(attempt)}: ${api.cleanError(error)}`);
     }
   }
-  return { ok: false, title: item.title, message: "The firmware rejected or ignored the known command variants.", diagnostics: attempts.join("\n") };
+  return { ok: false, title: item.title, message: "The router did not enable this feature. This firmware may not expose the known debug endpoint.", diagnostics: attempts.join("\n") };
 }
 
 function buildRequest(attempt, escapeXml) {
