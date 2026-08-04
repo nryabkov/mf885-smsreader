@@ -6,6 +6,7 @@ let ROUTER_HOST = "192.168.21.1";
 const USERNAME = "admin";
 let PASSWORD = "zimifi";
 let ussdModule = null;
+let deviceAccessModule = null;
 
 const POLL_SECONDS = 30;
 const SMS_PAGE_SIZE = 10;
@@ -32,6 +33,7 @@ async function run(options = {}) {
     throw new Error("The application module directory was not provided by the loader.");
   }
   ussdModule = importModule(`${options.moduleDirectory}/modules/ussd.js`);
+  deviceAccessModule = importModule(`${options.moduleDirectory}/modules/device-access.js`);
   await main();
 }
 
@@ -44,6 +46,7 @@ async function main() {
     if (ACTION === "send") return await sendFlow(auth);
     if (ACTION === "delete") return await deleteFlow(auth);
     if (ACTION === "ussd") return await ussdFlow(auth);
+    if (ACTION === "deviceAccess") return await deviceAccessFlow(auth);
     if (ACTION === "resetTraffic") return await resetTrafficFlow(auth);
     if (ACTION === "reboot" || ACTION === "powerOff") return await powerFlow(auth, ACTION);
     return await dashboardFlow(auth, "", INITIAL_TAB);
@@ -65,7 +68,7 @@ async function dashboardFlow(auth, notice = "", tab = "sms") {
 
 async function loadModel(auth) {
   const model = {
-    sms: emptySms(), traffic: {}, battery: {}, network: {}, ussd: {},
+    sms: emptySms(), traffic: {}, battery: {}, network: {}, ussd: {}, deviceAccess: {},
     errors: {}, notice: "", tab: "sms", loadedAt: Date.now()
   };
   try {
@@ -80,6 +83,8 @@ async function loadModel(auth) {
   catch (error) { model.errors.sms = cleanError(error); }
   try { model.ussd = await detectUssdCapability(auth); }
   catch (error) { model.errors.ussd = cleanError(error); }
+  try { model.deviceAccess = await detectDeviceAccess(auth); }
+  catch (error) { model.errors.deviceAccess = cleanError(error); }
   return model;
 }
 
@@ -136,6 +141,33 @@ async function ussdFlow(auth) {
     ? `${result.message}\n\n${result.diagnostics}`
     : result.message;
   return showMessage(result.title, detail, result.ok ? "📟" : "⚠️");
+}
+
+async function deviceAccessFlow(auth) {
+  const capability = await detectDeviceAccess(auth);
+  const actions = capability.capabilities || [];
+  const alert = new Alert();
+  alert.title = "Experimental device access";
+  alert.message = `${capability.detail || "Firmware support is unknown."}\n\nWarning: these commands may be unsupported by your firmware and can affect exposed debug services. Continue only if you understand the risk.`;
+  actions.forEach(action => alert.addAction(action.title));
+  alert.addCancelAction("Cancel");
+  const selected = await alert.present();
+  if (selected === -1) return dashboardFlow(auth, "", "router");
+  const action = actions[selected];
+  if (!action) return dashboardFlow(auth, "", "router");
+
+  const confirm = new Alert();
+  confirm.title = `Confirm: ${action.title}`;
+  confirm.message = `${action.description}\n\nThis is an experimental state-changing command. It is not part of safe detection.`;
+  confirm.addDestructiveAction("Execute");
+  confirm.addCancelAction("Cancel");
+  if ((await confirm.present()) === -1) return dashboardFlow(auth, "", "router");
+
+  const result = await executeDeviceAccess(auth, action.id, action.id);
+  const detail = DEBUG && result.diagnostics
+    ? `${result.message}\n\n${result.diagnostics}`
+    : result.message;
+  return showMessage(result.title, detail, result.ok ? "🧪" : "⚠️");
 }
 
 async function resetTrafficFlow(auth) {
@@ -480,6 +512,24 @@ function ussdApi(auth) {
     responsePolls: USSD_RESPONSE_POLLS
   };
 }
+// Experimental device-access support is isolated in modules/device-access.js.
+// Detection uses only GET probes; execution goes through a separate confirmed flow.
+async function detectDeviceAccess(auth) {
+  return deviceAccessModule.detect(deviceAccessApi(auth));
+}
+async function executeDeviceAccess(auth, capability, action) {
+  return deviceAccessModule.execute(deviceAccessApi(auth), capability, action);
+}
+function deviceAccessApi(auth) {
+  return {
+    xmlRequest: (method, file, body, retry, timeout) =>
+      xmlRequest(auth, method, file, body, retry, timeout),
+    routerCall: (path, method) => routerCall(auth, path, method),
+    cleanError,
+    escapeXml
+  };
+}
+
 function sleep(ms) { return new Promise(resolve => { const timer = Timer.schedule(ms, false, () => { timer.invalidate(); resolve(); }); }); }
 
 // WebView rendering
@@ -505,6 +555,8 @@ function buildHtml(model) {
     <article class="card battery"><small>БАТАРЕЯ</small><h2>${battery.percent === null || battery.percent === undefined ? "—" : battery.percent + "%"}</h2><p>${battery.charging ? "Заряжается" : escapeHtml(battery.status || "Статус неизвестен")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
     <article class="card traffic"><small>ТРАФИК</small><h2>${formatBytes(traffic.total)}</h2><p>Скачано: ${formatBytes(traffic.download)}</p><p>Загружено: ${formatBytes(traffic.upload)}</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Сбросить трафик</a></article>
     <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Endpoint detected" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><a class="buttonlike" href="${runUrl("ussd", "router")}">Try USSD</a></article>
+
+    <article class="card"><small>DEVICE ACCESS</small><h2>${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><a class="danger buttonlike" href="${runUrl("deviceAccess", "router")}">Experimental access</a></article>
     <article class="card"><small>ПИТАНИЕ</small><h2>Системные команды</h2><a class="buttonlike" href="${runUrl("reboot", "router")}">Перезапуск</a> <a class="danger buttonlike" href="${runUrl("powerOff", "router")}">Выключить</a></article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
   <script>var model={tab:${JSON.stringify(model.tab)},poll:${POLL_SECONDS},translateEndpoint:${JSON.stringify(TRANSLATE_ENDPOINT)}};function selectedTab(){return localStorage.zmiTab||model.tab}function runUrl(action,tab){return ${JSON.stringify(runUrl("dashboard", "__TAB__"))}.replace('__TAB__',encodeURIComponent(tab||selectedTab())).replace('action=dashboard','action='+encodeURIComponent(action||'dashboard'))}function tab(id){document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x.id===id)});document.querySelectorAll('[data-tab-button]').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-tab-button')===id)});localStorage.zmiTab=id}tab(model.tab);var remaining=model.poll,timer=null,paused=localStorage.zmiPaused==='1';function drawTimer(){document.getElementById('countdown').textContent=paused?'Автоопрос на паузе':'Следующий опрос через 00:'+String(remaining).padStart(2,'0');document.getElementById('pauseBtn').textContent=paused?'Продолжить':'Пауза'}function tick(){drawTimer();if(paused)return;if(--remaining<=0)location.href=runUrl('dashboard',selectedTab())}function refreshNow(){location.href=runUrl('dashboard',selectedTab())}function togglePause(){paused=!paused;localStorage.zmiPaused=paused?'1':'0';drawTimer()}drawTimer();timer=setInterval(tick,1000);async function copySms(button){var value=button.closest('.sms').querySelector('.body').innerText;var old=button.textContent;try{await navigator.clipboard.writeText(value);button.textContent='Скопировано'}catch(e){button.textContent='Ошибка'}setTimeout(function(){button.textContent=old},1500)}async function translateSms(button){var card=button.closest('.sms'),box=card.querySelector('[data-translation] span'),text=card.getAttribute('data-msg-text')||'';var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text;if(!text){box.textContent='No text';return}var cached=localStorage.getItem(key);if(cached){box.textContent=cached;return}if(!model.translateEndpoint){box.textContent='Translation endpoint is not configured';return}var old=button.textContent;button.textContent='…';try{var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})});if(!res.ok)throw new Error('HTTP '+res.status);var data=await res.json();var tr=data.translatedText||data.translation||'';if(!tr)throw new Error('Empty translation');localStorage.setItem(key,tr);box.textContent=tr}catch(e){box.textContent='Translation unavailable'}button.textContent=old}document.querySelectorAll('.sms').forEach(function(card){translateSms(card.querySelector('button:nth-child(2)'))});</script></body></html>`;
 }
