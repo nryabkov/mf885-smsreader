@@ -1,5 +1,8 @@
 {
   "version": "3.0.0",
+  "loaderProtocol": 2,
+  "minimumLoaderProtocol": 2,
+  "loader": "loader.js",
   "entry": "scriptable.js",
   "files": [
     "scriptable.js",
