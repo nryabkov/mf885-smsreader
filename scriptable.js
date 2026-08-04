@@ -163,11 +163,71 @@ async function powerFlow(auth, kind) {
   if (String(QUERY.confirm || "") !== "1") {
     return dashboardFlow(auth, warningNotice(reboot ? "Confirm router restart. This action will reopen the script." : "Confirm router power off. This action will reopen the script."), "router");
   }
-  const file = reboot ? "reset" : "shutdown";
-  const field = reboot ? "reset" : "shutdown";
-  const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><${file}><${field}>1</${field}></${file}></RGW>`;
-  try { await xmlRequest(auth, "POST", file, xml, false); } catch (_) {}
-  return dashboardFlow(auth, successNotice(reboot ? "Restart command sent; a temporary connection loss is expected." : "Power-off command sent; use the physical power button to turn the router on again."), "router");
+
+  const diagnostics = [];
+  for (const attempt of powerAttempts(kind)) {
+    try {
+      const response = await attempt.run(auth);
+      diagnostics.push(powerDiagnostic(attempt, response, null));
+      if (powerAccepted(response)) {
+        return dashboardFlow(auth, successNotice(reboot
+          ? "Команда перезапуска подтверждена прошивкой; временная потеря связи ожидаема."
+          : "Команда выключения подтверждена прошивкой; включение возможно физической кнопкой."), "router");
+      }
+    } catch (error) {
+      diagnostics.push(powerDiagnostic(attempt, "", error));
+    }
+  }
+
+  const message = reboot
+    ? "Прошивка не подтвердила команду перезагрузки"
+    : "Прошивка не подтвердила команду выключения";
+  const detail = DEBUG ? `${message}: ${diagnostics.join(" | ")}` : message;
+  return dashboardFlow(auth, errorNotice(detail), "router");
+}
+
+function powerAttempts(kind) {
+  const reboot = kind === "reboot";
+  const xmlFiles = reboot
+    ? ["reset", "reboot", "system", "device", "power"]
+    : ["shutdown", "poweroff", "power_off", "system", "device", "power"];
+  const routerMethods = reboot
+    ? ["reset", "reboot"]
+    : ["shutdown", "poweroff", "power_off"];
+  const routerPaths = ["system", "device", "power"];
+  const attempts = xmlFiles.map(file => {
+    const field = powerField(kind, file);
+    const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><${file}><${field}>1</${field}></${file}></RGW>`;
+    return { name: file, type: "xmlRequest", run: auth => xmlRequest(auth, "POST", file, xml, false) };
+  });
+  for (const path of routerPaths) {
+    for (const method of routerMethods) {
+      attempts.push({ name: `${path}.${method}`, type: "routerCall", run: auth => routerCall(auth, path, method) });
+    }
+  }
+  return attempts;
+}
+
+function powerField(kind, file) {
+  if (file === "reset") return "reset";
+  if (file === "shutdown") return "shutdown";
+  if (file === "power_off") return "power_off";
+  return kind === "reboot" ? "reboot" : "poweroff";
+}
+
+function powerDiagnostic(attempt, response, error) {
+  const prefix = `${attempt.type}:${attempt.name}`;
+  if (error) return `${prefix} error=${compactDebug(cleanError(error), 500)}`;
+  return `${prefix} response=${compactDebug(response, 500) || "<empty>"}`;
+}
+
+function powerAccepted(xml) {
+  const text = String(xml || "");
+  const lower = text.toLowerCase();
+  if (!lower.trim()) return false;
+  if (/unauthorized|error|fail|denied|not\s*support|unsupported|unknown\s+file|invalid\s+file/.test(lower)) return false;
+  if (/<status>\s*(?:[2-5]|-1)\s*<\/status>/i.test(text)) return false;
+  return /<rgw\b/i.test(text) || /success|accepted|ok/i.test(text) || /<status>\s*0\s*<\/status>/i.test(text) || /<result>\s*0\s*<\/result>/i.test(text);
 }
 
 // Digest authentication and router API
@@ -367,7 +427,7 @@ async function deleteSms(auth, id) {
   return { ok: false, message, diagnostics: diagnostics.join("\n") };
 }
 
-function compactDebug(value) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 240); }
+function compactDebug(value, limit = 240) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, limit); }
 
 function routerAccepted(xml) {
   const text = String(xml || "").toLowerCase();
