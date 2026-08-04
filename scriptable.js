@@ -34,7 +34,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run };
+module.exports = { run, parseDigestChallenge };
 
 async function main() {
   try {
@@ -177,11 +177,13 @@ async function getAuthChallenge() {
   const headers = req.response ? req.response.headers : {};
   const challenge = headers["WWW-Authenticate"] || headers["www-authenticate"];
   if (!challenge) throw new Error("No authentication challenge. Check the ZMI Wi-Fi connection and router address.");
-  const realm = digestValue(challenge, "realm");
-  const nonce = digestValue(challenge, "nonce");
-  const qop = digestValue(challenge, "qop") || "auth";
-  if (!realm || !nonce) throw new Error("Could not parse the Digest authentication challenge");
-  return { realm, nonce, qop, nc: 1, ha1: md5(`${USERNAME}:${realm}:${PASSWORD}`) };
+  const parameters = parseDigestChallenge(challenge);
+  const { realm, nonce, opaque, algorithm } = parameters;
+  const qop = parameters.qop || "auth";
+  if (!realm) throw invalidDigestParameter("realm");
+  if (!nonce) throw invalidDigestParameter("nonce");
+  return { realm, nonce, qop, opaque, algorithm, nc: 1,
+    ha1: md5(`${USERNAME}:${realm}:${PASSWORD}`) };
 }
 
 async function login(auth) {
@@ -238,7 +240,64 @@ function requestHeaders(auth, method) {
 }
 function baseHeaders() { return { Expires: "-1", "Cache-Control": "no-store, no-cache, must-revalidate", Pragma: "no-cache" }; }
 function unauthorized(xml) { return String(xml || "").toLowerCase().includes("unauthorized"); }
-function digestValue(header, key) { const hit = String(header).match(new RegExp(`${key}="?([^",]+)"?`, "i")); return hit ? hit[1] : ""; }
+function parseDigestChallenge(header) {
+  let source = String(header || "").trim();
+  source = source.replace(/^Digest(?:\s+|$)/i, "");
+  const parameters = {};
+  const critical = new Set(["realm", "nonce", "qop", "opaque", "algorithm"]);
+  let position = 0;
+
+  while (position < source.length) {
+    while (/\s/.test(source[position])) position++;
+    const nameStart = position;
+    while (position < source.length && !/[\s=,]/.test(source[position])) position++;
+    const originalName = source.slice(nameStart, position);
+    const name = originalName.toLowerCase();
+    while (/\s/.test(source[position])) position++;
+    if (!name || source[position] !== "=") throw invalidDigestParameter(originalName || "unknown");
+    position++;
+    while (/\s/.test(source[position])) position++;
+
+    let value = "";
+    if (source[position] === '"') {
+      position++;
+      let closed = false;
+      while (position < source.length) {
+        const character = source[position++];
+        if (character === "\\") {
+          if (position >= source.length) throw invalidDigestParameter(name);
+          value += source[position++];
+        } else if (character === '"') {
+          closed = true;
+          break;
+        } else {
+          value += character;
+        }
+      }
+      if (!closed) throw invalidDigestParameter(name);
+      while (/\s/.test(source[position])) position++;
+    } else {
+      const valueStart = position;
+      while (position < source.length && source[position] !== ",") position++;
+      value = source.slice(valueStart, position).trim();
+      if (!value) throw invalidDigestParameter(name);
+    }
+
+    if (critical.has(name) && Object.prototype.hasOwnProperty.call(parameters, name)) {
+      throw invalidDigestParameter(name);
+    }
+    parameters[name] = value;
+    if (position === source.length) break;
+    if (source[position] !== ",") throw invalidDigestParameter(name);
+    position++;
+    if (position === source.length) throw invalidDigestParameter(name);
+  }
+  return parameters;
+}
+
+function invalidDigestParameter(name) {
+  return new Error(`Invalid Digest parameter "${name}"`);
+}
 function randomCnonce() { return md5(String(Math.random()) + Date.now()).slice(0, 16); }
 function formEncode(value) { return Object.keys(value).map(key => `${encodeURIComponent(key)}=${encodeURIComponent(value[key])}`).join("&"); }
 
