@@ -11,6 +11,7 @@ const DEFAULT_CONFIG = {
 };
 const MARKER = "MF885_LOADER_STABLE_MARKER";
 const SHA_RE = /^[0-9a-f]{40}$/i;
+const GITHUB_TIMEOUT_SECONDS = 30;
 
 function commitApiUrl(config) {
   return `https://api.github.com/repos/${encodeURIComponent(config.repositoryOwner)}/${encodeURIComponent(config.repositoryName)}/commits/${encodeURIComponent(config.branch)}`;
@@ -99,7 +100,9 @@ async function main() {
   let manifest = null;
   let syncWarning = null;
   try {
+    console.log("[Sync] Looking up configured branch HEAD on GitHub...");
     const sha = await lookupHead(config, token);
+    console.log(`[Sync] Loading manifest for ${abbreviate(sha)}...`);
     manifest = validateManifest(await loadJson(rawBaseUrl(config, sha) + "manifest.json", token));
     const complete = applicationExists(fm, appDir, manifest);
     const legacy = !state && fm.fileExists(legacyPath);
@@ -136,6 +139,7 @@ async function main() {
 async function synchronize(context) {
   const { fm, appDir, statePath, legacyPath, state, sha, manifest, config, token, loader } = context;
   const urls = artifactUrls(config, sha, manifest);
+  console.log(`[Sync] Loading loader artifact for ${abbreviate(sha)}...`);
   const loaderCode = await loadString(urls.loader, token);
   validateLoader(loaderCode);
   const loaderChanged = !loader || loader.content !== loaderCode;
@@ -145,21 +149,23 @@ async function synchronize(context) {
       console.log("[Sync warning] Loader path could not be identified and verified; application requiring a newer loader was not activated.");
       throw new Error("Self-update skipped: open the Scriptable loader and reinstall loader.js manually");
     }
-    await replaceLoader(loader, loaderCode);
+    const replaced = await replaceLoader(loader, loaderCode);
+    if (!replaced) throw new Error("Self-update skipped: restore the .mf885-backup file or reinstall loader.js manually");
     const pending = { activeSha: state ? state.activeSha : null, pendingSha: sha, loaderProtocol: manifest.loaderProtocol, status: "pending-restart", loaderBackup: loader.backupPath, entry: state && state.entry ? state.entry : "scriptable.js" };
     writeStateAtomic(fm, statePath, pending);
     return { state: pending, restart: true };
   }
   if (loaderChanged) {
-    if (loader) await replaceLoader(loader, loaderCode);
-    else console.log("[Sync warning] Self-update skipped because the active Scriptable loader path was not verified; application remains safe.");
+    if (loader) {
+      const replaced = await replaceLoader(loader, loaderCode);
+      if (!replaced) console.log("[Sync warning] Self-update failed; continuing with the compatible application update and leaving the current loader installed.");
+    } else console.log("[Sync warning] Self-update skipped because the active Scriptable loader path was not verified; application remains safe.");
   }
   try {
     await installApplication(fm, appDir, statePath, state, sha, manifest, urls, token);
   } catch (error) {
     if (loaderChanged && loader && loader.fm.fileExists(loader.backupPath)) {
-      removeIfExists(loader.fm, loader.path);
-      loader.fm.copy(loader.backupPath, loader.path);
+      loader.fm.writeString(loader.path, loader.fm.readString(loader.backupPath));
       console.log(`[Sync] Application activation failed; loader rolled back to the prior copy and active commit remains ${abbreviate(state && state.activeSha)}.`);
     }
     throw error;
@@ -179,6 +185,7 @@ async function installApplication(fm, appDir, statePath, priorState, sha, manife
     for (let i = 0; i < manifest.files.length; i++) {
       const destination = safeDestination(fm, stage, manifest.files[i]);
       ensureDirectory(fm, destination.slice(0, destination.lastIndexOf("/")));
+      console.log(`[Sync] Downloading application file ${i + 1}/${manifest.files.length}: ${manifest.files[i]}`);
       const data = await loadString(urls.files[i], token);
       if (!data.trim()) throw new Error(`Downloaded empty application file ${manifest.files[i]}`);
       fm.writeString(destination, data);
@@ -199,22 +206,50 @@ async function installApplication(fm, appDir, statePath, priorState, sha, manife
   } catch (error) { removeIfExists(fm, stage); throw new Error(`Staged update failed: ${error}`); }
 }
 
-async function lookupHead(config, token) {
-  const request = new Request(commitApiUrl(config)); request.headers = requestHeaders(token, true);
-  let body;
-  try { body = await request.loadJSON(); }
-  catch (error) {
-    const status = request.response && request.response.statusCode;
-    if (status === 403 || status === 429) throw new Error("GitHub rate limit reached; configure mf885_github_token or retry later");
-    throw new Error(`GitHub commit lookup failed${status ? ` (HTTP ${status})` : ""}: ${error}`);
-  }
+function applyRequestOptions(request, token, githubApi) {
+  request.headers = requestHeaders(token, githubApi);
+  // Scriptable supports timeoutInterval in current releases; keep the guard for older versions.
+  if ("timeoutInterval" in request) request.timeoutInterval = GITHUB_TIMEOUT_SECONDS;
+}
+
+function describeNetworkFailure(operation, request, error) {
   const status = request.response && request.response.statusCode;
-  if (status && (status < 200 || status >= 300)) throw new Error(`GitHub commit lookup HTTP failure (${status})`);
+  if (status === 403 || status === 429) return `${operation} failed: GitHub rate limit reached; configure mf885_github_token or retry later`;
+  if (status && status >= 500) return `${operation} failed: GitHub is unavailable (HTTP ${status}); retry later`;
+  if (status && (status < 200 || status >= 300)) return `${operation} failed: GitHub returned HTTP ${status}`;
+  const detail = String(error && (error.message || error));
+  if (/internet|network|offline|timed? ?out|could not connect|not connected|dns|host/i.test(detail)) return `${operation} failed: no internet connection, DNS failure, or GitHub is unreachable (${detail})`;
+  return `${operation} failed: ${detail}`;
+}
+
+async function requestString(url, token, githubApi, operation) {
+  const request = new Request(url); applyRequestOptions(request, token, githubApi);
+  try {
+    const body = await request.loadString();
+    const status = request.response && request.response.statusCode;
+    if (status && (status < 200 || status >= 300)) throw new Error(describeNetworkFailure(operation, request, "HTTP failure"));
+    return body;
+  } catch (error) {
+    const message = String(error && (error.message || error));
+    if (message.startsWith(`${operation} failed:`)) throw error;
+    throw new Error(describeNetworkFailure(operation, request, error));
+  }
+}
+
+async function lookupHead(config, token) {
+  const text = await requestString(commitApiUrl(config), token, true, "GitHub commit lookup");
+  let body;
+  try { body = JSON.parse(text); }
+  catch (error) { throw new Error(`GitHub commit lookup failed: malformed response from GitHub API (${error})`); }
   return assertSha(body && body.sha);
 }
 
-async function loadJson(url, token) { const r = new Request(url); r.headers = requestHeaders(token, false); try { return await r.loadJSON(); } catch (e) { throw new Error(`Manifest loading failed: ${e}`); } }
-async function loadString(url, token) { const r = new Request(url); r.headers = requestHeaders(token, false); try { return await r.loadString(); } catch (e) { throw new Error(`Artifact download failed: ${e}`); } }
+async function loadJson(url, token) {
+  const text = await requestString(url, token, false, "Manifest loading");
+  try { return JSON.parse(text); }
+  catch (error) { throw new Error(`Manifest loading failed: malformed response (${error})`); }
+}
+async function loadString(url, token) { return requestString(url, token, false, "Artifact download"); }
 function validateLoader(code) { if (typeof code !== "string" || code.trim().length < 100 || !code.includes(MARKER)) throw new Error("Downloaded loader is empty, invalid, or lacks the stable marker"); }
 
 function discoverLoader() {
@@ -233,16 +268,21 @@ function discoverLoader() {
 }
 
 async function replaceLoader(loader, code) {
-  const { fm, path, backupPath } = loader; const temp = `${path}.mf885-staging`;
-  validateLoader(code); removeIfExists(fm, temp); fm.writeString(temp, code); validateLoader(fm.readString(temp));
+  const { fm, path, backupPath } = loader;
+  validateLoader(code);
   try {
     removeIfExists(fm, backupPath); fm.copy(path, backupPath);
     if (!fm.fileExists(backupPath)) throw new Error("loader backup was not created");
-    fm.remove(path); fm.move(temp, path); validateLoader(fm.readString(path));
+    // Never remove the active Scriptable file while it is running: transient absence can make
+    // Scriptable drop the script from its list. Overwrite in place and keep the backup next to it.
+    fm.writeString(path, code); validateLoader(fm.readString(path));
+    console.log(`[Sync] Loader overwritten in place; backup saved as ${backupPath}.`);
+    return true;
   } catch (error) {
-    removeIfExists(fm, temp);
-    if (fm.fileExists(backupPath)) { removeIfExists(fm, path); fm.copy(backupPath, path); }
-    throw new Error(`Loader replacement failed and rollback was attempted: ${error}`);
+    try { if (fm.fileExists(backupPath)) fm.writeString(path, fm.readString(backupPath)); }
+    catch (rollbackError) { console.log(`[Sync warning] Loader rollback from backup failed: ${rollbackError}`); }
+    console.log(`[Sync warning] Loader replacement failed; current application was not removed: ${error}`);
+    return false;
   }
 }
 
@@ -251,7 +291,7 @@ function recoverInterruptedLoader(loader, stateFm, statePath, state) {
   if (loader && loader.content.includes(MARKER)) return state;
   const backup = state.loaderBackup;
   if (backup && loader && loader.fm.fileExists(backup)) {
-    removeIfExists(loader.fm, loader.path); loader.fm.copy(backup, loader.path);
+    loader.fm.writeString(loader.path, loader.fm.readString(backup));
     console.log("[Sync] Interrupted loader replacement rolled back from the last known-good backup.");
     return state;
   }
