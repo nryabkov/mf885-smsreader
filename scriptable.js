@@ -205,29 +205,54 @@ function authorization(auth, method) {
 
 async function xmlRequest(auth, method, file, body = null, retry = true, timeout = 15) {
   const operation = method === "GET" ? "get" : "set";
-  const req = new Request(`http://${ROUTER_HOST}/xml_action.cgi?method=${operation}&module=duster&file=${encodeURIComponent(file)}`);
-  req.method = method;
-  req.headers = requestHeaders(auth, method);
-  req.timeoutInterval = timeout;
-  if (body !== null) req.body = body;
-  const text = await req.loadString();
-  auth.nc++;
-  if (unauthorized(text) && retry) {
-    const fresh = await getAuthChallenge(); await login(fresh); Object.assign(auth, fresh);
-    return xmlRequest(auth, method, file, body, false, timeout);
-  }
-  if (unauthorized(text)) throw new Error(`Authorization failed for ${file}`);
+  const text = await authenticatedRequest(auth, () => {
+    const req = new Request(`http://${ROUTER_HOST}/xml_action.cgi?method=${operation}&module=duster&file=${encodeURIComponent(file)}`);
+    req.method = method;
+    req.headers = requestHeaders(auth, method);
+    req.timeoutInterval = timeout;
+    if (body !== null) req.body = body;
+    return req;
+  }, file, retry);
   if (DEBUG) console.log(text);
   return text;
 }
 
 async function routerCall(auth, path, method) {
   const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><param><method>call</method><session>000</session><obj_path>${escapeXml(path)}</obj_path><obj_method>${escapeXml(method)}</obj_method></param></RGW>`;
-  const req = new Request(`http://${ROUTER_HOST}/xml_action.cgi?method=set`);
-  req.method = "POST"; req.headers = requestHeaders(auth, "POST"); req.body = xml;
-  const text = await req.loadString(); auth.nc++;
-  if (unauthorized(text)) throw new Error(`Authorization failed for ${method}`);
-  return text;
+  return authenticatedRequest(auth, () => {
+    const req = new Request(`http://${ROUTER_HOST}/xml_action.cgi?method=set`);
+    req.method = "POST"; req.headers = requestHeaders(auth, "POST"); req.body = xml;
+    return req;
+  }, method);
+}
+
+async function loadResponse(req) {
+  let text = "";
+  let exception = null;
+  try { text = await req.loadString(); }
+  catch (error) { exception = error; }
+  return { text, exception, response: req.response };
+}
+
+async function authenticatedRequest(auth, makeRequest, operation, retry = true) {
+  const attempts = retry ? 2 : 1;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const result = await loadResponse(makeRequest());
+    auth.nc++;
+    const statusCode = result.response && Number(result.response.statusCode);
+    const authenticationFailed = statusCode === 401 || unauthorized(result.text);
+    if (authenticationFailed) {
+      if (attempt + 1 < attempts) {
+        const fresh = await getAuthChallenge();
+        await login(fresh);
+        Object.assign(auth, fresh);
+        continue;
+      }
+      throw new Error(`Authorization failed for ${operation}`);
+    }
+    if (result.exception) throw result.exception;
+    return result.text;
+  }
 }
 
 function requestHeaders(auth, method) {
