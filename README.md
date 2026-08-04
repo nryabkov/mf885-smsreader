@@ -33,7 +33,8 @@ The repository keeps the updater, manifest, application, and feature modules sid
 - `modules/ussd.js` contains the firmware-specific USSD probing and request variants.
 
 1. Copy `loader.js` into a new script in the Scriptable iOS app.
-2. Run it once. The loader creates `mf885-smsreader-config.json` in Scriptable's **local** Documents directory. Edit that stable file (rather than the replaceable loader source) to select a fork, branch, router, and application storage:
+2. Run it. That is sufficient when using this repository's `main` branch, Scriptable's local application storage, a router at `192.168.21.1`, and the initial router password `zimifi`. During the same run, the loader downloads and launches the application and creates `mf885-smsreader-config.json` automatically in Scriptable's **local** Documents directory.
+3. Edit `mf885-smsreader-config.json` only if you need to use a fork, a non-default branch, a different router address, or iCloud application storage. The stable configuration file (rather than the replaceable loader source) contains these settings:
 
    ```javascript
    {
@@ -45,7 +46,7 @@ The repository keeps the updater, manifest, application, and feature modules sid
    }
    ```
 
-3. Run the loader again after editing configuration. It asks GitHub's commits API for the configured branch HEAD, validates the full 40-character SHA, then fetches the manifest, loader, and every application file from raw GitHub URLs containing that exact SHA. A branch move between requests therefore cannot mix commits.
+   If you change the configuration later, run the loader again to apply it. On each run, the loader asks GitHub's commits API for the configured branch HEAD, validates the full 40-character SHA, then fetches the manifest, loader, and every application file from raw GitHub URLs containing that exact SHA. A branch move between requests therefore cannot mix commits.
 4. The router password is stored in Keychain as `mf885_router_password_<router address>`. An optional GitHub token may be stored as `mf885_github_token`; it is useful when unauthenticated API rate limits are too low. Neither secret is written to configuration or logs. Use a temporary Scriptable script to set or replace these Keychain values.
 5. Keep the iPhone connected to the router Wi-Fi network while using the dashboard.
 
