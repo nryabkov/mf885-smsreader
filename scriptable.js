@@ -100,21 +100,7 @@ async function sendFlow(auth) {
     if (!result.ok) return dashboardFlow(auth, `Ошибка отправки SMS: ${result.message}`, inlineTab);
     return dashboardFlow(auth, `SMS отправлено на ${inlineTo}`, inlineTab);
   }
-  const alert = new Alert();
-  alert.title = "Send SMS";
-  alert.message = "Enter the recipient number and message text.";
-  alert.addTextField("Number, for example +15551234567", "");
-  alert.addTextField("SMS text", "");
-  alert.addAction("Send");
-  alert.addCancelAction("Cancel");
-  if ((await alert.present()) === -1) return dashboardFlow(auth);
-  const to = alert.textFieldValue(0).trim();
-  const text = alert.textFieldValue(1).trim();
-  if (!to) throw new Error("Recipient number is missing");
-  if (!text) throw new Error("SMS text is missing");
-  const result = parseSendResult(await sendSms(auth, to, text));
-  if (!result.ok) throw new Error(result.message);
-  return dashboardFlow(auth, `The router accepted the SMS to ${to}`, "sms");
+  return dashboardFlow(auth, "Откройте форму «Написать SMS»", "sms");
 }
 
 async function deleteFlow(auth) {
@@ -136,81 +122,43 @@ async function ussdFlow(auth) {
     const detail = DEBUG && result.diagnostics ? `${result.message} (${result.diagnostics})` : result.message;
     return dashboardFlow(auth, `${result.ok ? "USSD" : "Ошибка USSD"}: ${detail}`, inlineTab);
   }
-  const alert = new Alert();
-  alert.title = "Send USSD";
-  alert.message = capability.supported
-    ? capability.detail
-    : `${capability.detail}\n\nExperimental: support depends on the router firmware.`;
-  alert.addTextField("USSD code, for example *100#", "");
-  alert.addAction("Send");
-  alert.addCancelAction("Cancel");
-  if ((await alert.present()) === -1) return dashboardFlow(auth, "", "router");
-  const code = alert.textFieldValue(0).trim();
-  if (!code) throw new Error("USSD code is missing");
-  if (code.length > 128) throw new Error("USSD code is too long");
-  const result = await executeUssd(auth, capability, code);
-  const detail = DEBUG && result.diagnostics
-    ? `${result.message}\n\n${result.diagnostics}`
-    : result.message;
-  return dashboardFlow(auth, `${result.title}: ${detail}`, "router");
+  return dashboardFlow(auth, "Откройте форму «Набрать USSD»", "sms");
 }
 
 async function deviceAccessFlow(auth) {
   const capability = await detectDeviceAccess(auth);
   const actions = capability.capabilities || [];
-  const alert = new Alert();
-  alert.title = "Experimental device access";
-  alert.message = `${capability.detail || "Firmware support is unknown."}\n\nWarning: these commands may be unsupported by your firmware and can affect exposed debug services. Continue only if you understand the risk.`;
-  actions.forEach(action => alert.addAction(action.title));
-  alert.addCancelAction("Cancel");
-  const selected = await alert.present();
-  if (selected === -1) return dashboardFlow(auth, "", "router");
-  const action = actions[selected];
-  if (!action) return dashboardFlow(auth, "", "router");
-
-  const confirm = new Alert();
-  confirm.title = `Confirm: ${action.title}`;
-  confirm.message = `${action.description}\n\nThis is an experimental state-changing command. It is not part of safe detection.`;
-  confirm.addDestructiveAction("Execute");
-  confirm.addCancelAction("Cancel");
-  if ((await confirm.present()) === -1) return dashboardFlow(auth, "", "router");
+  const actionId = String(QUERY.deviceAction || "").trim();
+  const confirm = String(QUERY.confirm || "") === "1";
+  const action = actions.find(item => item.id === actionId);
+  if (!actionId || !action) return dashboardFlow(auth, "Выберите экспериментальное действие в карточке роутера", "router");
+  if (!confirm) return dashboardFlow(auth, `Подтвердите экспериментальное действие: ${action.title}`, "router");
 
   const result = await executeDeviceAccess(auth, action.id, action.id);
   const detail = DEBUG && result.diagnostics
-    ? `${result.message}\n\n${result.diagnostics}`
+    ? `${result.message} (${result.diagnostics})`
     : result.message;
-  return showMessage(result.title, detail, result.ok ? "🧪" : "⚠️");
+  return dashboardFlow(auth, `${result.title}: ${detail}`, "router");
 }
 
 async function resetTrafficFlow(auth) {
-  const alert = new Alert();
-  alert.title = "Reset total traffic?";
-  alert.message = "Only the total mobile WAN counters will be reset.";
-  alert.addDestructiveAction("Reset traffic");
-  alert.addCancelAction("Cancel");
-  if ((await alert.present()) === -1) return dashboardFlow(auth, "", "router");
+  if (String(QUERY.confirm || "") !== "1") {
+    return dashboardFlow(auth, "Подтвердите сброс общего трафика", "router");
+  }
   await routerCall(auth, "statistics", "stat_clear_common_data");
-  return dashboardFlow(auth, "Total mobile traffic was reset", "router");
+  return dashboardFlow(auth, "Общий мобильный трафик сброшен", "router");
 }
 
 async function powerFlow(auth, kind) {
   const reboot = kind === "reboot";
-  const alert = new Alert();
-  alert.title = reboot ? "Restart the router?" : "Power off the router?";
-  alert.message = reboot
-    ? "Wi-Fi and mobile data will be temporarily unavailable."
-    : "The physical power button is required to turn it on again.";
-  alert.addDestructiveAction(reboot ? "Restart" : "Power off");
-  alert.addCancelAction("Cancel");
-  if ((await alert.present()) === -1) return dashboardFlow(auth, "", "router");
+  if (String(QUERY.confirm || "") !== "1") {
+    return dashboardFlow(auth, reboot ? "Подтвердите перезапуск роутера" : "Подтвердите выключение роутера", "router");
+  }
   const file = reboot ? "reset" : "shutdown";
   const field = reboot ? "reset" : "shutdown";
   const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><${file}><${field}>1</${field}></${file}></RGW>`;
   try { await xmlRequest(auth, "POST", file, xml, false); } catch (_) {}
-  return showMessage(
-    reboot ? "Restart command sent" : "Power-off command sent",
-    "Losing the connection to the router is expected.", reboot ? "🔄" : "⏻"
-  );
+  return dashboardFlow(auth, reboot ? "Команда перезапуска отправлена; временная потеря связи ожидаема" : "Команда выключения отправлена; включение возможно физической кнопкой", "router");
 }
 
 // Digest authentication and router API
@@ -479,7 +427,7 @@ function parseNetwork(xml) {
   const cellular = tag(wan, "cellular") || wan;
   const operator = firstText(wan, ["network_name", "ISP_name", "ISP", "operator_name", "mccmnc"]);
   const rawMode = firstText(wan, ["network_type", "network_mode", "data_conn_mode", "radio_mode", "rat", "service_type"]);
-  const mode = normalizeNetworkMode(rawMode);
+  const mode = networkModeLabel(rawMode);
   const signalBar = firstNumber(cellular, ["signalbar", "signal_bar", "signal_level", "SignalBar"]);
   const bars = signalBar === null ? null : Math.max(0, Math.min(5, Math.round(signalBar)));
   const dbm = firstSigned(cellular, ["rsrp", "rssi", "rscp", "ecio", "sinr", "signal_strength", "SignalStrength"]);
@@ -496,10 +444,10 @@ function batteryStatusLabel(value, charging) {
   if (/battery|discharg|offline/.test(lower) || text === "1") return "Работает от батареи";
   return "Неизвестно";
 }
-function normalizeNetworkMode(value) {
+function networkModeLabel(value) {
   const text = String(value || "").trim();
-  if (!text) return "Неизвестен";
-  if (/^\d+$/.test(text)) return "Неизвестен";
+  if (!text) return "Не определён";
+  if (/^\d+$/.test(text)) return `Режим ${text}`;
   if (/\b(lte|4g)\b/i.test(text)) return /lte/i.test(text) ? "LTE" : "4G";
   if (/\b(5g|nr)\b/i.test(text)) return "5G";
   if (/\b(3g|umts|hspa|wcdma)\b/i.test(text)) return "3G";
@@ -579,6 +527,18 @@ function buildHtml(model) {
     ? `<div class="warning">⚠️ Показаны последние ${visibleMessages.length} SMS из ${smsCount}, чтобы WebView не перегружался и не перерисовывался слишком тяжело.</div>`
     : "";
   const codes = [network.rawMode ? `Код сети: ${escapeHtml(network.rawMode)}` : "", network.lac ? `LAC/TAC ${escapeHtml(network.lac)}` : "", network.cellId ? `Cell ${escapeHtml(network.cellId)}` : "", network.pci ? `PCI ${escapeHtml(network.pci)}` : ""].filter(Boolean).join(" · ");
+  const deviceActions = (model.deviceAccess.capabilities || []).map(action => `<a class="danger buttonlike" href="${runUrl("deviceAccess", "router", { deviceAction: action.id })}">${escapeHtml(action.title)}</a>`).join(" ");
+  const pendingDeviceAction = ACTION === "deviceAccess" ? (model.deviceAccess.capabilities || []).find(action => action.id === String(QUERY.deviceAction || "")) : null;
+  const deviceConfirm = pendingDeviceAction && String(QUERY.confirm || "") !== "1"
+    ? `<div class="warning"><strong>Подтвердите экспериментальное действие: ${escapeHtml(pendingDeviceAction.title)}</strong><p>${escapeHtml(pendingDeviceAction.description || "Команда может изменить состояние роутера.")}</p><a class="danger buttonlike" href="${runUrl("deviceAccess", "router", { deviceAction: pendingDeviceAction.id, confirm: "1" })}">Подтвердить</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Отмена</a></div>`
+    : "";
+  const resetTrafficConfirm = ACTION === "resetTraffic" && String(QUERY.confirm || "") !== "1"
+    ? `<div class="warning"><strong>Сбросить общий трафик?</strong><p>Будут сброшены только общие счётчики мобильного WAN.</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router", { confirm: "1" })}">Подтвердить</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Отмена</a></div>`
+    : "";
+  const powerConfirm = (ACTION === "reboot" || ACTION === "powerOff") && String(QUERY.confirm || "") !== "1";
+  const powerConfirmCard = powerConfirm
+    ? `<div class="warning"><strong>${ACTION === "reboot" ? "Перезапустить роутер?" : "Выключить роутер?"}</strong><p>${ACTION === "reboot" ? "Wi‑Fi и мобильный интернет будут временно недоступны." : "Для включения понадобится физическая кнопка питания."}</p><a class="danger buttonlike" href="${runUrl(ACTION, "router", { confirm: "1" })}">Подтвердить</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Отмена</a></div>`
+    : "";
   const baseRun = `scriptable:///run?scriptName=${encodeURIComponent(Script.name())}`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>ZMI Router</title><style>${css()}</style></head>
   <body><div id="progressbar" class="progressbar" aria-hidden="true"><i></i></div><main><header class="hero compact"><div><h1>MF855 / MF885</h1><strong>SMS: ${smsCount}</strong></div><p class="statusline"><span>📶 ${escapeHtml(networkLabel)}</span><span>🔋 ${batteryLabel}</span><span>⇅ ${totalTraffic}</span><span>⟳ ${escapeHtml(updated.slice(0,5))}</span></p></header>
@@ -586,16 +546,16 @@ function buildHtml(model) {
   <section class="refresh"><span id="countdown">Следующее обновление: ${escapeHtml(nextUpdate)}</span><div class="actions"><a id="refreshLink" class="buttonlike" href="${runUrl("dashboard", model.tab)}" onclick="refreshNow(event)">Обновить</a><button id="pauseBtn" onclick="togglePause()">Пауза</button></div></section>
   <section id="actionStatus" class="action-status warning" hidden><header><strong data-status-title></strong><button type="button" onclick="hideActionStatus()">Закрыть</button></header><p data-status-detail></p><textarea data-status-copy rows="5" readonly></textarea><pre data-status-pre></pre></section>
   ${model.notice ? `<div class="notice">${escapeHtml(model.notice)}</div>` : ""}
-    <section id="sms" class="tab"><div class="inline-toolbar"><button onclick="toggleSmsComposer()">+ SMS</button><button onclick="toggleUssdComposer()">USSD</button></div>
-    <form id="smsComposer" class="composer card" onsubmit="submitSmsInline(event)" hidden><input name="to" placeholder="Кому" autocomplete="tel"><textarea name="text" placeholder="Текст SMS" rows="3" maxlength="1000"></textarea><div><button class="primary" type="submit">Отправить</button><button type="button" onclick="toggleSmsComposer(false)">Отмена</button></div><p class="formStatus" data-status></p></form>
-    <form id="ussdComposer" class="composer card" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Код, например *100#"><div><button class="primary" type="submit">Отправить</button><button type="button" onclick="toggleUssdComposer(false)">Отмена</button></div><p class="formStatus" data-status></p></form>
+    <section id="sms" class="tab"><div class="inline-toolbar"><button onclick="toggleSmsComposer()">📝 Написать SMS</button><button onclick="toggleUssdComposer()">☎️ Набрать USSD</button></div>
+    <form id="smsComposer" class="composer card" onsubmit="submitSmsInline(event)" hidden><input name="to" placeholder="Кому" autocomplete="tel"><textarea name="text" placeholder="Текст SMS" rows="3" maxlength="1000"></textarea><div><button class="primary" type="submit">Отправить SMS</button><button type="button" onclick="toggleSmsComposer(false)">Отмена</button></div><p class="formStatus" data-status></p></form>
+    <form id="ussdComposer" class="composer card" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Код, например *100#"><div><button class="primary" type="submit">Отправить USSD</button><button type="button" onclick="toggleUssdComposer(false)">Отмена</button></div><p class="formStatus" data-status></p></form>
     ${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
     <section id="router" class="tab">${topCards}<article class="card network"><small>СОТОВАЯ СЕТЬ</small><h2>${escapeHtml(networkLabel)}</h2><div class="quality">${escapeHtml(network.mode || "Режим неизвестен")}</div><p>${escapeHtml(network.operator || "Оператор неизвестен")}</p><p>Уровень: ${network.bars === null || network.bars === undefined ? "—" : network.bars + "/5"} · dBm: ${network.dbm === null || network.dbm === undefined ? "—" : escapeHtml(network.dbm)}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Коды соты недоступны</p>`}</article>
     <article class="card battery"><small>БАТАРЕЯ</small><h2>${batteryLabel}</h2><p>${escapeHtml(battery.status || "Неизвестно")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
-    <article class="card traffic"><small>ТРАФИК</small><h2>${totalTraffic}</h2><p>Скачано: ${formatBytes(traffic.download)}</p><p>Отправлено: ${formatBytes(traffic.upload)}</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Сбросить трафик</a></article>
-    <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Доступно" : "Не подтверждено"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button onclick="tab('sms');toggleUssdComposer(true)">USSD</button></article>
-    <article class="card"><small>DEVICE ACCESS</small><h2>${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><a class="danger buttonlike" href="${runUrl("deviceAccess", "router")}">Experimental access</a></article>
-    <article class="card"><small>ПИТАНИЕ</small><h2>Системные команды</h2><a class="buttonlike" href="${runUrl("reboot", "router")}">Перезапуск</a> <a class="danger buttonlike" href="${runUrl("powerOff", "router")}">Выключить</a></article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
+    <article class="card traffic"><small>ТРАФИК</small><h2>${totalTraffic}</h2><p>Скачано: ${formatBytes(traffic.download)}</p><p>Отправлено: ${formatBytes(traffic.upload)}</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Сбросить трафик</a>${resetTrafficConfirm}</article>
+    <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Доступно" : "Не подтверждено"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button onclick="tab('sms');toggleUssdComposer(true)">Набрать USSD</button></article>
+    <article class="card"><small>DEVICE ACCESS</small><h2>${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar">${deviceActions || "<span>Действия недоступны</span>"}</div>${deviceConfirm}</article>
+    <article class="card"><small>ПИТАНИЕ</small><h2>Системные команды</h2><a class="buttonlike" href="${runUrl("reboot", "router")}">Перезапуск</a> <a class="danger buttonlike" href="${runUrl("powerOff", "router")}">Выключить</a>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
   <script>${clientScript(model, baseRun)}</script></body></html>`;
 }
 
