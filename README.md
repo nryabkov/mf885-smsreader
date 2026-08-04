@@ -10,6 +10,7 @@ The script does **not** read or send messages through Apple Messages on the iPho
 - Refreshes the dashboard automatically to check for new messages and router status changes.
 - Displays cellular network, signal, battery, and mobile traffic information.
 - Sends SMS messages and provides copy actions in a mobile-friendly WebView.
+- Translates SMS only after tapping **Перевести**. Without an endpoint, the SMS text is copied for manual translation in Apple Translate; with optional `TRANSLATE_ENDPOINT` advanced setup, a LibreTranslate-compatible service returns the translation inline in the SMS card. The dashboard does not start automatic bulk translation when opened.
 - Deletes individual SMS messages from the router after confirmation.
 - Resets total WAN traffic and provides confirmed restart and power-off controls.
 - Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive.
