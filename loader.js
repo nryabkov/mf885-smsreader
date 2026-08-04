@@ -1,140 +1,277 @@
-// MF885 SMS Reader updater and launcher for Scriptable.
-// This loader has one remote endpoint. The manifest expands into every file
-// needed by the application.
+// MF885_LOADER_STABLE_MARKER
+// MF885 SMS Reader commit-pinned updater and launcher for Scriptable.
 
-const MANIFEST_URL =
-  "https://raw.githubusercontent.com/nryabkov/mf885-smsreader/main/manifest.json";
-const ROUTER_IP = "192.168.21.1";
-const DEFAULT_ROUTER_PASSWORD = "zimifi";
-const USE_ICLOUD = false;
+const LOADER_PROTOCOL = 2;
+const DEFAULT_CONFIG = {
+  repositoryOwner: "nryabkov",
+  repositoryName: "mf885-smsreader",
+  branch: "main",
+  routerAddress: "192.168.21.1",
+  storage: "local"
+};
+const MARKER = "MF885_LOADER_STABLE_MARKER";
+const SHA_RE = /^[0-9a-f]{40}$/i;
 
-await main();
-
-async function main() {
-  const fm = USE_ICLOUD ? FileManager.iCloud() : FileManager.local();
-  const documents = fm.documentsDirectory();
-  const installDirectory = fm.joinPath(documents, "mf885-smsreader");
-  const versionFile = fm.joinPath(installDirectory, "installed-version.txt");
-  ensureDirectory(fm, installDirectory);
-
-  await downloadFromICloudIfNeeded(fm, versionFile);
-  const installedVersion = fm.fileExists(versionFile)
-    ? fm.readString(versionFile).trim()
-    : "";
-
-  let manifest = null;
-  try {
-    manifest = await loadJson(MANIFEST_URL);
-    validateManifest(manifest);
-    if (manifest.version !== installedVersion || !installationExists(fm, installDirectory, manifest)) {
-      await installManifest(fm, installDirectory, manifest);
-      fm.writeString(versionFile, manifest.version);
-      await showUpdate(manifest.version, installedVersion);
-    } else {
-      console.log("[Sync] The latest version is already installed.");
-    }
-  } catch (error) {
-    console.log(`[Sync warning] Update check failed: ${error}.`);
-  }
-
-  if (!manifest) {
-    if (!fm.fileExists(versionFile)) {
-      throw new Error("The application is not installed and its manifest is unavailable.");
-    }
-    manifest = { entry: "scriptable.js" };
-  }
-
-  const entryFile = fm.joinPath(installDirectory, manifest.entry);
-  await downloadFromICloudIfNeeded(fm, entryFile);
-
-  const keychainKey = `zmifi_pass_${ROUTER_IP}`;
-  if (!Keychain.contains(keychainKey)) {
-    Keychain.set(keychainKey, DEFAULT_ROUTER_PASSWORD);
-  }
-
-  const application = importModule(entryFile);
-  if (!application || typeof application.run !== "function") {
-    throw new Error("The installed application does not export run(options).");
-  }
-  await application.run({
-    ip: ROUTER_IP,
-    password: Keychain.get(keychainKey),
-    moduleDirectory: installDirectory
-  });
+function commitApiUrl(config) {
+  return `https://api.github.com/repos/${encodeURIComponent(config.repositoryOwner)}/${encodeURIComponent(config.repositoryName)}/commits/${encodeURIComponent(config.branch)}`;
 }
 
-async function installManifest(fm, installDirectory, manifest) {
-  const baseUrl = MANIFEST_URL.slice(0, MANIFEST_URL.lastIndexOf("/") + 1);
-  for (const relativePath of manifest.files) {
-    const destination = safeDestination(fm, installDirectory, relativePath);
-    ensureDirectory(fm, destination.slice(0, destination.lastIndexOf("/")));
-    const source = baseUrl + relativePath;
-    const code = await loadString(source);
-    if (!code.trim()) throw new Error(`Downloaded an empty file: ${relativePath}`);
-    fm.writeString(destination, code);
-  }
+function rawBaseUrl(config, sha) {
+  assertSha(sha);
+  return `https://raw.githubusercontent.com/${encodeURIComponent(config.repositoryOwner)}/${encodeURIComponent(config.repositoryName)}/${sha}/`;
 }
 
-function installationExists(fm, installDirectory, manifest) {
-  return manifest.files.every(path =>
-    fm.fileExists(safeDestination(fm, installDirectory, path))
-  );
+function artifactUrls(config, sha, manifest) {
+  const base = rawBaseUrl(config, sha);
+  return {
+    manifest: `${base}manifest.json`,
+    loader: base + manifest.loader,
+    files: manifest.files.map(path => base + path)
+  };
 }
 
-function safeDestination(fm, root, relativePath) {
-  if (!/^[A-Za-z0-9_./-]+$/.test(relativePath) || relativePath.includes("..")) {
-    throw new Error(`Unsafe manifest path: ${relativePath}`);
-  }
-  return fm.joinPath(root, relativePath);
+function assertSha(value) {
+  if (typeof value !== "string" || !SHA_RE.test(value)) throw new Error("GitHub returned a malformed commit SHA");
+  return value.toLowerCase();
+}
+
+function safeRelativePath(path) {
+  return typeof path === "string" && path.length > 0 && path.length < 300 &&
+    /^[A-Za-z0-9_.\/-]+$/.test(path) && !path.startsWith("/") &&
+    !path.split("/").some(part => part === ".." || part === "");
 }
 
 function validateManifest(manifest) {
-  if (!manifest || typeof manifest.version !== "string") {
-    throw new Error("Manifest version is missing");
+  if (!manifest || typeof manifest !== "object") throw new Error("Manifest is not an object");
+  if (!safeRelativePath(manifest.loader)) throw new Error("Manifest loader path is unsafe or missing");
+  if (!safeRelativePath(manifest.entry)) throw new Error("Manifest entry path is unsafe or missing");
+  if (!Array.isArray(manifest.files) || !manifest.files.length) throw new Error("Manifest files must be a non-empty list");
+  if (!manifest.files.every(safeRelativePath)) throw new Error("Manifest contains an unsafe application path");
+  if (!manifest.files.includes(manifest.entry)) throw new Error("Manifest entry is not in files");
+  if (manifest.files.includes(manifest.loader)) throw new Error("The loader must be separate from application files");
+  for (const field of ["loaderProtocol", "minimumLoaderProtocol"]) {
+    if (!Number.isInteger(manifest[field]) || manifest[field] < 1) throw new Error(`Manifest ${field} is invalid`);
   }
-  if (!Array.isArray(manifest.files) || !manifest.files.length) {
-    throw new Error("Manifest file list is missing");
-  }
-  if (!manifest.files.includes(manifest.entry)) {
-    throw new Error("Manifest entry is not included in its file list");
-  }
+  if (manifest.minimumLoaderProtocol > manifest.loaderProtocol) throw new Error("Manifest protocol range is invalid");
+  return manifest;
 }
 
-async function loadJson(url) {
-  const request = requestFor(url);
-  return await request.loadJSON();
+function validState(state) {
+  if (!state || typeof state !== "object" || !["active", "pending-restart"].includes(state.status)) return false;
+  if (state.activeSha !== null && !SHA_RE.test(state.activeSha || "")) return false;
+  if (state.pendingSha !== null && !SHA_RE.test(state.pendingSha || "")) return false;
+  return Number.isInteger(state.loaderProtocol) && state.loaderProtocol > 0;
 }
 
-async function loadString(url) {
-  const request = requestFor(url);
-  return await request.loadString();
+function synchronizationNeeded(remoteSha, state, artifactsPresent) {
+  assertSha(remoteSha);
+  return !validState(state) || state.activeSha !== remoteSha || !artifactsPresent;
 }
 
-function requestFor(url) {
-  const request = new Request(url);
-  request.headers = {
-    "Cache-Control": "no-cache, no-store, must-revalidate",
-    "User-Agent": "Scriptable-MF885-SMS-Reader"
+function abbreviate(sha) { return sha ? sha.slice(0, 7) : "unknown"; }
+
+function requestHeaders(token, githubApi) {
+  const headers = {
+    Accept: githubApi ? "application/vnd.github+json" : "application/octet-stream",
+    "User-Agent": "MF885-SMS-Reader-Scriptable",
+    "Cache-Control": "no-cache, no-store, must-revalidate"
   };
-  return request;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (githubApi) headers["X-GitHub-Api-Version"] = "2022-11-28";
+  return headers;
 }
 
-function ensureDirectory(fm, path) {
-  if (path && !fm.fileExists(path)) fm.createDirectory(path, true);
+async function main() {
+  const local = FileManager.local();
+  const configPath = local.joinPath(local.documentsDirectory(), "mf885-smsreader-config.json");
+  const config = readConfig(local, configPath);
+  const fm = config.storage === "icloud" ? FileManager.iCloud() : local;
+  const root = fm.documentsDirectory();
+  const appDir = fm.joinPath(root, "mf885-smsreader");
+  const statePath = fm.joinPath(root, "mf885-smsreader-sync-state.json");
+  const legacyPath = fm.joinPath(appDir, "installed-version.txt");
+  const tokenKey = "mf885_github_token";
+  const token = Keychain.contains(tokenKey) ? Keychain.get(tokenKey) : "";
+  let state = readState(fm, statePath);
+
+  const loader = discoverLoader();
+  state = recoverInterruptedLoader(loader, fm, statePath, state);
+  let manifest = null;
+  let syncWarning = null;
+  try {
+    const sha = await lookupHead(config, token);
+    manifest = validateManifest(await loadJson(rawBaseUrl(config, sha) + "manifest.json", token));
+    const complete = applicationExists(fm, appDir, manifest);
+    const legacy = !state && fm.fileExists(legacyPath);
+    if (legacy) console.log("[Sync] Legacy installed-version.txt found; installed commit is unknown and a full synchronization is required.");
+    if (state && state.status === "pending-restart" && state.pendingSha === sha && LOADER_PROTOCOL >= manifest.minimumLoaderProtocol) {
+      await installApplication(fm, appDir, statePath, state, sha, manifest, artifactUrls(config, sha, manifest), token);
+      state = readState(fm, statePath);
+      if (fm.fileExists(legacyPath)) fm.remove(legacyPath);
+      console.log(`[Sync] Activated pending application ${abbreviate(sha)} after loader restart.`);
+    } else if (synchronizationNeeded(sha, state, complete)) {
+      const result = await synchronize({ fm, appDir, statePath, legacyPath, state, sha, manifest, config, token, loader });
+      state = result.state;
+      if (result.restart) await showMessage("Loader updated; restart required", `Loader ${abbreviate(sha)} is installed. Run this script again to activate the compatible application.`);
+    } else {
+      console.log(`[Sync] Exact commit ${abbreviate(sha)} is already installed (loader and application complete).`);
+    }
+  } catch (error) {
+    syncWarning = String(error.message || error);
+    console.log(`[Sync warning] ${syncWarning}. Using the last complete local application when available.`);
+  }
+
+  state = readState(fm, statePath);
+  const entry = state && safeRelativePath(state.entry) ? state.entry : "scriptable.js";
+  const entryFile = safeDestination(fm, appDir, entry);
+  if (!fm.fileExists(entryFile)) throw new Error(`Fatal installation error: no valid local application is available${syncWarning ? ` (${syncWarning})` : ""}`);
+  await downloadICloud(fm, entryFile);
+  const passwordKey = `mf885_router_password_${config.routerAddress}`;
+  if (!Keychain.contains(passwordKey)) Keychain.set(passwordKey, "zimifi");
+  const application = importModule(entryFile);
+  if (!application || typeof application.run !== "function") throw new Error("The installed application does not export run(options)");
+  await application.run({ ip: config.routerAddress, password: Keychain.get(passwordKey), moduleDirectory: appDir });
 }
 
-async function showUpdate(version, previousVersion) {
-  const alert = new Alert();
-  alert.title = previousVersion ? "mf885-smsreader updated" : "mf885-smsreader installed";
-  alert.message = previousVersion
-    ? `Updated from ${previousVersion} to ${version}.`
-    : `Installed version ${version}.`;
-  alert.addAction("Run");
-  await alert.presentAlert();
+async function synchronize(context) {
+  const { fm, appDir, statePath, legacyPath, state, sha, manifest, config, token, loader } = context;
+  const urls = artifactUrls(config, sha, manifest);
+  const loaderCode = await loadString(urls.loader, token);
+  validateLoader(loaderCode);
+  const loaderChanged = !loader || loader.content !== loaderCode;
+  console.log(`[Sync] Remote ${abbreviate(sha)} differs from active ${abbreviate(state && state.activeSha)}; loader ${loaderChanged ? "changed" : "unchanged"}, application snapshot will be staged.`);
+  if (manifest.minimumLoaderProtocol > LOADER_PROTOCOL) {
+    if (!loader) {
+      console.log("[Sync warning] Loader path could not be identified and verified; application requiring a newer loader was not activated.");
+      throw new Error("Self-update skipped: open the Scriptable loader and reinstall loader.js manually");
+    }
+    await replaceLoader(loader, loaderCode);
+    const pending = { activeSha: state ? state.activeSha : null, pendingSha: sha, loaderProtocol: manifest.loaderProtocol, status: "pending-restart", loaderBackup: loader.backupPath, entry: state && state.entry ? state.entry : "scriptable.js" };
+    writeStateAtomic(fm, statePath, pending);
+    return { state: pending, restart: true };
+  }
+  if (loaderChanged) {
+    if (loader) await replaceLoader(loader, loaderCode);
+    else console.log("[Sync warning] Self-update skipped because the active Scriptable loader path was not verified; application remains safe.");
+  }
+  try {
+    await installApplication(fm, appDir, statePath, state, sha, manifest, urls, token);
+  } catch (error) {
+    if (loaderChanged && loader && loader.fm.fileExists(loader.backupPath)) {
+      removeIfExists(loader.fm, loader.path);
+      loader.fm.copy(loader.backupPath, loader.path);
+      console.log(`[Sync] Application activation failed; loader rolled back to the prior copy and active commit remains ${abbreviate(state && state.activeSha)}.`);
+    }
+    throw error;
+  }
+  if (fm.fileExists(legacyPath)) fm.remove(legacyPath);
+  console.log(`[Sync] Successfully activated loader/application revision ${abbreviate(sha)}${loaderChanged ? "; replacement loader takes effect next invocation" : ""}.`);
+  return { state: readState(fm, statePath), restart: false };
 }
 
-async function downloadFromICloudIfNeeded(fm, path) {
-  if (USE_ICLOUD && fm.fileExists(path) && !fm.isFileDownloaded(path)) {
-    await fm.downloadFileFromiCloud(path);
+async function installApplication(fm, appDir, statePath, priorState, sha, manifest, suppliedUrls, token) {
+  const parent = appDir.slice(0, appDir.lastIndexOf("/"));
+  const stage = `${appDir}.staging-${sha}`;
+  const backup = `${appDir}.backup`;
+  removeIfExists(fm, stage); ensureDirectory(fm, stage);
+  try {
+    const urls = suppliedUrls || artifactUrls(DEFAULT_CONFIG, sha, manifest);
+    for (let i = 0; i < manifest.files.length; i++) {
+      const destination = safeDestination(fm, stage, manifest.files[i]);
+      ensureDirectory(fm, destination.slice(0, destination.lastIndexOf("/")));
+      const data = await loadString(urls.files[i], token);
+      if (!data.trim()) throw new Error(`Downloaded empty application file ${manifest.files[i]}`);
+      fm.writeString(destination, data);
+    }
+    if (!applicationExists(fm, stage, manifest)) throw new Error("Staged application is incomplete");
+    removeIfExists(fm, backup);
+    if (fm.fileExists(appDir)) fm.move(appDir, backup);
+    try { fm.move(stage, appDir); }
+    catch (error) { if (fm.fileExists(backup) && !fm.fileExists(appDir)) fm.move(backup, appDir); throw error; }
+    const active = { activeSha: sha, pendingSha: null, loaderProtocol: LOADER_PROTOCOL, status: "active", entry: manifest.entry };
+    try { writeStateAtomic(fm, statePath, active); }
+    catch (error) {
+      removeIfExists(fm, appDir); if (fm.fileExists(backup)) fm.move(backup, appDir);
+      if (priorState) writeStateAtomic(fm, statePath, priorState);
+      throw new Error(`State persistence failed; application rolled back: ${error}`);
+    }
+    removeIfExists(fm, backup);
+  } catch (error) { removeIfExists(fm, stage); throw new Error(`Staged update failed: ${error}`); }
+}
+
+async function lookupHead(config, token) {
+  const request = new Request(commitApiUrl(config)); request.headers = requestHeaders(token, true);
+  let body;
+  try { body = await request.loadJSON(); }
+  catch (error) {
+    const status = request.response && request.response.statusCode;
+    if (status === 403 || status === 429) throw new Error("GitHub rate limit reached; configure mf885_github_token or retry later");
+    throw new Error(`GitHub commit lookup failed${status ? ` (HTTP ${status})` : ""}: ${error}`);
+  }
+  const status = request.response && request.response.statusCode;
+  if (status && (status < 200 || status >= 300)) throw new Error(`GitHub commit lookup HTTP failure (${status})`);
+  return assertSha(body && body.sha);
+}
+
+async function loadJson(url, token) { const r = new Request(url); r.headers = requestHeaders(token, false); try { return await r.loadJSON(); } catch (e) { throw new Error(`Manifest loading failed: ${e}`); } }
+async function loadString(url, token) { const r = new Request(url); r.headers = requestHeaders(token, false); try { return await r.loadString(); } catch (e) { throw new Error(`Artifact download failed: ${e}`); } }
+function validateLoader(code) { if (typeof code !== "string" || code.trim().length < 100 || !code.includes(MARKER)) throw new Error("Downloaded loader is empty, invalid, or lacks the stable marker"); }
+
+function discoverLoader() {
+  if (typeof Script === "undefined" || typeof Script.name !== "function") return null;
+  const name = Script.name();
+  for (const fm of [FileManager.local(), FileManager.iCloud()]) {
+    const path = fm.joinPath(fm.documentsDirectory(), `${name}.js`);
+    try {
+      if (fm.fileExists(path)) {
+        const content = fm.readString(path);
+        if (content.includes(MARKER)) return { fm, path, content, backupPath: `${path}.mf885-backup` };
+      }
+    } catch (_) { /* try the other Scriptable storage provider */ }
+  }
+  return null;
+}
+
+async function replaceLoader(loader, code) {
+  const { fm, path, backupPath } = loader; const temp = `${path}.mf885-staging`;
+  validateLoader(code); removeIfExists(fm, temp); fm.writeString(temp, code); validateLoader(fm.readString(temp));
+  try {
+    removeIfExists(fm, backupPath); fm.copy(path, backupPath);
+    if (!fm.fileExists(backupPath)) throw new Error("loader backup was not created");
+    fm.remove(path); fm.move(temp, path); validateLoader(fm.readString(path));
+  } catch (error) {
+    removeIfExists(fm, temp);
+    if (fm.fileExists(backupPath)) { removeIfExists(fm, path); fm.copy(backupPath, path); }
+    throw new Error(`Loader replacement failed and rollback was attempted: ${error}`);
   }
 }
+
+function recoverInterruptedLoader(loader, stateFm, statePath, state) {
+  if (!state || state.status !== "pending-restart") return state;
+  if (loader && loader.content.includes(MARKER)) return state;
+  const backup = state.loaderBackup;
+  if (backup && loader && loader.fm.fileExists(backup)) {
+    removeIfExists(loader.fm, loader.path); loader.fm.copy(backup, loader.path);
+    console.log("[Sync] Interrupted loader replacement rolled back from the last known-good backup.");
+    return state;
+  }
+  console.log("[Sync warning] Pending loader replacement cannot be verified; restore the .mf885-backup file or reinstall loader.js manually.");
+  return state;
+}
+
+function readConfig(fm, path) {
+  if (!fm.fileExists(path)) { fm.writeString(path, JSON.stringify(DEFAULT_CONFIG, null, 2)); return { ...DEFAULT_CONFIG }; }
+  try { return { ...DEFAULT_CONFIG, ...JSON.parse(fm.readString(path)) }; } catch (_) { console.log("[Sync warning] Configuration is corrupt; defaults are in memory only. Repair mf885-smsreader-config.json."); return { ...DEFAULT_CONFIG }; }
+}
+function readState(fm, path) { try { if (!fm.fileExists(path)) return null; const s = JSON.parse(fm.readString(path)); return validState(s) ? s : null; } catch (_) { return null; } }
+function writeStateAtomic(fm, path, state) { if (!validState(state)) throw new Error("Refusing to persist invalid synchronization state"); const temp = `${path}.tmp`; fm.writeString(temp, JSON.stringify(state, null, 2)); if (fm.fileExists(path)) fm.remove(path); fm.move(temp, path); }
+function applicationExists(fm, root, manifest) { try { return manifest.files.every(p => { const file = safeDestination(fm, root, p); return fm.fileExists(file) && fm.readString(file).trim().length > 0; }); } catch (_) { return false; } }
+function safeDestination(fm, root, path) { if (!safeRelativePath(path)) throw new Error(`Unsafe manifest path: ${path}`); return fm.joinPath(root, path); }
+function ensureDirectory(fm, path) { if (path && !fm.fileExists(path)) fm.createDirectory(path, true); }
+function removeIfExists(fm, path) { if (fm.fileExists(path)) fm.remove(path); }
+async function downloadICloud(fm, path) { if (fm.isFileDownloaded && !fm.isFileDownloaded(path)) await fm.downloadFileFromiCloud(path); }
+async function showMessage(title, message) { const a = new Alert(); a.title = title; a.message = message; a.addAction("OK"); await a.presentAlert(); }
+
+const exported = { SHA_RE, LOADER_PROTOCOL, commitApiUrl, rawBaseUrl, artifactUrls, assertSha, safeRelativePath, validateManifest, validState, synchronizationNeeded, requestHeaders, abbreviate };
+if (typeof module !== "undefined" && module.exports) module.exports = exported;
+if (typeof Script !== "undefined" && typeof FileManager !== "undefined") main().catch(error => { console.log(`[Router/startup error] ${error}`); throw error; });
