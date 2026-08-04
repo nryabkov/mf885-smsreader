@@ -175,7 +175,8 @@ async function getAuthChallenge() {
   req.headers = baseHeaders();
   try { await req.loadString(); } catch (_) {}
   const headers = req.response ? req.response.headers : {};
-  const challenge = headers["WWW-Authenticate"] || headers["www-authenticate"];
+  const challengeKey = Object.keys(headers).find(key => key.toLowerCase() === "www-authenticate");
+  const challenge = challengeKey ? headers[challengeKey] : undefined;
   if (!challenge) throw new Error("No authentication challenge. Check the ZMI Wi-Fi connection and router address.");
   const realm = digestValue(challenge, "realm");
   const nonce = digestValue(challenge, "nonce");
