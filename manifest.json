@@ -6,6 +6,7 @@
   "entry": "scriptable.js",
   "files": [
     "scriptable.js",
-    "modules/ussd.js"
+    "modules/ussd.js",
+    "modules/device-access.js"
   ]
 }
