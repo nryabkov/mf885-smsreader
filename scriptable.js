@@ -89,6 +89,17 @@ async function loadModel(auth) {
 }
 
 async function sendFlow(auth) {
+  const inlineTo = String(QUERY.to || "").trim();
+  const inlineText = String(QUERY.text || "").trim();
+  const inlineTab = INITIAL_TAB || "sms";
+  if (inlineTo || inlineText) {
+    if (!inlineTo) return dashboardFlow(auth, "Ошибка: укажите номер получателя", inlineTab);
+    if (!inlineText) return dashboardFlow(auth, "Ошибка: введите текст SMS", inlineTab);
+    if (inlineText.length > 1000) return dashboardFlow(auth, "Ошибка: текст SMS слишком длинный", inlineTab);
+    const result = parseSendResult(await sendSms(auth, inlineTo, inlineText));
+    if (!result.ok) return dashboardFlow(auth, `Ошибка отправки SMS: ${result.message}`, inlineTab);
+    return dashboardFlow(auth, `SMS отправлено на ${inlineTo}`, inlineTab);
+  }
   const alert = new Alert();
   alert.title = "Send SMS";
   alert.message = "Enter the recipient number and message text.";
@@ -103,27 +114,28 @@ async function sendFlow(auth) {
   if (!text) throw new Error("SMS text is missing");
   const result = parseSendResult(await sendSms(auth, to, text));
   if (!result.ok) throw new Error(result.message);
-  return dashboardFlow(auth, `The router accepted the SMS to ${to}`);
+  return dashboardFlow(auth, `The router accepted the SMS to ${to}`, "sms");
 }
 
 async function deleteFlow(auth) {
   const id = String(QUERY.id || "").trim();
-  if (!id) throw new Error("The SMS identifier is missing");
-
-  const alert = new Alert();
-  alert.title = "Delete this SMS?";
-  alert.message = "The message will be permanently removed from the router.";
-  alert.addDestructiveAction("Delete SMS");
-  alert.addCancelAction("Cancel");
-  if ((await alert.present()) === -1) return dashboardFlow(auth, "", "sms");
+  if (!id) return dashboardFlow(auth, "Ошибка: не найден идентификатор SMS", "sms");
 
   const result = await deleteSms(auth, id);
-  if (!result.ok) throw new Error(result.message);
-  return dashboardFlow(auth, "SMS deleted", "sms");
+  if (!result.ok) return dashboardFlow(auth, `Ошибка удаления SMS: ${result.message}`, "sms");
+  return dashboardFlow(auth, "SMS удалено", "sms");
 }
 
 async function ussdFlow(auth) {
   const capability = await detectUssdCapability(auth);
+  const inlineCode = String(QUERY.code || "").trim();
+  const inlineTab = INITIAL_TAB || "sms";
+  if (inlineCode) {
+    if (inlineCode.length > 128) return dashboardFlow(auth, "Ошибка: USSD-код слишком длинный", inlineTab);
+    const result = await executeUssd(auth, capability, inlineCode);
+    const detail = DEBUG && result.diagnostics ? `${result.message} (${result.diagnostics})` : result.message;
+    return dashboardFlow(auth, `${result.ok ? "USSD" : "Ошибка USSD"}: ${detail}`, inlineTab);
+  }
   const alert = new Alert();
   alert.title = "Send USSD";
   alert.message = capability.supported
@@ -140,7 +152,7 @@ async function ussdFlow(auth) {
   const detail = DEBUG && result.diagnostics
     ? `${result.message}\n\n${result.diagnostics}`
     : result.message;
-  return showMessage(result.title, detail, result.ok ? "📟" : "⚠️");
+  return dashboardFlow(auth, `${result.title}: ${detail}`, "router");
 }
 
 async function deviceAccessFlow(auth) {
@@ -460,7 +472,7 @@ function parseBattery(xml) {
   const percent = firstNumber(source, ["Battery_percent", "battery_percent", "battery_value"]);
   const status = firstText(source, ["Battery_status", "battery_status", "Charger_status"]);
   const charging = /charg|adapter|usb|plug|online/i.test(status);
-  return { percent: percent === null ? null : Math.min(100, percent), charging, status: status || "Status unavailable" };
+  return { percent: percent === null ? null : Math.min(100, percent), charging, status: batteryStatusLabel(status, charging), rawStatus: status || "" };
 }
 function parseNetwork(xml) {
   const wan = tag(xml, "wan") || xml;
@@ -476,9 +488,18 @@ function parseNetwork(xml) {
   const pci = firstText(cellular, ["pci", "PCI", "psc"]);
   return { operator, mode, rawMode, bars, dbm, lac, tac: lac, cellId, pci, quality: signalQuality(bars, dbm) };
 }
+function batteryStatusLabel(value, charging) {
+  const text = String(value || "").trim();
+  const lower = text.toLowerCase();
+  if (/full|complete|100/.test(lower) || text === "3") return "Полная";
+  if (charging || /charg|adapter|usb|plug|online/.test(lower) || text === "2") return "Заряжается";
+  if (/battery|discharg|offline/.test(lower) || text === "1") return "Работает от батареи";
+  return "Неизвестно";
+}
 function normalizeNetworkMode(value) {
   const text = String(value || "").trim();
-  if (!text) return "Unknown";
+  if (!text) return "Неизвестен";
+  if (/^\d+$/.test(text)) return "Неизвестен";
   if (/\b(lte|4g)\b/i.test(text)) return /lte/i.test(text) ? "LTE" : "4G";
   if (/\b(5g|nr)\b/i.test(text)) return "5G";
   if (/\b(3g|umts|hspa|wcdma)\b/i.test(text)) return "3G";
@@ -488,7 +509,7 @@ function normalizeNetworkMode(value) {
 function signalQuality(bars, dbm) {
   if (bars !== null && bars !== undefined) return bars >= 4 ? "Отличный" : bars >= 3 ? "Хороший" : bars >= 1 ? "Слабый" : "Нет сигнала";
   if (dbm !== null && dbm !== undefined) return dbm >= -75 ? "Отличный" : dbm >= -90 ? "Хороший" : dbm >= -105 ? "Слабый" : "Очень слабый";
-  return "Неизвестно";
+  return "Нет данных";
 }
 function formatBytes(bytes) { if (bytes === null || !Number.isFinite(bytes)) return "—"; if (!bytes) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), 4); return `${(bytes / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${units[i]}`; }
 
@@ -537,30 +558,39 @@ function buildHtml(model) {
   const battery = model.battery || {}; const network = model.network || {}; const traffic = model.traffic || {};
   const updated = new Date(model.loadedAt || Date.now()).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const smsCount = model.sms && model.sms.messages ? model.sms.messages.length : 0;
-  const topCards = `<section class="topgrid">
-    <article class="mini accent-cyan"><span>Сигнал</span><strong>${escapeHtml(network.mode || "—")}</strong><small>${escapeHtml(network.quality || "Неизвестно")} ${network.bars === null || network.bars === undefined ? "" : "· " + network.bars + "/5"}</small></article>
-    <article class="mini accent-blue"><span>Батарея</span><strong>${battery.percent === null || battery.percent === undefined ? "—" : battery.percent + "%"}</strong><small>${battery.charging ? "Заряжается" : escapeHtml(battery.status || "Статус неизвестен")}</small></article>
-    <article class="mini accent-purple"><span>Трафик</span><strong>${formatBytes(traffic.total)}</strong><small>↓ ${formatBytes(traffic.download)} · ↑ ${formatBytes(traffic.upload)}</small></article>
+  const nextUpdate = new Date((model.loadedAt || Date.now()) + POLL_SECONDS * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  const networkLabel = network.quality || "Нет данных";
+  const batteryLabel = battery.percent === null || battery.percent === undefined ? "—" : `${battery.percent}%`;
+  const totalTraffic = formatBytes(traffic.total);
+  const topCards = `<section class="topgrid router-only">
+    <article class="mini"><span>Сигнал</span><strong>${escapeHtml(networkLabel)}</strong><small>${escapeHtml(network.mode || "Режим неизвестен")}${network.rawMode ? ` · Код сети: ${escapeHtml(network.rawMode)}` : ""}</small></article>
+    <article class="mini"><span>Батарея</span><strong>${batteryLabel}</strong><small>${escapeHtml(battery.status || "Неизвестно")}</small></article>
+    <article class="mini"><span>Трафик</span><strong>${totalTraffic}</strong><small>Скачано: ${formatBytes(traffic.download)} · Отправлено: ${formatBytes(traffic.upload)}</small></article>
   </section>`;
   const smsCards = smsCount ? model.sms.messages.map((item, index) => {
     const key = escapeHtml(String(item.id || smsKey(item) || index));
-    return `<article class="card sms" data-msg-id="${key}" data-msg-text="${escapeHtml(item.content)}"><header><div><small>Сообщение #${escapeHtml(item.row || index + 1)}</small><h3>${escapeHtml(item.phone || "Неизвестный отправитель")}</h3></div><time>${escapeHtml(item.date || "Время неизвестно")}</time></header><p class="body">${escapeHtml(item.content || "")}</p><div class="translation" data-translation>Перевод: <span>…</span></div><footer><button onclick="copySms(this)">Копировать</button><button onclick="translateSms(this)">Перевести</button><a class="danger" href="${runUrl("delete", "sms", { id: item.id })}">Удалить</a></footer></article>`;
+    return `<article class="card sms" data-msg-id="${key}" data-msg-text="${escapeHtml(item.content)}"><header><div><h3>${escapeHtml(item.phone || "Неизвестный отправитель")}</h3><small>SMS #${escapeHtml(item.row || index + 1)}</small></div><time>${escapeHtml(item.date || "Время неизвестно")}</time></header><p class="body">${escapeHtml(item.content || "")}</p><div class="translation" data-translation><span></span></div><footer><button onclick="copySms(this)">Копировать</button><button onclick="translateSms(this)">Перевести</button><a class="danger" data-action="delete" href="${runUrl("delete", "sms", { id: item.id })}">Удалить</a></footer></article>`;
   }).join("") : `<article class="card empty"><h2>SMS не найдены</h2><p>${escapeHtml(model.errors.sms || "Входящие сообщения отсутствуют.")}</p></article>`;
-  const codes = [network.lac ? `LAC/TAC ${escapeHtml(network.lac)}` : "", network.cellId ? `Cell ${escapeHtml(network.cellId)}` : "", network.pci ? `PCI ${escapeHtml(network.pci)}` : ""].filter(Boolean).join(" · ");
+  const codes = [network.rawMode ? `Код сети: ${escapeHtml(network.rawMode)}` : "", network.lac ? `LAC/TAC ${escapeHtml(network.lac)}` : "", network.cellId ? `Cell ${escapeHtml(network.cellId)}` : "", network.pci ? `PCI ${escapeHtml(network.pci)}` : ""].filter(Boolean).join(" · ");
+  const baseRun = `scriptable:///run?scriptName=${encodeURIComponent(Script.name())}`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>ZMI Router</title><style>${css()}</style></head>
-  <body><main><header class="hero"><small>ZMI ROUTER</small><h1>MF855 / MF885</h1><p>Панель SMS и роутера</p>${topCards}<nav class="seg"><button data-tab-button="sms" onclick="tab('sms')">SMS (${smsCount})</button><button data-tab-button="router" onclick="tab('router')">Роутер</button></nav><section class="refresh card"><div><small>Автообновление</small><h2 id="countdown">Следующий опрос через --:--</h2><p>Интервал: ${POLL_SECONDS} сек · Обновлено: ${escapeHtml(updated)}</p><p>Сеть: ${model.errors.status ? "ошибка" : "обновлена"} · Трафик: ${traffic.total === null || traffic.total === undefined ? "нет данных" : "обновлен"} · SMS: ${model.errors.sms ? "ошибка" : "обновлены"}</p></div><div class="actions"><button onclick="refreshNow()">Сейчас</button><button id="pauseBtn" onclick="togglePause()">Пауза</button></div></section></header>
-  ${model.notice ? `<div class="notice">✓ ${escapeHtml(model.notice)}</div>` : ""}
-    <section id="sms" class="tab"><article class="card smsSummary"><small>Входящие SMS</small><h2>${smsCount}</h2><p>Загружено страниц: ${escapeHtml(model.sms.loadedPages || 0)}</p><a class="primary" href="${runUrl("send", "sms")}">Отправить SMS</a></article>${smsCards}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
-    <section id="router" class="tab"><article class="card network"><small>СОТОВАЯ СЕТЬ</small><h2>${escapeHtml(network.mode || "Unknown")}</h2><div class="quality">${escapeHtml(network.quality || "Неизвестно")}</div><p>${escapeHtml(network.operator || "Оператор неизвестен")}</p><p>Уровень: ${network.bars === null || network.bars === undefined ? "—" : network.bars + "/5"} · dBm: ${network.dbm === null || network.dbm === undefined ? "—" : escapeHtml(network.dbm)}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Коды соты недоступны</p>`}</article>
-    <article class="card battery"><small>БАТАРЕЯ</small><h2>${battery.percent === null || battery.percent === undefined ? "—" : battery.percent + "%"}</h2><p>${battery.charging ? "Заряжается" : escapeHtml(battery.status || "Статус неизвестен")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
-    <article class="card traffic"><small>ТРАФИК</small><h2>${formatBytes(traffic.total)}</h2><p>Скачано: ${formatBytes(traffic.download)}</p><p>Загружено: ${formatBytes(traffic.upload)}</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Сбросить трафик</a></article>
-    <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Endpoint detected" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><a class="buttonlike" href="${runUrl("ussd", "router")}">Try USSD</a></article>
-
+  <body><div id="progressbar" class="progressbar" aria-hidden="true"><i></i></div><main><header class="hero compact"><div><h1>MF855 / MF885</h1><strong>SMS: ${smsCount}</strong></div><p class="statusline"><span>📶 ${escapeHtml(networkLabel)}</span><span>🔋 ${batteryLabel}</span><span>⇅ ${totalTraffic}</span><span>⟳ ${escapeHtml(updated.slice(0,5))}</span></p></header>
+  <nav class="seg"><button data-tab-button="sms" onclick="tab('sms')">SMS</button><button data-tab-button="router" onclick="tab('router')">Роутер</button></nav>
+  <section class="refresh"><span id="countdown">Следующее обновление: ${escapeHtml(nextUpdate)}</span><div class="actions"><a id="refreshLink" class="buttonlike" href="${runUrl("dashboard", model.tab)}" onclick="refreshNow(event)">Обновить</a><button id="pauseBtn" onclick="togglePause()">Пауза</button></div></section>
+  ${model.notice ? `<div class="notice">${escapeHtml(model.notice)}</div>` : ""}
+    <section id="sms" class="tab"><div class="inline-toolbar"><button onclick="toggleSmsComposer()">+ SMS</button><button onclick="toggleUssdComposer()">USSD</button></div>
+    <form id="smsComposer" class="composer card" onsubmit="submitSmsInline(event)" hidden><input name="to" placeholder="Кому" autocomplete="tel"><textarea name="text" placeholder="Текст SMS" rows="3" maxlength="1000"></textarea><div><button class="primary" type="submit">Отправить</button><button type="button" onclick="toggleSmsComposer(false)">Отмена</button></div><p class="formStatus" data-status></p></form>
+    <form id="ussdComposer" class="composer card" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Код, например *100#"><div><button class="primary" type="submit">Отправить</button><button type="button" onclick="toggleUssdComposer(false)">Отмена</button></div><p class="formStatus" data-status></p></form>
+    ${smsCards}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
+    <section id="router" class="tab">${topCards}<article class="card network"><small>СОТОВАЯ СЕТЬ</small><h2>${escapeHtml(networkLabel)}</h2><div class="quality">${escapeHtml(network.mode || "Режим неизвестен")}</div><p>${escapeHtml(network.operator || "Оператор неизвестен")}</p><p>Уровень: ${network.bars === null || network.bars === undefined ? "—" : network.bars + "/5"} · dBm: ${network.dbm === null || network.dbm === undefined ? "—" : escapeHtml(network.dbm)}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Коды соты недоступны</p>`}</article>
+    <article class="card battery"><small>БАТАРЕЯ</small><h2>${batteryLabel}</h2><p>${escapeHtml(battery.status || "Неизвестно")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
+    <article class="card traffic"><small>ТРАФИК</small><h2>${totalTraffic}</h2><p>Скачано: ${formatBytes(traffic.download)}</p><p>Отправлено: ${formatBytes(traffic.upload)}</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Сбросить трафик</a></article>
+    <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Доступно" : "Не подтверждено"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button onclick="tab('sms');toggleUssdComposer(true)">USSD</button></article>
     <article class="card"><small>DEVICE ACCESS</small><h2>${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><a class="danger buttonlike" href="${runUrl("deviceAccess", "router")}">Experimental access</a></article>
     <article class="card"><small>ПИТАНИЕ</small><h2>Системные команды</h2><a class="buttonlike" href="${runUrl("reboot", "router")}">Перезапуск</a> <a class="danger buttonlike" href="${runUrl("powerOff", "router")}">Выключить</a></article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
-  <script>var model={tab:${JSON.stringify(model.tab)},poll:${POLL_SECONDS},translateEndpoint:${JSON.stringify(TRANSLATE_ENDPOINT)}};function selectedTab(){return localStorage.zmiTab||model.tab}function runUrl(action,tab){return ${JSON.stringify(runUrl("dashboard", "__TAB__"))}.replace('__TAB__',encodeURIComponent(tab||selectedTab())).replace('action=dashboard','action='+encodeURIComponent(action||'dashboard'))}function tab(id){document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x.id===id)});document.querySelectorAll('[data-tab-button]').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-tab-button')===id)});localStorage.zmiTab=id}tab(model.tab);var remaining=model.poll,timer=null,paused=localStorage.zmiPaused==='1';function drawTimer(){document.getElementById('countdown').textContent=paused?'Автоопрос на паузе':'Следующий опрос через 00:'+String(remaining).padStart(2,'0');document.getElementById('pauseBtn').textContent=paused?'Продолжить':'Пауза'}function tick(){drawTimer();if(paused)return;if(--remaining<=0)location.href=runUrl('dashboard',selectedTab())}function refreshNow(){location.href=runUrl('dashboard',selectedTab())}function togglePause(){paused=!paused;localStorage.zmiPaused=paused?'1':'0';drawTimer()}drawTimer();timer=setInterval(tick,1000);async function copySms(button){var value=button.closest('.sms').querySelector('.body').innerText;var old=button.textContent;try{await navigator.clipboard.writeText(value);button.textContent='Скопировано'}catch(e){button.textContent='Ошибка'}setTimeout(function(){button.textContent=old},1500)}async function translateSms(button){var card=button.closest('.sms'),box=card.querySelector('[data-translation] span'),text=card.getAttribute('data-msg-text')||'';var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text;if(!text){box.textContent='Нет текста для перевода';return}var cached=localStorage.getItem(key);if(cached){box.textContent=cached;return}var old=button.textContent;button.textContent='…';try{if(model.translateEndpoint){var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})});if(!res.ok)throw new Error('HTTP '+res.status);var data=await res.json();var tr=data.translatedText||data.translation||'';if(!tr)throw new Error('Empty translation');localStorage.setItem(key,tr);box.textContent=tr}else{await navigator.clipboard.writeText(text);box.textContent='Текст скопирован. Откройте приложение «Перевод» на iPhone и вставьте его.'}}catch(e){box.textContent=model.translateEndpoint?'Перевод недоступен':'Не удалось скопировать текст для перевода'}button.textContent=old}</script></body></html>`;
+  <script>var model={tab:${JSON.stringify(model.tab)},poll:${POLL_SECONDS},baseRun:${JSON.stringify(baseRun)},translateEndpoint:${JSON.stringify(TRANSLATE_ENDPOINT)}};var remaining=model.poll,paused=false,timer=null;function selectedTab(){try{return localStorage.zmiTab||model.tab}catch(e){return model.tab}}function runUrl(action,tab,params){var q=new URLSearchParams();q.set('action',action||'dashboard');q.set('tab',tab||selectedTab());if(params){Object.keys(params).forEach(function(k){q.set(k,params[k])})}return model.baseRun+'&'+q.toString()}function tab(id){document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x.id===id)});document.querySelectorAll('[data-tab-button]').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-tab-button')===id)});try{localStorage.zmiTab=id}catch(e){}var link=document.getElementById('refreshLink');if(link)link.href=runUrl('dashboard',id)}function fmt(s){s=Math.max(0,s|0);return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}function drawTimer(){var c=document.getElementById('countdown'),p=document.getElementById('pauseBtn');if(c)c.textContent=paused?'На паузе':'Следующее обновление: '+fmt(remaining);if(p)p.textContent=paused?'Продолжить':'Пауза'}function tick(){if(!paused){remaining-=1;if(remaining<=0){window.location.href=runUrl('dashboard',selectedTab());return}}drawTimer()}function startProgress(label){var bar=document.getElementById('progressbar');if(bar)bar.classList.add('active');if(label)label.textContent='Выполняю…'}function refreshNow(e){if(e)e.preventDefault();var link=document.getElementById('refreshLink');startProgress(link);window.location.href=runUrl('dashboard',selectedTab())}function togglePause(){paused=!paused;try{localStorage.zmiPaused=paused?'1':'0'}catch(e){}drawTimer()}function toggleSmsComposer(force){var el=document.getElementById('smsComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}function toggleUssdComposer(force){var el=document.getElementById('ussdComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}function submitSmsInline(e){e.preventDefault();var f=e.target,s=f.querySelector('[data-status]'),to=f.elements.to.value.trim(),text=f.elements.text.value.trim();if(!to||!text){s.textContent=!to?'Укажите номер':'Введите текст SMS';return}if(text.length>1000){s.textContent='Текст SMS слишком длинный';return}s.textContent='Отправляю…';startProgress();window.location.href=runUrl('send','sms',{to:to,text:text})}function submitUssdInline(e){e.preventDefault();var f=e.target,s=f.querySelector('[data-status]'),code=f.elements.code.value.trim();if(!code){s.textContent='Введите USSD-код';return}if(code.length>128){s.textContent='USSD-код слишком длинный';return}s.textContent='Отправляю…';startProgress();window.location.href=runUrl('ussd',selectedTab(),{code:code})}function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Удаляю…'})}document.addEventListener('DOMContentLoaded',initDashboard);async function copySms(button){var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body');var value=body?body.innerText:'';var old=button.textContent;try{await navigator.clipboard.writeText(value);button.textContent='Скопировано'}catch(e){button.textContent='Ошибка'}setTimeout(function(){button.textContent=old},1500)}async function translateSms(button){var card=button&&button.closest('.sms'),box=card&&card.querySelector('[data-translation] span'),text=card?card.getAttribute('data-msg-text')||'':'';if(!box)return;var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text;if(!text){box.textContent='Нет текста для перевода';return}var cached=localStorage.getItem(key);if(cached){box.textContent=cached;return}var old=button.textContent;button.textContent='…';try{if(model.translateEndpoint){var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})});if(!res.ok)throw new Error('HTTP '+res.status);var data=await res.json();var tr=data.translatedText||data.translation||'';if(!tr)throw new Error('Empty translation');localStorage.setItem(key,tr);box.textContent=tr}else{await navigator.clipboard.writeText(text);box.textContent='Текст скопирован. Откройте приложение «Перевод» на iPhone и вставьте его.'}}catch(e){box.textContent=model.translateEndpoint?'Перевод недоступен':'Не удалось скопировать текст для перевода'}button.textContent=old}</script></body></html>`;
 }
-function css() { return `:root{color-scheme:dark;--bg:#070b13;--panel:#121a29;--panel2:#182338;--text:#f6f8ff;--muted:#9aa6ba;--line:#ffffff1c;--cyan:#54e8ff;--blue:#5b8cff;--purple:#a855f7;--bad:#fb7185;--good:#34d399}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0%,#17365f 0,#070b13 38%,#05070d 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:env(safe-area-inset-top) 10px 30px}main{max-width:720px;margin:auto}.hero{padding:18px 4px 8px}.hero>small,.card small,.mini span{color:var(--cyan);font-weight:800;letter-spacing:.12em;font-size:11px;text-transform:uppercase}.hero h1{font-size:38px;line-height:1;margin:6px 0}.hero p,.card p,.mini small{color:var(--muted)}.topgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:18px 0}.mini,.card,.notice,.warning{border:1px solid var(--line);border-radius:24px;background:linear-gradient(180deg,#1c2940cc,var(--panel));box-shadow:0 18px 40px #0006;padding:16px;overflow:hidden}.mini{min-height:110px;position:relative}.mini:after{content:'';position:absolute;inset:auto -20px -35px 35%;height:75px;filter:blur(10px);opacity:.55}.accent-cyan:after{background:var(--cyan)}.accent-blue:after{background:var(--blue)}.accent-purple:after{background:var(--purple)}.mini strong{display:block;font-size:25px;margin:12px 0 4px}.seg{display:flex;background:#060a12;border:1px solid var(--line);border-radius:18px;padding:5px;margin:10px 0}.seg button{flex:1}.seg button.active,.primary{background:linear-gradient(90deg,var(--cyan),var(--blue));color:#03111d;border-color:transparent;font-weight:800}button,a,.buttonlike{display:inline-block;border:1px solid var(--line);border-radius:14px;padding:10px 14px;background:#ffffff0d;color:var(--text);text-decoration:none;font:inherit}button:active,a:active{transform:scale(.98)}.danger{color:var(--bad)}.refresh{display:flex;justify-content:space-between;gap:12px;align-items:center}.actions{display:flex;gap:8px;flex-wrap:wrap}.tab{display:none}.tab.active{display:block}.card{margin:12px 0}.card h2{font-size:30px;margin:8px 0}.smsSummary{position:relative}.sms header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.sms h3{margin:4px 0 0}.sms time,.sms footer{color:var(--muted);font-size:12px}.sms .body{white-space:pre-wrap;word-break:break-word;font-size:16px;color:var(--text)}.translation{border-left:3px solid var(--blue);padding-left:10px;color:var(--muted);font-size:14px}.quality{display:inline-block;padding:6px 10px;border-radius:999px;background:#34d39922;color:var(--good)}.codes{font-family:ui-monospace,Menlo,monospace}.bar{height:12px;background:#ffffff14;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--purple),var(--blue),var(--cyan));border-radius:inherit}.notice{color:var(--good)}.warning{color:#fbbf24}.empty{text-align:center}@media(max-width:520px){.topgrid{grid-template-columns:1fr}.hero h1{font-size:34px}.refresh{display:block}.actions{margin-top:12px}}`; }
+function css() { return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#172033;--text:#f8fafc;--muted:#a8b3c7;--line:#253044;--cyan:#67e8f9;--blue:#60a5fa;--purple:#a78bfa;--bad:#fb7185;--good:#34d399}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#101827 0%,var(--bg) 45%,#070b13 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:env(safe-area-inset-top) 10px 30px}main{max-width:720px;margin:auto}.hero{padding:12px 4px 6px}.hero.compact{display:block}.hero h1{font-size:26px;line-height:1;margin:0 0 4px}.hero strong{color:var(--cyan)}.statusline{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0;color:var(--muted);font-size:14px}.statusline span{border:1px solid var(--line);border-radius:999px;padding:5px 8px;background:#0d1424}.hero>small,.card small,.mini span{color:var(--cyan);font-weight:800;letter-spacing:.1em;font-size:10px;text-transform:uppercase}.card p,.mini small{color:var(--muted)}.topgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}.mini,.card,.notice,.warning{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.mini{min-height:86px;position:relative}.mini:after{display:none}.mini strong{display:block;font-size:21px;margin:8px 0 3px}.seg{display:flex;background:#080d18;border:1px solid var(--line);border-radius:14px;padding:4px;margin:8px 0}.seg button{flex:1}.seg button.active,.primary{background:#dff8ff;color:#03111d;border-color:transparent;font-weight:800}button,a,.buttonlike{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:8px 11px;background:#182235;color:var(--text);text-decoration:none;font:inherit}button:active,a:active{transform:scale(.98)}.danger{color:var(--bad)}.refresh{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:8px 0 10px;color:var(--muted);font-size:14px}.actions,.inline-toolbar{display:flex;gap:8px;flex-wrap:wrap}.inline-toolbar{margin:8px 0}.tab{display:none}.tab.active{display:block}.card{margin:8px 0}.card h2{font-size:24px;margin:6px 0}.composer input,.composer textarea{width:100%;margin:0 0 8px;padding:10px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);font:inherit}.formStatus{margin:8px 0 0;color:#fbbf24}.sms{padding:11px;margin:8px 0}.sms header{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;border-bottom:1px solid #253044aa;padding-bottom:7px}.sms h3{margin:0 0 2px;font-size:15px}.sms time,.sms footer{color:var(--muted);font-size:12px}.sms footer{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid #253044aa;padding-top:8px}.sms footer button,.sms footer a{padding:6px 9px;border-radius:10px}.sms .body{white-space:pre-wrap;word-break:break-word;font-size:17px;line-height:1.45;color:#f8fafc;margin:10px 0}.translation{color:var(--muted);font-size:14px}.translation span:empty{display:none}.quality{display:inline-block;padding:6px 10px;border-radius:999px;background:#34d39922;color:var(--good)}.codes{font-family:ui-monospace,Menlo,monospace}.bar{height:10px;background:#ffffff14;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--purple),var(--blue),var(--cyan));border-radius:inherit}.progressbar{position:fixed;left:0;right:0;top:0;height:3px;z-index:1000;background:transparent;overflow:hidden}.progressbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--blue));box-shadow:0 0 16px var(--cyan)}.progressbar.active i{animation:progressStart 1.2s ease-in-out infinite}@keyframes progressStart{0%{width:0;transform:translateX(0)}55%{width:72%;transform:translateX(12%)}100%{width:40%;transform:translateX(160%)}}.notice{color:var(--good);margin:8px 0}.warning{color:#fbbf24}.empty{text-align:center}@media(max-width:520px){.topgrid{grid-template-columns:1fr}.refresh{align-items:flex-start}.actions{justify-content:flex-end}}`; }
 function runUrl(action, tab, parameters = {}) {
   const query = Object.assign({ action, tab: tab || "sms" }, parameters);
   return "scriptable:///run?scriptName=" + encodeURIComponent(Script.name()) +
