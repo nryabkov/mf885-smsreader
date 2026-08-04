@@ -9,8 +9,8 @@ The script does **not** read or send messages through Apple Messages on the iPho
 - Loads every available SMS page, removes duplicate messages, and guards against firmware that repeats pages.
 - Refreshes the dashboard automatically to check for new messages and router status changes.
 - Displays cellular network, signal, battery, and mobile traffic information.
-- Sends SMS messages and provides copy actions in a mobile-friendly WebView.
-- Translates SMS only after tapping **Перевести**. Without an endpoint, the SMS text is copied for manual translation in Apple Translate; with optional `TRANSLATE_ENDPOINT` advanced setup, a LibreTranslate-compatible service returns the translation inline in the SMS card. The dashboard does not start automatic bulk translation when opened.
+- Sends SMS messages and provides copy actions in a mobile-friendly WebView, including a manual selectable fallback when iOS/WebView clipboard access is unavailable.
+- Translates SMS only after tapping **Перевести**. Without an endpoint, there is no automatic translation: the dashboard tries to copy the SMS text for manual use in Apple Translate and shows a selectable fallback if clipboard access fails. With optional `TRANSLATE_ENDPOINT` advanced setup, a LibreTranslate-compatible service returns the translation inline in the SMS card and reports HTTP/JSON/empty-response diagnostics in the WebView status block. The dashboard does not start automatic bulk translation when opened.
 - Deletes individual SMS messages from the router after confirmation.
 - Resets total WAN traffic and provides confirmed restart and power-off controls.
 - Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive.
@@ -76,6 +76,15 @@ Recovery procedures:
 3. **Force a complete synchronization:** remove only the sync-state file (not `mf885-smsreader`), reconnect to the internet, and run the loader. Missing application files also trigger repair automatically.
 4. **Rate limiting:** wait for GitHub's limit to reset or set a GitHub token in Keychain under `mf885_github_token`. Never paste a token into the loader or configuration.
 5. **Offline use:** do nothing destructive. The loader reports the precise sync failure and runs the last complete snapshot. Restore connectivity only when an update is desired.
+
+
+### Copying, translation, and refresh behavior
+
+The WebView contains a reusable action status panel for copy, translation, refresh, and JavaScript diagnostics. If iOS or Scriptable denies `navigator.clipboard`, **Копировать** and the no-endpoint **Перевести** flow show the SMS text in a read-only selectable field so you can copy it manually.
+
+`TRANSLATE_ENDPOINT` is empty by default, so automatic translation is not configured. In that default mode, **Перевести** means “copy for translation”: the script tries to place the SMS text in the clipboard for Apple Translate. To get inline automatic translation, configure a LibreTranslate-compatible endpoint in `scriptable.js`; endpoint failures now include HTTP status, JSON parsing, or empty-response details in the diagnostics panel.
+
+Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. If the screen closes during refresh, open the Scriptable script again.
 
 ## Run instructions
 
