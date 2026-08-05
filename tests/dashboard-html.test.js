@@ -258,6 +258,9 @@ test("network parser normalizes common 4G and 3G firmware mode fields", () => {
   assert.equal(parseNetwork("<RGW><current_network>LTE TDD</current_network></RGW>").mode, "4G · LTE TDD");
   assert.equal(parseNetwork("<RGW><networkMode>LTE-A</networkMode></RGW>").mode, "4G · LTE-A");
   assert.equal(parseNetwork("<RGW><NetworkMode>19</NetworkMode></RGW>").mode, "4G · LTE");
+  const splitModes = parseNetwork("<RGW><network_type>HSPA+ 64QAM</network_type><network_mode>4G</network_mode></RGW>");
+  assert.equal(splitModes.mode, "3G · HSPA+ 64QAM");
+  assert.equal(splitModes.preferredMode, "4G · LTE");
   assert.equal(parseNetwork("<RGW><ps_service_type>HSPA+</ps_service_type></RGW>").mode, "3G · HSPA+");
   assert.equal(parseNetwork("<RGW><accessTechnology>WCDMA</accessTechnology></RGW>").mode, "3G · WCDMA");
   assert.equal(parseNetwork("<RGW><cellular_network_type>EDGE</cellular_network_type></RGW>").mode, "2G · EDGE");
@@ -403,9 +406,9 @@ test("powerAccepted requires explicit firmware acceptance", () => {
   assert.equal(powerAccepted("<RGW><result>0</result></RGW>"), true);
 });
 
-test("router UI shows experimental cellular reconnect and whitelist modes", () => {
+test("router UI shows experimental cellular reconnect and preferred protocol select", () => {
   const data = model("router");
-  data.network = { mode: "4G · LTE", bars: 4 };
+  data.network = { mode: "3G · HSPA+ 64QAM", preferredMode: "4G · LTE", bars: 4 };
   data.cellularControl = { modes: [
     { id: "auto", title: "Automatic" },
     { id: "lteOnly", title: "4G/LTE only" },
@@ -416,12 +419,15 @@ test("router UI shows experimental cellular reconnect and whitelist modes", () =
   const html = buildHtml(data);
 
   assert.match(html, /Reconnect cellular network/);
-  assert.match(html, /Current mode: <strong>4G · LTE<\/strong>/);
+  assert.match(html, /Current network: <strong>3G · HSPA\+ 64QAM<\/strong>/);
+  assert.match(html, /Current preferred protocol: <strong>4G · LTE<\/strong>/);
   assert.match(html, /Experimental cellular controls/);
+  assert.match(html, /<select data-cellular-mode-select>/);
+  assert.match(html, /<option value="lteOnly" selected>4G\/LTE only<\/option>/);
   for (const mode of ["auto", "lteOnly", "ltePreferred", "wcdmaOnly", "gsmOnly"]) {
-    assert.match(html, new RegExp(`action=cellularMode[^\"]*mode=${mode}`));
-    assert.match(html, new RegExp(`data-cellular-mode="${mode}"`));
+    assert.match(html, new RegExp(`<option value="${mode}"`));
   }
+  assert.doesNotMatch(html, /data-cellular-mode="lteOnly"/);
 });
 
 test("client cellular confirmation adds final confirm URL only after inline prompt", () => {
@@ -430,7 +436,8 @@ test("client cellular confirmation adds final confirm URL only after inline prom
   assert.match(script, /showCellularConfirm/);
   assert.match(script, /runUrl\('cellularMode','router',\{mode:mode,confirm:'1'\}\)/);
   assert.match(script, /runUrl\('cellularReconnect','router',\{confirm:'1'\}\)/);
-  assert.match(script, /\[data-cellular-action\],\[data-cellular-mode\]/);
+  assert.match(script, /data-cellular-mode-select/);
+  assert.match(script, /addEventListener\('change'/);
   assert.doesNotThrow(() => new Function(script));
 });
 
