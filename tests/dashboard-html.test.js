@@ -147,3 +147,34 @@ test("SMS parser treats total_number as messages and fingerprints repeated pages
   const fingerprint = smsEdgeFingerprint(page, null, page.totalPages, page.totalMessages);
   assert.equal(unchangedSms({ fingerprint, totalPages: null, totalMessages: 42 }, { fingerprint, totalPages: null, totalMessages: 42 }), true);
 });
+
+test("dangerous primary actions use local WebView confirmation", () => {
+  const html = buildHtml(model("router"));
+
+  assert.match(html, /data-power-action="reboot"/);
+  assert.match(html, /data-power-action="powerOff"/);
+  assert.match(html, /data-power-action="resetTraffic"/);
+  assert.doesNotMatch(html, /<a[^>]+href="scriptable:\/\/\/run\?[^\"]*action=(?:reboot|powerOff|resetTraffic)[^\"]*confirm=1/);
+  assert.doesNotMatch(html, /<a[^>]+href="scriptable:\/\/\/run\?[^\"]*confirm=1[^\"]*action=(?:reboot|powerOff|resetTraffic)/);
+});
+
+test("client script contains inline confirm flow for power and traffic actions", () => {
+  const script = clientScript(model("router"), "scriptable:///run?scriptName=MF885%20Test");
+
+  assert.match(script, /function showInlineConfirm/);
+  assert.match(script, /data-power-action/);
+  assert.match(script, /data-final-confirm/);
+  assert.match(script, /runUrl\(action,'router',\{confirm:'1'\}\)/);
+  assert.match(script, /\\u0422\\u043e\\u0447\\u043d\\u043e \\u043f/);
+  assert.match(script, /\\u0422\\u043e\\u0447\\u043d\\u043e \\u0432/);
+  assert.match(script, /\\u0441\\u0447\\u0451\\u0442\\u0447\\u0438\\u043a/);
+});
+
+test("powerAccepted requires explicit firmware acceptance", () => {
+  const { powerAccepted } = require("../scriptable.js");
+
+  assert.equal(powerAccepted("<RGW></RGW>"), false);
+  assert.equal(powerAccepted(""), false);
+  assert.equal(powerAccepted("<RGW><status>0</status></RGW>"), true);
+  assert.equal(powerAccepted("<RGW><result>0</result></RGW>"), true);
+});

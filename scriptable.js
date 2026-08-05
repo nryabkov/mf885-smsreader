@@ -37,7 +37,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, parseDigestChallenge, buildHtml, clientScript, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml };
+module.exports = { run, parseDigestChallenge, buildHtml, clientScript, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, powerAccepted };
 
 async function main() {
   try {
@@ -59,12 +59,12 @@ async function main() {
 // Application flows
 function normalizeNotice(notice) {
   if (!notice) return null;
-  if (typeof notice === "object") return { text: String(notice.text || ""), type: ["success", "warning", "error"].includes(notice.type) ? notice.type : "success" };
-  return { text: String(notice), type: "success" };
+  if (typeof notice === "object") return { text: String(notice.text || ""), type: ["success", "warning", "error"].includes(notice.type) ? notice.type : "success", diagnostics: sanitizeDiagnostics(notice.diagnostics || "") };
+  return { text: String(notice), type: "success", diagnostics: "" };
 }
-function successNotice(text) { return { text, type: "success" }; }
-function warningNotice(text) { return { text, type: "warning" }; }
-function errorNotice(text) { return { text, type: "error" }; }
+function successNotice(text, diagnostics = "") { return { text, type: "success", diagnostics }; }
+function warningNotice(text, diagnostics = "") { return { text, type: "warning", diagnostics }; }
+function errorNotice(text, diagnostics = "") { return { text, type: "error", diagnostics }; }
 
 async function dashboardFlow(auth, notice = "", tab = "sms") {
   const model = await loadModel(auth);
@@ -179,34 +179,35 @@ async function resetTrafficFlow(auth) {
 async function powerFlow(auth, kind) {
   const reboot = kind === "reboot";
   if (String(QUERY.confirm || "") !== "1") {
-    return dashboardFlow(auth, warningNotice(reboot ? "Confirm router restart. This action will reopen the script." : "Confirm router power off. This action will reopen the script."), "router");
+    return dashboardFlow(auth, warningNotice(reboot ? "Confirm router restart in the WebView first." : "Confirm router power off in the WebView first."), "router");
   }
 
   const diagnostics = [];
+  let uncertain = false;
   for (const attempt of powerAttempts(kind)) {
     try {
       const response = await attempt.run(auth);
       diagnostics.push(powerDiagnostic(attempt, response, null));
-      if (powerAccepted(response)) {
+      const result = powerResponseResult(response);
+      if (result === "accepted") {
         return dashboardFlow(auth, successNotice(reboot
           ? "Команда перезапуска подтверждена прошивкой; временная потеря связи ожидаема."
-          : "Команда выключения подтверждена прошивкой; включение возможно физической кнопкой."), "router");
+          : "Команда выключения подтверждена прошивкой; включение возможно физической кнопкой.", diagnostics.join("\n")), "router");
       }
+      if (result === "unknown") uncertain = true;
     } catch (error) {
       diagnostics.push(powerDiagnostic(attempt, "", error));
-      if (possiblePowerNetworkLoss(error)) {
-        return dashboardFlow(auth, successNotice(reboot
-          ? "Connection to the router was lost; reboot likely started."
-          : "Connection to the router was lost; shutdown likely started."), "router");
-      }
+      if (possiblePowerNetworkLoss(error)) uncertain = true;
     }
   }
 
+  if (uncertain) {
+    return dashboardFlow(auth, warningNotice("Команда могла быть отправлена, но подтверждение не получено; проверьте состояние роутера.", diagnostics.join("\n")), "router");
+  }
   const message = reboot
     ? "Прошивка не подтвердила команду перезагрузки"
     : "Прошивка не подтвердила команду выключения";
-  const detail = DEBUG ? `${message}: ${diagnostics.join(" | ")}` : message;
-  return dashboardFlow(auth, errorNotice(detail), "router");
+  return dashboardFlow(auth, errorNotice(message, diagnostics.join("\n")), "router");
 }
 
 function trafficResetConfirmed(oldTotal, newTotal) {
@@ -218,21 +219,26 @@ function possiblePowerNetworkLoss(error) { return /time|timeout|network|connecti
 
 function powerAttempts(kind) {
   const reboot = kind === "reboot";
-  const xmlFiles = reboot
-    ? ["reset", "reboot", "system", "device", "power"]
-    : ["shutdown", "poweroff", "power_off", "system", "device", "power"];
-  const routerMethods = reboot
-    ? ["reset", "reboot"]
-    : ["shutdown", "poweroff", "power_off"];
-  const routerPaths = ["system", "device", "power"];
-  const attempts = xmlFiles.map(file => {
+  const likelyXmlFiles = reboot ? ["device_management", "reset", "reboot"] : ["device_management", "shutdown", "poweroff"];
+  const fallbackXmlFiles = reboot ? ["system", "device", "power"] : ["power_off", "system", "device", "power"];
+  const routerMethods = reboot ? ["reset", "reboot"] : ["shutdown", "poweroff", "power_off"];
+  const routerPaths = ["device_management", "system", "device", "power"];
+  const attempts = [];
+  for (const file of likelyXmlFiles.concat(fallbackXmlFiles)) {
     const field = powerField(kind, file);
     const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><${file}><${field}>1</${field}></${file}></RGW>`;
-    return { name: file, type: "xmlRequest", run: auth => xmlRequest(auth, "POST", file, xml, false) };
-  });
+    attempts.push({
+      name: file,
+      type: "xmlRequest",
+      endpoint: `xml_action.cgi?method=set&module=duster&file=${file}`,
+      xmlRoot: file,
+      xmlField: field,
+      run: auth => xmlRequest(auth, "POST", file, xml, false)
+    });
+  }
   for (const path of routerPaths) {
     for (const method of routerMethods) {
-      attempts.push({ name: `${path}.${method}`, type: "routerCall", run: auth => routerCall(auth, path, method) });
+      attempts.push({ name: `${path}.${method}`, type: "routerCall", objPath: path, objMethod: method, run: auth => routerCall(auth, path, method) });
     }
   }
   return attempts;
@@ -246,18 +252,31 @@ function powerField(kind, file) {
 }
 
 function powerDiagnostic(attempt, response, error) {
-  const prefix = `${attempt.type}:${attempt.name}`;
-  if (error) return `${prefix} error=${compactDebug(cleanError(error), 500)}`;
-  return `${prefix} response=${compactDebug(response, 500) || "<empty>"}`;
+  const target = attempt.type === "routerCall"
+    ? `routerCall obj_path=${attempt.objPath} obj_method=${attempt.objMethod}`
+    : `${attempt.endpoint} root=${attempt.xmlRoot} field=${attempt.xmlField}`;
+  if (error) return `${target} error=${compactDebug(cleanError(error), 500)}`;
+  return `${target} response=${compactDebug(response, 500) || "<empty>"}`;
 }
 
-function powerAccepted(xml) {
+function powerResponseResult(xml) {
   const text = String(xml || "");
   const lower = text.toLowerCase();
-  if (!lower.trim()) return false;
-  if (/unauthorized|error|fail|denied|not\s*support|unsupported|unknown\s+file|invalid\s+file/.test(lower)) return false;
-  if (/<status>\s*(?:[2-5]|-1)\s*<\/status>/i.test(text)) return false;
-  return /<rgw\b/i.test(text) || /success|accepted|ok/i.test(text) || /<status>\s*0\s*<\/status>/i.test(text) || /<result>\s*0\s*<\/result>/i.test(text);
+  if (!lower.trim()) return "unknown";
+  if (/unauthorized|error|fail|denied|not\s*support|unsupported|unknown\s+file|invalid\s+file/.test(lower)) return "rejected";
+  if (/<status>\s*(?:[2-5]|-1)\s*<\/status>/i.test(text) || /<result>\s*(?:[2-5]|-1)\s*<\/result>/i.test(text)) return "rejected";
+  if (/<status>\s*0\s*<\/status>/i.test(text) || /<result>\s*0\s*<\/result>/i.test(text)) return "accepted";
+  if (/success|accepted|\bok\b/i.test(text)) return "accepted";
+  return "unknown";
+}
+
+function powerAccepted(xml) { return powerResponseResult(xml) === "accepted"; }
+function sanitizeDiagnostics(value) {
+  return String(value || "")
+    .replace(/(password|passwd|pwd)=[^\s&|]+/ig, "$1=<redacted>")
+    .replace(/(response=)[0-9a-f]{16,}/ig, "$1<redacted>")
+    .replace(/(authorization:\s*Digest[^\n]*)/ig, "Authorization: <redacted>")
+    .replace(/(nonce=)[^\s,&|]+/ig, "$1<redacted>");
 }
 
 // Digest authentication and router API
@@ -723,7 +742,7 @@ function buildHtml(model) {
   const batteryInline = batteryInlineLabel(battery);
   const totalTraffic = formatBytes(traffic.total);
   const notice = normalizeNotice(model.notice);
-  const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}</div>` : "";
+  const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}${notice.diagnostics ? `<details><summary>Diagnostics</summary><textarea rows="7" readonly>${escapeHtml(notice.diagnostics)}</textarea><pre>${escapeHtml(notice.diagnostics)}</pre></details>` : ""}</div>` : "";
   const signalHtml = signalBarsHtml(network);
   const topCards = `<section class="topgrid router-only">
     <article class="mini"><span>Signal</span><strong>${signalHtml}</strong><small>${escapeHtml(network.networkError || network.mode || "Unknown")}${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</small></article>
@@ -740,9 +759,8 @@ function buildHtml(model) {
   const pendingDeviceAction = ACTION === "deviceAccess" ? (model.deviceAccess.capabilities || []).find(action => action.id === String(QUERY.deviceAction || "")) : null;
   const deviceConfirm = pendingDeviceAction && String(QUERY.confirm || "") !== "1"
     ? `<div class="warning"><strong>Confirm experimental action: ${escapeHtml(pendingDeviceAction.title)}</strong><p>ADB, Telnet, and shell commands are experimental firmware/debug actions and may be unsupported or ignored. This action will reopen the script. ${escapeHtml(pendingDeviceAction.description || "The command may change router state.")}</p><a class="danger buttonlike" href="${runUrl("deviceAccess", "router", { deviceAction: pendingDeviceAction.id, confirm: "1" })}">Confirm</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Cancel</a></div>` : "";
-  const resetTrafficConfirm = ACTION === "resetTraffic" && String(QUERY.confirm || "") !== "1" ? `<div class="warning"><strong>Reset total traffic?</strong><p>Only the total mobile WAN counters will be reset. This action will reopen the script.</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router", { confirm: "1" })}">Confirm</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Cancel</a></div>` : "";
-  const powerConfirm = (ACTION === "reboot" || ACTION === "powerOff") && String(QUERY.confirm || "") !== "1";
-  const powerConfirmCard = powerConfirm ? `<div class="warning"><strong>${ACTION === "reboot" ? "Restart router?" : "Power off router?"}</strong><p>${ACTION === "reboot" ? "Wi‑Fi and mobile internet will be temporarily unavailable." : "The physical power button is required to turn the router on again."} This action will reopen the script.</p><a class="danger buttonlike" href="${runUrl(ACTION, "router", { confirm: "1" })}">Confirm</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Cancel</a></div>` : "";
+  const resetTrafficConfirm = "";
+  const powerConfirmCard = `<div class="warning" data-power-confirm hidden></div>`;
   const baseRun = `scriptable:///run?scriptName=${encodeURIComponent(Script.name())}`;
   const activeTab = model.tab === "router" ? "router" : "sms";
   const smsActive = activeTab === "sms" ? " active" : "";
@@ -760,10 +778,10 @@ function buildHtml(model) {
     ${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
     <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>${escapeHtml(network.networkError || network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}</article>
     <article class="card battery"><small>Battery</small><h2>${escapeHtml(batteryInline)}</h2><p>${escapeHtml(battery.batteryError || battery.status || "Unknown")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
-    <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><p>Session: ↓ ${formatBytes(traffic.sessionDownload)} · ↑ ${formatBytes(traffic.sessionUpload)}${traffic.sessionSeconds !== null && traffic.sessionSeconds !== undefined ? ` · ${escapeHtml(formatDuration(traffic.sessionSeconds))}` : ""}</p>${traffic.trafficError ? `<p class="warning">${escapeHtml(traffic.trafficError)}</p>` : ""}<a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Reset traffic</a>${resetTrafficConfirm}</article>
+    <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><p>Session: ↓ ${formatBytes(traffic.sessionDownload)} · ↑ ${formatBytes(traffic.sessionUpload)}${traffic.sessionSeconds !== null && traffic.sessionSeconds !== undefined ? ` · ${escapeHtml(formatDuration(traffic.sessionSeconds))}` : ""}</p>${traffic.trafficError ? `<p class="warning">${escapeHtml(traffic.trafficError)}</p>` : ""}<button class="danger buttonlike" type="button" data-power-action="resetTraffic">Reset traffic</button>${resetTrafficConfirm}</article>
     <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Available" : "Not confirmed"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button onclick="tab('sms');toggleUssdComposer(true)">Dial USSD</button></article>
     <article class="card"><small>Device access</small><h2>${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar">${deviceActions || "<span>No actions available</span>"}</div>${deviceConfirm}</article>
-    <article class="card"><small>Power</small><h2>System commands</h2><a class="buttonlike" href="${runUrl("reboot", "router")}">Restart</a> <a class="danger buttonlike" href="${runUrl("powerOff", "router")}">Power off</a>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
+    <article class="card"><small>Power</small><h2>System commands</h2><button class="buttonlike" type="button" data-power-action="reboot">Restart</button> <button class="danger buttonlike" type="button" data-power-action="powerOff">Power off</button>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
   <script>${clientScript(model, baseRun)}</script></body></html>`;
 }
 
@@ -795,7 +813,9 @@ function toggleSmsComposer(force){var el=document.getElementById('smsComposer');
 function toggleUssdComposer(force){var el=document.getElementById('ussdComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
 function submitSmsInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),to=f.elements.to.value.trim(),text=f.elements.text.value.trim();if(!to||!text){s.textContent=!to?'Enter a recipient number':'Enter SMS text';return}if(text.length>1000){s.textContent='SMS text is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('send','sms',{to:to,text:text}),'Sending SMS.')}
 function submitUssdInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),code=f.elements.code.value.trim();if(!code){s.textContent='Enter a USSD code';return}if(code.length>128){s.textContent='USSD code is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('ussd',selectedTab(),{code:code}),'Sending USSD.')}
-function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}saveSmsFingerprint();tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';navigateTo(a.href,'This action will reopen the script.')})}
+function powerActionCopy(action){if(action==='reboot')return{title:'Restart router?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u043f\\u0435\\u0440\\u0435\\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u0438\\u0442\\u044c? Wi‑Fi and mobile internet will be temporarily unavailable.'};if(action==='powerOff')return{title:'Power off router?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u0432\\u044b\\u043a\\u043b\\u044e\\u0447\\u0438\\u0442\\u044c? The physical power button is required to turn the router on again.'};return{title:'Reset total traffic?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u0441\\u0431\\u0440\\u043e\\u0441\\u0438\\u0442\\u044c \\u0441\\u0447\\u0451\\u0442\\u0447\\u0438\\u043a \\u0442\\u0440\\u0430\\u0444\\u0438\\u043a\\u0430? Only the total mobile WAN counters will be reset.'}}
+function showInlineConfirm(button){var action=button&&button.getAttribute('data-power-action');if(!action||navigationInProgress)return;var card=button.closest('.card')||button.parentNode;var box=card&&card.querySelector('[data-power-confirm]');if(!box){box=document.createElement('div');box.className='warning';box.setAttribute('data-power-confirm','');card.appendChild(box)}var copy=powerActionCopy(action);box.hidden=false;box.innerHTML='';var strong=document.createElement('strong');strong.textContent=copy.title;var p=document.createElement('p');p.textContent=copy.detail;var final=document.createElement('a');final.className='danger buttonlike';final.href=runUrl(action,'router',{confirm:'1'});final.textContent='Confirm';final.setAttribute('data-final-confirm','1');var cancel=document.createElement('button');cancel.type='button';cancel.className='buttonlike';cancel.textContent='Cancel';cancel.onclick=function(){box.hidden=true};box.appendChild(strong);box.appendChild(p);box.appendChild(final);box.appendChild(document.createTextNode(' '));box.appendChild(cancel);fillActionStatus(copy.title,copy.detail+' Final confirmation will reopen the script.','',true)}
+function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}saveSmsFingerprint();tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var powerButton=e.target&&e.target.closest?e.target.closest('[data-power-action]'):null;if(powerButton){e.preventDefault();showInlineConfirm(powerButton);return}var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';var final=a.getAttribute('data-final-confirm')==='1';navigateTo(a.href,final?'Final confirmation. This action will reopen the script.':'This action will reopen the script.')})}
 document.addEventListener('DOMContentLoaded',initDashboard);
 async function copySms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body');var value=body?body.innerText:'';var old=button.textContent;if(!navigator.clipboard||!navigator.clipboard.writeText){button.textContent='Manual copy';showActionError('Copy SMS manually','Clipboard is unavailable in this WebView. Select the text below and copy it manually.',value);setTimeout(function(){button.textContent=old},1500);return}button.disabled=true;try{await navigator.clipboard.writeText(value);button.textContent='Copied';setActionStatus('SMS copied to the clipboard.')}catch(e){button.textContent='Error';showActionError('Could not copy SMS',describeError(e),value)}finally{setTimeout(function(){button.textContent=old;button.disabled=false},1500)}}
 async function translateSms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),box=card&&card.querySelector('[data-translation] span'),text=card?card.getAttribute('data-msg-text')||'':'';if(!box)return;var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text;if(!text){box.textContent='No text to translate';return}var cached=localStorage.getItem(key);if(cached){box.textContent=cached;return}var old=button.textContent;button.disabled=true;button.textContent='…';try{if(!model.translateEndpoint){box.textContent='Auto-translation is not configured; trying to copy the text for Apple Translate.';if(!navigator.clipboard||!navigator.clipboard.writeText){showActionError('Copy for translation','Clipboard is unavailable. Select the SMS below and copy it manually for Apple Translate.',text);return}await navigator.clipboard.writeText(text);setActionStatus('Copy for translation: SMS text copied for Apple Translate.');box.textContent='Text copied. Open Apple Translate on iPhone and paste it.';return}var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})});var raw=await res.text();if(!res.ok)throw new Error('HTTP '+res.status+' '+res.statusText+'\\n'+raw);var data;try{data=JSON.parse(raw)}catch(jsonError){throw new Error('HTTP '+res.status+', JSON parse error: '+describeError(jsonError)+'\\nResponse: '+raw)}var tr=data.translatedText||data.translation||'';if(!tr)throw new Error('HTTP '+res.status+', empty translation response: '+raw);localStorage.setItem(key,tr);box.textContent=tr}catch(e){box.textContent=model.translateEndpoint?'Translation is unavailable — details are shown below.':'Could not copy text for translation';showActionError('Could not prepare translation',describeError(e),text)}finally{button.textContent=old;button.disabled=false}}

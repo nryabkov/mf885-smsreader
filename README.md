@@ -86,6 +86,12 @@ The WebView contains a reusable action status panel for copy, translation, refre
 
 Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. If the screen closes during refresh, open the Scriptable script again.
 
+Dangerous router actions now use an inline WebView confirmation before any callback URL is opened. The first tap on **Reset traffic**, **Restart**, or **Power off** only expands a local warning in the current WebView; Scriptable relaunches the script only after the final confirmation button executes the command with `confirm=1`. The application still keeps server-side `confirm=1` checks for these flows as a safety guard.
+
+### Power endpoint diagnostics
+
+Power-off and restart commands vary across MF855/MF885-family firmware builds. If a power command is rejected or the router stops responding before confirmation is received, the dashboard shows copyable diagnostics in the status/notice area. Please send those diagnostics when reporting power-control problems; they include attempted XML endpoints such as `xml_action.cgi?method=set&module=duster&file=device_management`, XML root/field names, and `routerCall` object path/method pairs, while omitting passwords, Digest responses, and sensitive headers. If possible, also include a packet capture from the router's native web UI while using its own restart or shutdown button so the correct firmware endpoint can be matched safely.
+
 ## Run instructions
 
 There is no package manifest or build step in this repository. Run the script directly in Scriptable:
