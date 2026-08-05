@@ -93,6 +93,31 @@ test("client auto refresh uses WebView bridge instead of Scriptable relaunch", (
   assert.doesNotMatch(script, /navigateTo\(runUrl\('dashboard',selectedTab\(\)\),'Automatic refresh\.'\)/);
 });
 
+
+test("dashboard hides Translate button when endpoint is not configured", () => {
+  const html = buildHtml(model("sms"));
+
+  assert.match(html, />Copy</);
+  assert.match(html, />Delete</);
+  assert.doesNotMatch(html, />Translate</);
+});
+
+test("dashboard shows Translate button when endpoint is configured", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "scriptable.js"), "utf8")
+    .replace('const TRANSLATE_ENDPOINT = "";', 'const TRANSLATE_ENDPOINT = "https://translate.example.test";');
+  const sandbox = { module: { exports: {} }, exports: {}, Script: global.Script, args: { queryParameters: {} } };
+
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  const html = sandbox.module.exports.buildHtml(model("sms"));
+
+  assert.match(html, />Copy</);
+  assert.match(html, />Translate</);
+  assert.match(html, />Delete</);
+});
+
 test("dashboard HTML marks SMS tab active without client JavaScript", () => {
   const html = buildHtml(model("sms"));
 
@@ -219,6 +244,17 @@ test("battery parser understands numeric status values independently", () => {
   const chargerDisconnected = parseBattery("<RGW><Battery_percent>55</Battery_percent><Charger_status>0</Charger_status></RGW>");
   assert.equal(chargerDisconnected.state, "discharging");
   assert.equal(chargerDisconnected.status, "Discharging");
+});
+
+
+test("battery status 3 at 92 percent is charging, not full", () => {
+  const { parseBattery } = require("../scriptable.js");
+
+  const parsed = parseBattery("<RGW><Battery_percent>92</Battery_percent><Battery_status>3</Battery_status></RGW>");
+
+  assert.notEqual(parsed.status, "Full");
+  assert.equal(parsed.state, "charging");
+  assert.equal(parsed.status, "Charging");
 });
 
 test("battery parser uses charger and output current details", () => {
