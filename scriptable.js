@@ -648,10 +648,10 @@ function batteryState(batteryStatus, chargerStatus, percent, chargerCurrent, out
   const full =
     /full|charged|complete|finish/.test(lower) ||
     (percent !== null && percent >= 98 && (raw === "3" || hasCharger));
+  if (discharging) return "discharging";
   if (full) return "full";
   if (raw === "3" && percent !== null && percent < 98) return "charging";
   if (raw === "2" || hasCharger) return "charging";
-  if (discharging) return "discharging";
   return "unknown";
 }
 function parseNetwork(xml) {
@@ -846,7 +846,8 @@ function actionStatus(){return document.getElementById('actionStatus')}
 function hideActionStatus(){var el=actionStatus();if(el)el.hidden=true}
 function hideWebviewDiagnostics(){var el=document.getElementById('webviewDiagnostics');if(el)el.hidden=true}
 function showWebviewDiagnostics(message,source,lineno,colno,error){var el=document.getElementById('webviewDiagnostics');if(!el)return;var pre=el.querySelector('[data-webview-diagnostics]');if(pre)pre.textContent=['message: '+String(message||''),'source: '+String(source||''),'location: '+String(lineno||0)+':'+String(colno||0),describeError(error)].filter(Boolean).join('\\n');el.hidden=false}
-function fillActionStatus(title,detail,copyText,isError){var el=actionStatus();if(!el)return;var t=el.querySelector('[data-status-title]'),d=el.querySelector('[data-status-detail]'),ta=el.querySelector('[data-status-copy]'),pre=el.querySelector('[data-status-pre]');if(t)t.textContent=title||'Status';if(d)d.textContent=detail||'';if(ta){ta.value=copyText||'';ta.hidden=!copyText}if(pre){pre.textContent=copyText||detail||'';pre.hidden=!!copyText}el.classList.toggle('warning',!!isError);el.hidden=false}
+function selectFallbackText(ta){if(!ta||ta.hidden)return;setTimeout(function(){try{ta.focus();ta.select();if(ta.setSelectionRange)ta.setSelectionRange(0,ta.value.length)}catch(e){}},50)}
+function fillActionStatus(title,detail,copyText,isError){var el=actionStatus();if(!el)return;var t=el.querySelector('[data-status-title]'),d=el.querySelector('[data-status-detail]'),ta=el.querySelector('[data-status-copy]'),pre=el.querySelector('[data-status-pre]');if(t)t.textContent=title||'Status';if(d)d.textContent=detail||'';if(ta){ta.value=copyText||'';ta.hidden=!copyText;if(copyText)selectFallbackText(ta)}if(pre){pre.textContent=copyText||detail||'';pre.hidden=!!copyText}el.classList.toggle('warning',!!isError);el.hidden=false}
 function describeError(e){var parts=[];try{if(e&&e.name)parts.push('name: '+e.name);if(e&&e.message)parts.push('message: '+e.message);parts.push('string: '+String(e));if(e&&typeof e==='object'){Object.keys(e).forEach(function(k){if(k==='name'||k==='message')return;try{parts.push(k+': '+JSON.stringify(e[k]))}catch(_){parts.push(k+': '+String(e[k]))}});if(e.stack)parts.push('stack: '+e.stack)}}catch(inner){parts.push('describeError failed: '+String(inner))}return parts.join('\\n')}
 function showActionError(title,detail,copyText){fillActionStatus(title,detail,copyText,true)}
 function setActionStatus(message){fillActionStatus('Action status',message,'',false)}
