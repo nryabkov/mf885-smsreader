@@ -14,6 +14,7 @@ The script does **not** read or send messages through Apple Messages on the iPho
 - Deletes individual SMS messages from the router after confirmation.
 - Resets total WAN traffic and provides confirmed restart and power-off controls.
 - Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive.
+- Provides experimental, confirmed cellular controls for mobile-WAN reconnect and preferred protocol selection (Automatic, LTE only, LTE preferred where supported, 3G only, or 2G only).
 - Decodes router SMS fields that are returned as UTF-16BE hexadecimal strings.
 
 ## Prerequisites
@@ -32,6 +33,7 @@ The repository keeps the updater, manifest, application, and feature modules sid
 - `manifest.json` declares the loader artifact, application entry point and files, and loader protocol compatibility.
 - `scriptable.js` is the application module downloaded by the loader.
 - `modules/ussd.js` contains the firmware-specific USSD probing and request variants.
+- `modules/cellular-control.js` isolates experimental mobile-WAN reconnect and network-mode commands from the dashboard UI.
 
 1. Copy `loader.js` into a new script in the Scriptable iOS app.
 2. Run it. That is sufficient when using this repository's `main` branch, Scriptable's local application storage, a router at `192.168.21.1`, and the initial router password `zimifi`. During the same run, the loader downloads and launches the application and creates `mf885-smsreader-config.json` automatically in Scriptable's **local** Documents directory.
@@ -86,7 +88,13 @@ The WebView contains a reusable action status panel for copy, translation, refre
 
 Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. If the screen closes during refresh, open the Scriptable script again.
 
-Dangerous router actions now use an inline WebView confirmation before any callback URL is opened. The first tap on **Reset traffic**, **Restart**, or **Power off** only expands a local warning in the current WebView; Scriptable relaunches the script only after the final confirmation button executes the command with `confirm=1`. The application still keeps server-side `confirm=1` checks for these flows as a safety guard.
+Dangerous router actions now use an inline WebView confirmation before any callback URL is opened. The first tap on **Reset traffic**, **Restart**, **Power off**, **Reconnect cellular network**, or a cellular mode button only expands a local warning in the current WebView; Scriptable relaunches the script only after the final confirmation button executes the command with `confirm=1`. The application still keeps server-side `confirm=1` checks for these flows as a safety guard.
+
+### Experimental cellular controls
+
+The Router tab includes an experimental **Cellular network** control block. **Reconnect cellular network** attempts known MF855/MF885 mobile-WAN disconnect/connect and registration commands, then verifies the result through status/network reads when available. The preferred protocol controls are restricted to a fixed whitelist: **Automatic**, **4G/LTE only**, **LTE preferred** (only where firmware accepts it), **3G only**, and **2G only**.
+
+These controls are firmware-dependent and may be ignored or rejected on some builds. They use only safe GET probes during detection, but confirmed actions can temporarily drop mobile internet while the modem disconnects, reconnects, or changes radio access technology. If your firmware is not supported, please send the copyable diagnostics from the notice/details area with your report. Diagnostics include endpoint/file names, XML root/field names, `routerCall` object path/method pairs, compact responses/errors, and verification results, while redacting passwords, Digest nonces/responses, and sensitive headers.
 
 ### Power endpoint diagnostics
 
