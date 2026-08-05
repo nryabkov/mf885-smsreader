@@ -72,7 +72,40 @@ async function dashboardFlow(auth, notice = "", tab = "sms") {
   model.tab = tab;
   const web = new WebView();
   await web.loadHTML(buildHtml(model));
+  let pollTimer = null;
+  async function pollWebView() {
+    try {
+      await web.evaluateJavaScript("window.zmiTick && window.zmiTick()", false);
+      const fresh = await loadModel(auth);
+      fresh.loadedAt = Date.now();
+      await web.evaluateJavaScript(`window.zmiApply && window.zmiApply(${JSON.stringify(webPollPayload(fresh))})`, false);
+    } catch (error) {
+      try {
+        await web.evaluateJavaScript(`window.zmiApply && window.zmiApply(${JSON.stringify({ error: cleanError(error), loadedAt: Date.now() })})`, false);
+      } catch (_) {}
+    } finally {
+      if (pollTimer) pollTimer.invalidate();
+      pollTimer = Timer.schedule(POLL_SECONDS * 1000, false, pollWebView);
+    }
+  }
+  pollTimer = Timer.schedule(POLL_SECONDS * 1000, false, pollWebView);
   await web.present();
+  if (pollTimer) pollTimer.invalidate();
+}
+
+function webPollPayload(model) {
+  return {
+    loadedAt: model.loadedAt,
+    smsCount: model.sms && model.sms.messages ? model.sms.messages.length : 0,
+    smsFingerprint: model.sms && model.sms.fingerprint || "",
+    networkMode: model.network && (model.network.mode || model.network.networkError) || "Unknown",
+    batteryInline: batteryInlineLabel(model.battery || {}),
+    batteryStatus: model.battery && model.battery.status || "Unknown",
+    trafficTotal: formatBytes(model.traffic && model.traffic.total),
+    trafficDown: formatBytes(model.traffic && model.traffic.download),
+    trafficUp: formatBytes(model.traffic && model.traffic.upload),
+    errors: model.errors || {}
+  };
 }
 
 async function loadModel(auth) {
@@ -588,16 +621,24 @@ function connectionSeconds(source) { const d=firstNumber(source,["conn_days"]), 
 function parseBattery(xml) {
   const source = tag(xml, "batteryinfo") || xml;
   const percent = firstNumber(source, ["Battery_percent", "battery_percent", "battery_value", "batteryPercent", "BatteryValue"]);
-  const raw = firstText(source, ["Battery_status", "battery_status", "Charger_status", "charger_status", "CDetectStatus", "battery_charging"]);
+  const batteryStatus = firstText(source, ["Battery_status", "battery_status", "battery_charging"]);
+  const chargerStatus = firstText(source, ["Charger_status", "charger_status", "CDetectStatus"]);
   const chargerCurrent = firstNumber(source, ["Charger_current", "charger_current"]);
   const outputCurrent = firstNumber(source, ["Output_current", "output_current"]);
-  const lower = raw.toLowerCase();
-  const charging = /charg|adapter|usb|ac|plug|online/.test(lower) || (chargerCurrent !== null && chargerCurrent > 0);
-  const full = /full|charged|complete|finish/.test(lower) || (percent !== null && percent >= 100 && charging);
-  const discharging = /discharg|unplug|not\s*charg/.test(lower) || (outputCurrent !== null && outputCurrent > 0);
-  const state = full ? "full" : charging ? "charging" : discharging ? "discharging" : "unknown";
+  const state = batteryState(batteryStatus, chargerStatus, percent, chargerCurrent, outputCurrent);
+  const charging = state === "charging";
   const status = state === "full" ? "Full" : state === "charging" ? "Charging" : state === "discharging" ? "Discharging" : "Unknown";
-  return { hasData: percent !== null || !!raw || chargerCurrent !== null || outputCurrent !== null, percent: percent === null ? null : Math.min(100, percent), charging, state, status, detailText: status, chargerCurrent, outputCurrent, rawStatus: raw || "" };
+  return { hasData: percent !== null || !!batteryStatus || !!chargerStatus || chargerCurrent !== null || outputCurrent !== null, percent: percent === null ? null : Math.min(100, percent), charging, state, status, detailText: status, chargerCurrent, outputCurrent, rawStatus: batteryStatus || "", chargerStatus: chargerStatus || "" };
+}
+function batteryState(batteryStatus, chargerStatus, percent, chargerCurrent, outputCurrent) {
+  const raw = String(batteryStatus || "").trim();
+  const charger = String(chargerStatus || "").trim();
+  const lower = raw.toLowerCase();
+  const chargerLower = charger.toLowerCase();
+  if (/full|charged|complete|finish/.test(lower) || raw === "3" || (percent !== null && percent >= 100 && chargerCurrent !== null && chargerCurrent > 0)) return "full";
+  if (/charg|adapter|usb|ac|plug|online/.test(lower) || raw === "2" || /charg|adapter|usb|ac|plug|online/.test(chargerLower) || (charger && charger !== "0" && /^(1|true|yes|on)$/i.test(charger)) || (chargerCurrent !== null && chargerCurrent > 0)) return "charging";
+  if (/discharg|unplug|not\s*charg|offline/.test(lower) || raw === "1" || charger === "0" || (outputCurrent !== null && outputCurrent > 0)) return "discharging";
+  return "unknown";
 }
 function parseNetwork(xml) {
   const wan = tag(xml, "wan") || xml;
@@ -610,7 +651,7 @@ function parseNetwork(xml) {
   const roaming = roamText ? /^(1|true|yes|on|roam|roaming)$/i.test(roamText.trim()) : null;
   const modeCode = firstNumber(sources, ["sys_mode", "sysmode", "system_mode"]);
   const submodeCode = firstNumber(sources, ["sys_submode", "syssubmode", "system_submode"]);
-  const rawMode = firstText(sources, ["network_type", "network_mode", "data_conn_mode", "radio_mode", "rat", "service_type", "NetworkType", "networkType", "current_network_type", "rat_mode", "access_technology", "service_status", "lte_status", "nw_rat", "rat_name"]);
+  const rawMode = firstText(sources, ["network_type", "network_mode", "data_conn_mode", "radio_mode", "rat", "service_type", "NetworkType", "networkType", "current_network_type", "CurrentNetworkType", "current_network", "networkMode", "NetworkMode", "ps_service_type", "accessTechnology", "cellular_network_type", "rat_mode", "access_technology", "service_status", "lte_status", "nw_rat", "rat_name"]);
   const proto = networkProtocol(rawMode, modeCode, submodeCode);
   const rsrp = firstSigned(sources, ["rsrp", "RSRP", "lte_rsrp", "signal_rsrp"]);
   const rssiValue = firstSigned(sources, ["rssi", "RSSI", "signal_strength", "SignalStrength", "signal"]);
@@ -625,13 +666,9 @@ function parseNetwork(xml) {
   const dbm = rsrp !== null ? rsrp : sig.dbm;
   return { operator, mode: protocol, registered, roaming, generation, protocol, modeCode, submodeCode, rawMode, hasData: !!(operator || rawMode || regText || modeCode !== null || submodeCode !== null || bars !== null), detailText: [protocol, roaming ? "Roaming" : ""].filter(Boolean).join(" · "), signalText: signalText(bars), percent: sig.percent, bars, dbm, lac, tac: lac, cellId, pci, quality: signalText(bars) };
 }
-function batteryStatusLabel(value, charging, percent) {
-  const text = String(value || "").trim();
-  const lower = text.toLowerCase();
-  if (/full|charged|complete|finish/.test(lower) || text === "3" || (percent >= 100 && charging)) return "Full";
-  if (charging || /charg|adapter|usb|ac|plug|online/.test(lower) || text === "2") return "Charging";
-  if (/discharg|unplug|not\s*charg|offline/.test(lower) || text === "1") return "Discharging";
-  return "Unknown";
+function batteryStatusLabel(value, charging, percent, chargerStatus) {
+  const state = batteryState(value, chargerStatus, percent, charging ? 1 : null, null);
+  return state === "full" ? "Full" : state === "charging" ? "Charging" : state === "discharging" ? "Discharging" : "Unknown";
 }
 function batteryInlineLabel(battery) {
   const percent = battery && battery.percent !== null && battery.percent !== undefined ? `${battery.percent}%` : "—";
@@ -641,21 +678,21 @@ function batteryInlineLabel(battery) {
   if (status === "Full") return `🔋 ${percent} Full`;
   return `🔋 ${percent} Unknown`;
 }
-const NETWORK_SUBMODES = { 1:["GSM","2G"], 2:["GPRS","2G"], 3:["EDGE","2G"], 4:["WCDMA","3G"], 5:["HSDPA","3G"], 6:["HSUPA","3G"], 7:["HSPA","3G"], 8:["TD-SCDMA","3G"], 9:["HSPA+","3G"], 17:["HSPA+ 64QAM","3G"], 18:["HSPA+ MIMO","3G"], 25:["LTE TDD / 4G","4G"], 26:["LTE FDD / 4G","4G"] };
-const NETWORK_MODES = { 3:["GSM/GPRS","2G"], 4:["WCDMA","3G"], 5:["TD-SCDMA","3G"], 6:["LTE","4G"], 15:["TD-SCDMA","3G"], 16:["LTE FDD","4G"], 17:["LTE / 4G","4G"] };
+const NETWORK_SUBMODES = { 1:["2G · GSM","2G"], 2:["2G · GPRS","2G"], 3:["2G · EDGE","2G"], 4:["3G · WCDMA","3G"], 5:["3G · HSDPA","3G"], 6:["3G · HSUPA","3G"], 7:["3G · HSPA","3G"], 8:["3G · TD-SCDMA","3G"], 9:["3G · HSPA+","3G"], 17:["3G · HSPA+ 64QAM","3G"], 18:["3G · HSPA+ MIMO","3G"], 25:["4G · LTE TDD","4G"], 26:["4G · LTE FDD","4G"] };
+const NETWORK_MODES = { 3:["2G · GSM/GPRS","2G"], 4:["3G · WCDMA","3G"], 5:["3G · TD-SCDMA","3G"], 6:["4G · LTE","4G"], 15:["3G · TD-SCDMA","3G"], 16:["4G · LTE FDD","4G"], 17:["4G · LTE","4G"] };
 function networkProtocol(value, mode, submode) {
   const text = String(value || "").trim();
   const lower = text.toLowerCase();
   if (mode === 0 || submode === 0 || /unknown|none|no service|limited/.test(lower)) return { protocol: mode === 0 || submode === 0 ? "No service" : "Unknown", generation: "Unknown" };
   if (/5g|nr/.test(lower)) return { protocol: "5G", generation: "5G" };
-  if (/lte|4g/.test(lower)) return { protocol: "LTE / 4G", generation: "4G" };
-  if (/hspa|hsdpa|hsupa|wcdma|umts|3g/.test(lower)) return { protocol: "3G", generation: "3G" };
-  if (/edge|gprs|gsm|2g/.test(lower)) return { protocol: "2G", generation: "2G" };
+  if (/lte|4g/.test(lower)) { var lte = /fdd/.test(lower) ? "LTE FDD" : /tdd/.test(lower) ? "LTE TDD" : /lte-?a|advanced/.test(lower) ? "LTE-A" : "LTE"; return { protocol: "4G · "+lte, generation: "4G" }; }
+  if (/hspa|hsdpa|hsupa|wcdma|umts|3g/.test(lower)) { var g3 = /hspa\+/.test(lower) ? "HSPA+" : /hsdpa/.test(lower) ? "HSDPA" : /hsupa/.test(lower) ? "HSUPA" : /hspa/.test(lower) ? "HSPA" : /umts/.test(lower) ? "UMTS" : /wcdma/.test(lower) ? "WCDMA" : "3G"; return { protocol: g3 === "3G" ? "3G" : "3G · "+g3, generation: "3G" }; }
+  if (/edge|gprs|gsm|2g/.test(lower)) { var g2 = /edge/.test(lower) ? "EDGE" : /gprs/.test(lower) ? "GPRS" : /gsm/.test(lower) ? "GSM" : "2G"; return { protocol: g2 === "2G" ? "2G" : "2G · "+g2, generation: "2G" }; }
   if (submode !== null && NETWORK_SUBMODES[submode]) return { protocol: NETWORK_SUBMODES[submode][0], generation: NETWORK_SUBMODES[submode][1] };
   if (mode !== null && NETWORK_MODES[mode]) return { protocol: NETWORK_MODES[mode][0], generation: NETWORK_MODES[mode][1] };
   const code = /^\d+$/.test(text) ? Number(text) : null;
   if ([20,21,101].includes(code)) return { protocol: "5G", generation: "5G" };
-  if ([4,7,13,14,19,38,39,40,41].includes(code)) return { protocol: "LTE / 4G", generation: "4G" };
+  if ([4,7,13,14,19,38,39,40,41].includes(code)) return { protocol: "4G · LTE", generation: "4G" };
   if ([2,3,5,6,8,9,10,11,12,15].includes(code)) return { protocol: "3G", generation: "3G" };
   if ([1,16].includes(code)) return { protocol: "2G", generation: "2G" };
   return { protocol: text || "Unknown", generation: "Unknown" };
@@ -772,15 +809,13 @@ function buildHtml(model) {
   <section id="actionStatus" class="action-status warning" hidden><header><strong data-status-title></strong><button type="button" onclick="hideActionStatus()">Close</button></header><p data-status-detail></p><textarea data-status-copy rows="5" readonly></textarea><pre data-status-pre></pre></section>
   <section id="webviewDiagnostics" class="action-status warning" hidden><header><strong>WebView interface error</strong><button type="button" onclick="hideWebviewDiagnostics()">Close</button></header><p>The WebView interface encountered an error. Open the details below or refresh the script.</p><pre data-webview-diagnostics></pre></section>
   ${noticeHtml}
-    <section id="sms" class="tab${smsActive}"><div class="inline-toolbar"><button onclick="toggleSmsComposer()">📝 Compose SMS</button><button onclick="toggleUssdComposer()">☎️ Dial USSD</button></div>
+    <section id="sms" class="tab${smsActive}"><div class="inline-toolbar"><button onclick="toggleSmsComposer()">📝 Compose SMS</button></div>
     <form id="smsComposer" class="composer card" onsubmit="submitSmsInline(event)" hidden><input name="to" placeholder="Recipient" autocomplete="tel"><textarea name="text" placeholder="SMS text" rows="3" maxlength="1000"></textarea><div><button class="primary" type="submit">Send SMS</button><button type="button" onclick="toggleSmsComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form>
-    <form id="ussdComposer" class="composer card" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Code, for example *100#"><div><button class="primary" type="submit">Send USSD</button><button type="button" onclick="toggleUssdComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form>
     ${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
     <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>${escapeHtml(network.networkError || network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}</article>
     <article class="card battery"><small>Battery</small><h2>${escapeHtml(batteryInline)}</h2><p>${escapeHtml(battery.batteryError || battery.status || "Unknown")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
     <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><p>Session: ↓ ${formatBytes(traffic.sessionDownload)} · ↑ ${formatBytes(traffic.sessionUpload)}${traffic.sessionSeconds !== null && traffic.sessionSeconds !== undefined ? ` · ${escapeHtml(formatDuration(traffic.sessionSeconds))}` : ""}</p>${traffic.trafficError ? `<p class="warning">${escapeHtml(traffic.trafficError)}</p>` : ""}<button class="danger buttonlike" type="button" data-power-action="resetTraffic">Reset traffic</button>${resetTrafficConfirm}</article>
-    <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Available" : "Not confirmed"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button onclick="tab('sms');toggleUssdComposer(true)">Dial USSD</button></article>
-    <article class="card"><small>Device access</small><h2>${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar">${deviceActions || "<span>No actions available</span>"}</div>${deviceConfirm}</article>
+    <article class="card experimental" id="routerExperimental"><small>Experimental router controls</small><h2>USSD and device access</h2><section data-ussd-section><h3>USSD: ${model.ussd.supported ? "Available" : "Not confirmed"}</h3><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button type="button" onclick="toggleUssdComposer(true)">Dial USSD</button><form id="ussdComposer" class="composer" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Code, for example *100#"><div><button class="primary" type="submit">Send USSD</button><button type="button" onclick="toggleUssdComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form></section><section data-device-access-section><h3>Device access: ${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h3><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar">${deviceActions || "<span>No actions available</span>"}</div>${deviceConfirm}</section></article>
     <article class="card"><small>Power</small><h2>System commands</h2><button class="buttonlike" type="button" data-power-action="reboot">Restart</button> <button class="danger buttonlike" type="button" data-power-action="powerOff">Power off</button>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
   <script>${clientScript(model, baseRun)}</script></body></html>`;
 }
@@ -807,14 +842,16 @@ function fmt(s){s=Math.max(0,s|0);return String(Math.floor(s/60)).padStart(2,'0'
 function drawTimer(){var c=document.getElementById('countdown'),p=document.getElementById('pauseBtn');if(c)c.textContent=paused?'Paused':'Next refresh: '+fmt(remaining);if(p)p.textContent=paused?'Resume':'Pause'}
 function navigateTo(url,label){if(navigationInProgress)return false;navigationInProgress=true;paused=true;if(timer)clearInterval(timer);document.querySelectorAll('button,a').forEach(function(x){x.disabled=true;x.setAttribute('aria-disabled','true')});setActionStatus('This action will reopen the script. Scriptable is rerunning the dashboard; if the screen closes, open the script again. '+(label||''));setTimeout(function(){window.location.href=url},250);return true}
 function saveSmsFingerprint(){try{localStorage.zmiSmsFingerprint=model.sms.fingerprint||'';localStorage.zmiSmsTotalPages=model.sms.totalPages==null?'':String(model.sms.totalPages);localStorage.zmiSmsTotalMessages=model.sms.totalMessages==null?'':String(model.sms.totalMessages)}catch(e){}}
-function tick(){if(!paused){remaining-=1;if(remaining<=0){navigateTo(runUrl('dashboard',selectedTab()),'Automatic refresh.');return}}drawTimer()}
+function tick(){if(!paused){remaining-=1;if(remaining<=0){remaining=model.poll;window.zmiTick()}}drawTimer()}
+window.zmiTick=function(){setActionStatus('Refreshing router status in this WebView…')}
+window.zmiApply=function(payload){payload=payload||{};remaining=model.poll;drawTimer();if(payload.error){showActionError('Refresh failed',payload.error,'');return}var hero=document.querySelector('.hero strong');if(hero&&payload.smsCount!==undefined)hero.textContent='SMS: '+payload.smsCount;var spans=document.querySelectorAll('.statusline span');if(spans[0]&&payload.networkMode)spans[0].textContent='📶 '+payload.networkMode;if(spans[1]&&payload.batteryInline)spans[1].textContent=payload.batteryInline;if(spans[2]&&payload.trafficTotal)spans[2].textContent='⇅ '+payload.trafficTotal;if(spans[3]&&payload.loadedAt)spans[3].textContent='⟳ '+new Date(payload.loadedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});setActionStatus('Router status refreshed without reopening Scriptable.')}
 function startProgress(label){var bar=document.getElementById('progressbar');if(bar)bar.classList.add('active');if(label)label.textContent='Working…'}
 function refreshNow(e){if(e)e.preventDefault();var link=document.getElementById('refreshLink');startProgress(link);navigateTo(runUrl('dashboard',selectedTab()),'Refresh requested.')}
 function togglePause(){paused=!paused;try{localStorage.zmiPaused=paused?'1':'0'}catch(e){}drawTimer()}
 function toggleSmsComposer(force){var el=document.getElementById('smsComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
 function toggleUssdComposer(force){var el=document.getElementById('ussdComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
 function submitSmsInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),to=f.elements.to.value.trim(),text=f.elements.text.value.trim();if(!to||!text){s.textContent=!to?'Enter a recipient number':'Enter SMS text';return}if(text.length>1000){s.textContent='SMS text is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('send','sms',{to:to,text:text}),'Sending SMS.')}
-function submitUssdInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),code=f.elements.code.value.trim();if(!code){s.textContent='Enter a USSD code';return}if(code.length>128){s.textContent='USSD code is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('ussd',selectedTab(),{code:code}),'Sending USSD.')}
+function submitUssdInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),code=f.elements.code.value.trim();if(!code){s.textContent='Enter a USSD code';return}if(code.length>128){s.textContent='USSD code is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('ussd','router',{code:code}),'Sending USSD.')}
 function powerActionCopy(action){if(action==='reboot')return{title:'Restart router?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u043f\\u0435\\u0440\\u0435\\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u0438\\u0442\\u044c? Wi‑Fi and mobile internet will be temporarily unavailable.'};if(action==='powerOff')return{title:'Power off router?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u0432\\u044b\\u043a\\u043b\\u044e\\u0447\\u0438\\u0442\\u044c? The physical power button is required to turn the router on again.'};return{title:'Reset total traffic?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u0441\\u0431\\u0440\\u043e\\u0441\\u0438\\u0442\\u044c \\u0441\\u0447\\u0451\\u0442\\u0447\\u0438\\u043a \\u0442\\u0440\\u0430\\u0444\\u0438\\u043a\\u0430? Only the total mobile WAN counters will be reset.'}}
 function showInlineConfirm(button){var action=button&&button.getAttribute('data-power-action');if(!action||navigationInProgress)return;var card=button.closest('.card')||button.parentNode;var box=card&&card.querySelector('[data-power-confirm]');if(!box){box=document.createElement('div');box.className='warning';box.setAttribute('data-power-confirm','');card.appendChild(box)}var copy=powerActionCopy(action);box.hidden=false;box.innerHTML='';var strong=document.createElement('strong');strong.textContent=copy.title;var p=document.createElement('p');p.textContent=copy.detail;var final=document.createElement('a');final.className='danger buttonlike';final.href=runUrl(action,'router',{confirm:'1'});final.textContent='Confirm';final.setAttribute('data-final-confirm','1');var cancel=document.createElement('button');cancel.type='button';cancel.className='buttonlike';cancel.textContent='Cancel';cancel.onclick=function(){box.hidden=true};box.appendChild(strong);box.appendChild(p);box.appendChild(final);box.appendChild(document.createTextNode(' '));box.appendChild(cancel);fillActionStatus(copy.title,copy.detail+' Final confirmation will reopen the script.','',true)}
 function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}saveSmsFingerprint();tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var powerButton=e.target&&e.target.closest?e.target.closest('[data-power-action]'):null;if(powerButton){e.preventDefault();showInlineConfirm(powerButton);return}var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';var final=a.getAttribute('data-final-confirm')==='1';navigateTo(a.href,final?'Final confirmation. This action will reopen the script.':'This action will reopen the script.')})}

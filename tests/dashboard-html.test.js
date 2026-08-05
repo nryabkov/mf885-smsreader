@@ -81,6 +81,15 @@ test("translateSms continues when localStorage throws SecurityError", async () =
   assert.equal(button.disabled, false);
 });
 
+
+test("client auto refresh uses WebView bridge instead of Scriptable relaunch", () => {
+  const script = clientScript(model("sms"), "scriptable:///run?scriptName=MF885%20Test");
+
+  assert.match(script, /window\.zmiTick=function/);
+  assert.match(script, /window\.zmiApply=function/);
+  assert.doesNotMatch(script, /navigateTo\(runUrl\('dashboard',selectedTab\(\)\),'Automatic refresh\.'\)/);
+});
+
 test("dashboard HTML marks SMS tab active without client JavaScript", () => {
   const html = buildHtml(model("sms"));
 
@@ -126,12 +135,12 @@ test("battery inline labels show charging direction in English", () => {
 test("network mode and alternate signal fields render readable protocol and bars", () => {
   const { parseNetwork, networkModeLabel, signalBarsHtml } = require("../scriptable.js");
 
-  assert.equal(networkModeLabel("19"), "LTE / 4G");
+  assert.equal(networkModeLabel("19"), "4G · LTE");
   assert.equal(networkModeLabel("2"), "3G");
   assert.equal(networkModeLabel("1"), "2G");
   assert.equal(networkModeLabel("20"), "5G");
   const parsed = parseNetwork("<RGW><NetworkType>19</NetworkType><network_signal>80</network_signal><RSRP>-88</RSRP></RGW>");
-  assert.equal(parsed.mode, "LTE / 4G");
+  assert.equal(parsed.mode, "4G · LTE");
   assert.equal(parsed.bars, 4);
   assert.match(signalBarsHtml(parsed), /aria-label="Signal 4 of 5"/);
 });
@@ -139,13 +148,26 @@ test("network mode and alternate signal fields render readable protocol and bars
 test("network parser understands MF885 sys_mode and sys_submode details", () => {
   const { parseNetwork } = require("../scriptable.js");
 
-  assert.equal(parseNetwork("<RGW><sys_mode>17</sys_mode><SignalBar>3</SignalBar></RGW>").protocol, "LTE / 4G");
-  assert.equal(parseNetwork("<RGW><sys_submode>25</sys_submode></RGW>").protocol, "LTE TDD / 4G");
-  assert.equal(parseNetwork("<RGW><sys_submode>26</sys_submode></RGW>").protocol, "LTE FDD / 4G");
+  assert.equal(parseNetwork("<RGW><sys_mode>17</sys_mode><SignalBar>3</SignalBar></RGW>").protocol, "4G · LTE");
+  assert.equal(parseNetwork("<RGW><sys_submode>25</sys_submode></RGW>").protocol, "4G · LTE TDD");
+  assert.equal(parseNetwork("<RGW><sys_submode>26</sys_submode></RGW>").protocol, "4G · LTE FDD");
   const noService = parseNetwork("<RGW><NW_register_status>0</NW_register_status><sys_mode>0</sys_mode><SignalBar>5</SignalBar></RGW>");
   assert.equal(noService.registered, false);
   assert.equal(noService.protocol, "No service");
   assert.equal(noService.bars, 0);
+});
+
+
+test("network parser normalizes common 4G and 3G firmware mode fields", () => {
+  const { parseNetwork } = require("../scriptable.js");
+
+  assert.equal(parseNetwork("<RGW><CurrentNetworkType>LTE FDD</CurrentNetworkType></RGW>").mode, "4G · LTE FDD");
+  assert.equal(parseNetwork("<RGW><current_network>LTE TDD</current_network></RGW>").mode, "4G · LTE TDD");
+  assert.equal(parseNetwork("<RGW><networkMode>LTE-A</networkMode></RGW>").mode, "4G · LTE-A");
+  assert.equal(parseNetwork("<RGW><NetworkMode>19</NetworkMode></RGW>").mode, "4G · LTE");
+  assert.equal(parseNetwork("<RGW><ps_service_type>HSPA+</ps_service_type></RGW>").mode, "3G · HSPA+");
+  assert.equal(parseNetwork("<RGW><accessTechnology>WCDMA</accessTechnology></RGW>").mode, "3G · WCDMA");
+  assert.equal(parseNetwork("<RGW><cellular_network_type>EDGE</cellular_network_type></RGW>").mode, "2G · EDGE");
 });
 
 test("network parser detects roaming and signal scales", () => {
@@ -159,6 +181,31 @@ test("network parser detects roaming and signal scales", () => {
   assert.equal(parseNetwork("<RGW><signal_strength>20</signal_strength></RGW>").dbm, -73);
   assert.equal(parseNetwork("<RGW><network_signal>80</network_signal></RGW>").percent, 80);
   assert.equal(parseNetwork("<RGW><signal>99</signal></RGW>").bars, null);
+});
+
+
+test("battery parser understands numeric status values independently", () => {
+  const { parseBattery, batteryInlineLabel } = require("../scriptable.js");
+
+  const discharging = parseBattery("<RGW><Battery_percent>70</Battery_percent><Battery_status>1</Battery_status></RGW>");
+  assert.equal(discharging.state, "discharging");
+  assert.equal(discharging.status, "Discharging");
+  assert.equal(discharging.charging, false);
+  assert.equal(batteryInlineLabel(discharging), "🔋 70% ↓ Discharging");
+
+  const charging = parseBattery("<RGW><Battery_percent>71</Battery_percent><Battery_status>2</Battery_status></RGW>");
+  assert.equal(charging.state, "charging");
+  assert.equal(charging.status, "Charging");
+  assert.equal(charging.charging, true);
+
+  const full = parseBattery("<RGW><Battery_percent>100</Battery_percent><Battery_status>3</Battery_status></RGW>");
+  assert.equal(full.state, "full");
+  assert.equal(full.status, "Full");
+  assert.equal(full.charging, false);
+
+  const chargerDisconnected = parseBattery("<RGW><Battery_percent>55</Battery_percent><Charger_status>0</Charger_status></RGW>");
+  assert.equal(chargerDisconnected.state, "discharging");
+  assert.equal(chargerDisconnected.status, "Discharging");
 });
 
 test("battery parser uses charger and output current details", () => {
@@ -194,6 +241,23 @@ test("SMS parser treats total_number as messages and fingerprints repeated pages
   assert.equal(pageMessageFingerprint(page.messages), pageMessageFingerprint(parseSmsPage(xml, 2).messages));
   const fingerprint = smsEdgeFingerprint(page, null, page.totalPages, page.totalMessages);
   assert.equal(unchangedSms({ fingerprint, totalPages: null, totalMessages: 42 }, { fingerprint, totalPages: null, totalMessages: 42 }), true);
+});
+
+
+test("USSD composer lives only in unified router experimental section", () => {
+  const data = model("router");
+  data.ussd = { supported: true, detail: "USSD probes passed" };
+  data.deviceAccess = { supported: true, detail: "Device probes passed", capabilities: [{ id: "adb", title: "Enable ADB" }] };
+  const html = buildHtml(data);
+  const smsSection = html.match(new RegExp('<section id="sms"[\\s\\S]*?</section>\\n    <section id="router"'))[0];
+  const routerExperimental = html.match(/<article class="card experimental" id="routerExperimental"[\s\S]*?<article class="card"><small>Power/)[0];
+
+  assert.doesNotMatch(smsSection, /ussdComposer|Dial USSD/);
+  assert.match(routerExperimental, /ussdComposer/);
+  assert.match(routerExperimental, /data-ussd-section/);
+  assert.match(routerExperimental, /data-device-access-section/);
+  assert.match(routerExperimental, /Enable ADB/);
+  assert.match(clientScript(data, "scriptable:///run?scriptName=MF885%20Test"), /runUrl\('ussd','router',\{code:code\}\)/);
 });
 
 test("dangerous primary actions use local WebView confirmation", () => {
