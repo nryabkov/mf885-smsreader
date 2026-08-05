@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const vm = require("node:vm");
 
 global.Script = { name: () => "MF885 Test" };
 
@@ -31,6 +32,53 @@ test("client WebView script keeps newline escapes inside string literals", () =>
   assert.doesNotMatch(script, /statusText\+'\n'\+raw/);
   assert.doesNotMatch(script, /'\nResponse: '\+raw/);
   assert.doesNotThrow(() => new Function(script));
+});
+
+test("translateSms continues when localStorage throws SecurityError", async () => {
+  const script = clientScript(model("sms"), "scriptable:///run?scriptName=MF885%20Test")
+    .replace("translateEndpoint:\"\"", "translateEndpoint:\"https://translate.example.test\"");
+  const box = { textContent: "" };
+  const card = {
+    querySelector: selector => selector === "[data-translation] span" ? box : null,
+    getAttribute: name => ({ "data-msg-id": "42", "data-msg-text": "hello" })[name] || ""
+  };
+  const button = {
+    disabled: false,
+    textContent: "Translate",
+    closest: selector => selector === ".sms" ? card : null
+  };
+  const localStorage = {
+    getItem() { throw new DOMException("Blocked", "SecurityError"); },
+    setItem() { throw new DOMException("Blocked", "SecurityError"); }
+  };
+  const context = {
+    localStorage,
+    DOMException,
+    URLSearchParams,
+    navigator: {},
+    document: {
+      addEventListener() {},
+      getElementById() { return null; }
+    },
+    window: {},
+    setInterval() { return 1; },
+    clearInterval() {},
+    setTimeout(fn) { fn(); },
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ translatedText: "привет" })
+    })
+  };
+
+  vm.createContext(context);
+  vm.runInContext(script, context);
+
+  await assert.doesNotReject(() => context.translateSms(button));
+  assert.equal(box.textContent, "привет");
+  assert.equal(button.textContent, "Translate");
+  assert.equal(button.disabled, false);
 });
 
 test("dashboard HTML marks SMS tab active without client JavaScript", () => {
