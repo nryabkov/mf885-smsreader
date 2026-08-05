@@ -87,6 +87,9 @@ test("client auto refresh uses WebView bridge instead of Scriptable relaunch", (
 
   assert.match(script, /window\.zmiTick=function/);
   assert.match(script, /window\.zmiApply=function/);
+  assert.match(script, /window\.zmiTick=function\(\)\{startProgress\(\)\}/);
+  assert.match(script, /showActionError\('Refresh failed',payload\.error,''\)/);
+  assert.doesNotMatch(script, /Router status refreshed without reopening Scriptable\./);
   assert.doesNotMatch(script, /navigateTo\(runUrl\('dashboard',selectedTab\(\)\),'Automatic refresh\.'\)/);
 });
 
@@ -130,6 +133,16 @@ test("battery inline labels show charging direction in English", () => {
   assert.equal(batteryInlineLabel({ percent: 72, charging: false, rawStatus: "1" }), "🔋 72% ↓ Discharging");
   assert.equal(batteryInlineLabel({ percent: 100, charging: false, rawStatus: "3" }), "🔋 100% Full");
   assert.equal(batteryInlineLabel({ percent: null, charging: false, rawStatus: "" }), "🔋 — Unknown");
+});
+
+test("dashboard battery UI renders inline charging direction", () => {
+  const dashboard = model("router");
+  dashboard.battery = { percent: 72, charging: true, rawStatus: "2", status: "Charging" };
+  const html = buildHtml(dashboard);
+
+  assert.match(html, /<span>🔋 72% ↑ Charging<\/span>/);
+  assert.match(html, /<small>🔋 72% ↑ Charging<\/small>/);
+  assert.match(html, /<h2>🔋 72% ↑ Charging<\/h2>/);
 });
 
 test("network mode and alternate signal fields render readable protocol and bars", () => {

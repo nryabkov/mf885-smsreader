@@ -783,7 +783,7 @@ function buildHtml(model) {
   const signalHtml = signalBarsHtml(network);
   const topCards = `<section class="topgrid router-only">
     <article class="mini"><span>Signal</span><strong>${signalHtml}</strong><small>${escapeHtml(network.networkError || network.mode || "Unknown")}${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</small></article>
-    <article class="mini"><span>Battery</span><strong>${batteryLabel}</strong><small>${escapeHtml(battery.status || "Unknown")}</small></article>
+    <article class="mini"><span>Battery</span><strong>${batteryLabel}</strong><small>${escapeHtml(batteryInline)}</small></article>
     <article class="mini"><span>Traffic</span><strong>${totalTraffic}</strong><small>Downloaded: ${formatBytes(traffic.download)} · Uploaded: ${formatBytes(traffic.upload)}</small></article>
   </section>`;
   const smsCards = smsCount ? visibleMessages.map((item, index) => {
@@ -843,9 +843,10 @@ function drawTimer(){var c=document.getElementById('countdown'),p=document.getEl
 function navigateTo(url,label){if(navigationInProgress)return false;navigationInProgress=true;paused=true;if(timer)clearInterval(timer);document.querySelectorAll('button,a').forEach(function(x){x.disabled=true;x.setAttribute('aria-disabled','true')});setActionStatus('This action will reopen the script. Scriptable is rerunning the dashboard; if the screen closes, open the script again. '+(label||''));setTimeout(function(){window.location.href=url},250);return true}
 function saveSmsFingerprint(){try{localStorage.zmiSmsFingerprint=model.sms.fingerprint||'';localStorage.zmiSmsTotalPages=model.sms.totalPages==null?'':String(model.sms.totalPages);localStorage.zmiSmsTotalMessages=model.sms.totalMessages==null?'':String(model.sms.totalMessages)}catch(e){}}
 function tick(){if(!paused){remaining-=1;if(remaining<=0){remaining=model.poll;window.zmiTick()}}drawTimer()}
-window.zmiTick=function(){setActionStatus('Refreshing router status in this WebView…')}
-window.zmiApply=function(payload){payload=payload||{};remaining=model.poll;drawTimer();if(payload.error){showActionError('Refresh failed',payload.error,'');return}var hero=document.querySelector('.hero strong');if(hero&&payload.smsCount!==undefined)hero.textContent='SMS: '+payload.smsCount;var spans=document.querySelectorAll('.statusline span');if(spans[0]&&payload.networkMode)spans[0].textContent='📶 '+payload.networkMode;if(spans[1]&&payload.batteryInline)spans[1].textContent=payload.batteryInline;if(spans[2]&&payload.trafficTotal)spans[2].textContent='⇅ '+payload.trafficTotal;if(spans[3]&&payload.loadedAt)spans[3].textContent='⟳ '+new Date(payload.loadedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});setActionStatus('Router status refreshed without reopening Scriptable.')}
+window.zmiTick=function(){startProgress()}
+window.zmiApply=function(payload){payload=payload||{};remaining=model.poll;drawTimer();if(payload.error){stopProgress();showActionError('Refresh failed',payload.error,'');return}var hero=document.querySelector('.hero strong');if(hero&&payload.smsCount!==undefined)hero.textContent='SMS: '+payload.smsCount;var spans=document.querySelectorAll('.statusline span');if(spans[0]&&payload.networkMode)spans[0].textContent='📶 '+payload.networkMode;if(spans[1]&&payload.batteryInline)spans[1].textContent=payload.batteryInline;if(spans[2]&&payload.trafficTotal)spans[2].textContent='⇅ '+payload.trafficTotal;if(spans[3]&&payload.loadedAt)spans[3].textContent='⟳ '+new Date(payload.loadedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});stopProgress()}
 function startProgress(label){var bar=document.getElementById('progressbar');if(bar)bar.classList.add('active');if(label)label.textContent='Working…'}
+function stopProgress(){var bar=document.getElementById('progressbar');if(bar)bar.classList.remove('active')}
 function refreshNow(e){if(e)e.preventDefault();var link=document.getElementById('refreshLink');startProgress(link);navigateTo(runUrl('dashboard',selectedTab()),'Refresh requested.')}
 function togglePause(){paused=!paused;try{localStorage.zmiPaused=paused?'1':'0'}catch(e){}drawTimer()}
 function toggleSmsComposer(force){var el=document.getElementById('smsComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
