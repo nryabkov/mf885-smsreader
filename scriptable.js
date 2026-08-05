@@ -37,7 +37,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, parseDigestChallenge, buildHtml, clientScript, parseBattery, parseNetwork, batteryInlineLabel, networkModeLabel, signalBarsHtml };
+module.exports = { run, parseDigestChallenge, buildHtml, clientScript, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml };
 
 async function main() {
   try {
@@ -82,16 +82,16 @@ async function loadModel(auth) {
   };
   try {
     const status = await getStatus(auth);
-    model.traffic = parseTraffic(status);
-    model.battery = parseBattery(status);
-    model.network = parseNetwork(status);
+    model.traffic = sectionWithError(parseTraffic(status), "trafficError", "status1 has no WanStatistics data");
+    model.battery = sectionWithError(parseBattery(status), "batteryError", "status1 has no batteryinfo data");
+    model.network = sectionWithError(parseNetwork(status), "networkError", "status1 has no cellular network data");
   } catch (error) {
     model.errors.status = cleanError(error);
   }
   try { model.sms = await loadAllSms(auth); }
-  catch (error) { model.errors.sms = cleanError(error); }
+  catch (error) { model.errors.smsError = cleanError(error); model.errors.sms = model.errors.smsError; }
   try { model.ussd = await detectUssdCapability(auth); }
-  catch (error) { model.errors.ussd = cleanError(error); }
+  catch (error) { model.errors.ussdError = cleanError(error); model.errors.ussd = model.errors.ussdError; }
   try { model.deviceAccess = await detectDeviceAccess(auth); }
   catch (error) { model.errors.deviceAccess = cleanError(error); }
   return model;
@@ -154,8 +154,26 @@ async function resetTrafficFlow(auth) {
   if (String(QUERY.confirm || "") !== "1") {
     return dashboardFlow(auth, warningNotice("Confirm total traffic reset. This action will reopen the script."), "router");
   }
-  await routerCall(auth, "statistics", "stat_clear_common_data");
-  return dashboardFlow(auth, successNotice("Total mobile traffic counters were reset."), "router");
+  const diagnostics = [];
+  let before = null;
+  try { before = parseTraffic(await getStatus(auth)); diagnostics.push(`before=${before.total}`); }
+  catch (error) { diagnostics.push(`before error=${cleanError(error)}`); }
+  async function verify(label) {
+    await sleep(500);
+    const after = parseTraffic(await getStatus(auth));
+    diagnostics.push(`${label} after=${after.total}`);
+    return trafficResetConfirmed(before && before.total, after && after.total);
+  }
+  try {
+    diagnostics.push(compactDebug(await routerCall(auth, "statistics", "stat_clear_common_data"), 500));
+    if (await verify("common")) return dashboardFlow(auth, successNotice("Total mobile traffic counters were reset."), "router");
+  } catch (error) { diagnostics.push(`common error=${cleanError(error)}`); }
+  try {
+    const xml = "<RGW><statistics><WanStatistics><reset>1</reset></WanStatistics></statistics></RGW>";
+    diagnostics.push(compactDebug(await xmlRequest(auth, "POST", "statistics", xml), 500));
+    if (await verify("xml")) return dashboardFlow(auth, successNotice("Total mobile traffic counters were reset."), "router");
+  } catch (error) { diagnostics.push(`xml error=${cleanError(error)}`); }
+  return dashboardFlow(auth, errorNotice(`Traffic reset was not confirmed${DEBUG ? `: ${diagnostics.join(" | ")}` : "."}`), "router");
 }
 
 async function powerFlow(auth, kind) {
@@ -176,6 +194,11 @@ async function powerFlow(auth, kind) {
       }
     } catch (error) {
       diagnostics.push(powerDiagnostic(attempt, "", error));
+      if (possiblePowerNetworkLoss(error)) {
+        return dashboardFlow(auth, successNotice(reboot
+          ? "Connection to the router was lost; reboot likely started."
+          : "Connection to the router was lost; shutdown likely started."), "router");
+      }
     }
   }
 
@@ -185,6 +208,13 @@ async function powerFlow(auth, kind) {
   const detail = DEBUG ? `${message}: ${diagnostics.join(" | ")}` : message;
   return dashboardFlow(auth, errorNotice(detail), "router");
 }
+
+function trafficResetConfirmed(oldTotal, newTotal) {
+  if (newTotal === null || newTotal === undefined) return false;
+  if (oldTotal === null || oldTotal === undefined) return newTotal <= 50 * 1024 * 1024;
+  return newTotal < oldTotal / 10 || newTotal < oldTotal;
+}
+function possiblePowerNetworkLoss(error) { return /time|timeout|network|connection|socket|host|offline|load failed/i.test(cleanError(error)); }
 
 function powerAttempts(kind) {
   const reboot = kind === "reboot";
@@ -438,28 +468,62 @@ function routerAccepted(xml) {
 }
 
 // SMS pagination and parsing
-function emptySms() { return { messages: [], loadedPages: 0, totalPages: null, warning: "" }; }
+function emptySms() { return { messages: [], loadedPages: 0, totalPages: null, totalMessages: null, hasMore: false, fingerprint: "", warning: "" }; }
 async function loadAllSms(auth) {
   const result = emptySms();
-  let previous = "";
+  const first = parseSmsPage(await getSmsPage(auth, 1), 1);
+  result.totalPages = first.totalPages;
+  result.totalMessages = first.totalMessages;
+  let expectedPages = first.totalPages;
+  let last = null;
+  if (expectedPages !== null && expectedPages > 1 && expectedPages <= SMS_MAX_PAGES) {
+    last = parseSmsPage(await getSmsPage(auth, expectedPages), expectedPages);
+    if (!last.messages.length) {
+      result.warning = "The router reported message count as total_number; page count was inferred.";
+      expectedPages = null;
+      result.totalPages = null;
+    }
+  }
+  const seenPages = new Set();
   for (let page = 1; page <= SMS_MAX_PAGES; page++) {
-    const parsed = parseSmsPage(await getSmsPage(auth, page), page);
-    if (page === 1) result.totalPages = parsed.totalPages;
+    const parsed = page === 1 ? first : (last && page === last.page ? last : parseSmsPage(await getSmsPage(auth, page), page));
     if (!parsed.messages.length) break;
-    const fingerprint = parsed.messages.map(smsKey).join("|");
-    if (fingerprint === previous) { result.warning = "The router repeated a page; loading stopped."; break; }
-    result.messages.push(...parsed.messages); result.loadedPages++; previous = fingerprint;
-    if (result.totalPages !== null && page >= result.totalPages) break;
-    if (result.totalPages === null && parsed.messages.length < SMS_PAGE_SIZE) break;
-    if (page === SMS_MAX_PAGES) result.warning = `The ${SMS_MAX_PAGES}-page safety limit was reached.`;
+    const pageFp = pageMessageFingerprint(parsed.messages);
+    if (seenPages.has(pageFp)) { result.warning = result.warning || "The router repeated a page; loading stopped."; break; }
+    seenPages.add(pageFp);
+    result.messages.push(...parsed.messages);
+    result.loadedPages++;
+    if (result.totalMessages === null) result.totalMessages = parsed.totalMessages;
+    if (expectedPages !== null && page >= expectedPages) break;
+    if (expectedPages === null && parsed.messages.length < SMS_PAGE_SIZE) break;
+    if (page === SMS_MAX_PAGES) { result.warning = `The ${SMS_MAX_PAGES}-page safety limit was reached.`; result.hasMore = true; }
   }
   const seen = new Set();
   result.messages = result.messages.filter(message => { const key = smsKey(message); if (seen.has(key)) return false; seen.add(key); return true; });
+  result.fingerprint = smsEdgeFingerprint(first, last || (result.loadedPages === 1 ? first : null), result.totalPages, result.totalMessages);
   return result;
 }
+async function inspectSmsEdges(auth) {
+  const first = parseSmsPage(await getSmsPage(auth, 1), 1);
+  let last = null;
+  const totalPages = first.totalPages;
+  const totalMessages = first.totalMessages;
+  if (totalPages !== null && totalPages > 1 && totalPages <= SMS_MAX_PAGES) last = parseSmsPage(await getSmsPage(auth, totalPages), totalPages);
+  const fingerprint = smsEdgeFingerprint(first, last, totalPages, totalMessages);
+  return { first, last, totalPages, totalMessages, fingerprint };
+}
+function smsEdgeFingerprint(first, last, totalPages, totalMessages) {
+  return [totalPages == null ? "?" : totalPages, totalMessages == null ? "?" : totalMessages, pageMessageFingerprint(first && first.messages), pageMessageFingerprint(last && last.messages)].join("#");
+}
+function pageMessageFingerprint(messages) { return (messages || []).map(smsKey).join("|"); }
+function unchangedSms(current, edges) {
+  return !!(current && edges && current.fingerprint && current.fingerprint === edges.fingerprint && current.totalPages === edges.totalPages && current.totalMessages === edges.totalMessages);
+}
 function parseSmsPage(xml, page) {
-  const totalPages = firstNumber(xml, ["total_pages", "total_page", "page_count", "total_number"]);
-  return { page, totalPages, messages: parseSmsItems(xml) };
+  const totalMessages = firstNumber(xml, ["total_sms_count", "total_message_count", "message_count", "sms_count", "record_count", "total_records"]);
+  const totalPages = firstNumber(xml, ["total_pages", "total_page", "page_count", "total_page_number"]);
+  const legacy = firstNumber(xml, ["total_number"]);
+  return { page, totalMessages: totalMessages !== null ? totalMessages : legacy, totalPages, legacyTotalNumber: legacy, messages: parseSmsItems(xml) };
 }
 function parseSmsItems(xml) {
   const messages = []; const regex = /<Item\b([^>]*)>([\s\S]*?)<\/Item>/gi; let hit;
@@ -488,82 +552,121 @@ function smsTime() { const d = new Date(); const offset = -d.getTimezoneOffset()
 function parseSendResult(xml) { const lower = String(xml || "").toLowerCase(); const status = firstText(xml, ["sms_cmd_status_result", "send_status"]); const ok = !unauthorized(xml) && !/error|fail/.test(lower) && status !== "0" && status !== "2"; return { ok, message: ok ? "The router accepted the send command" : "The router rejected the send command" }; }
 
 // Router status
+function sectionWithError(data, errorKey, message) { return data && data.hasData ? data : Object.assign({}, data || {}, { [errorKey]: message }); }
 function parseTraffic(xml) {
   const source = tag(xml, "WanStatistics") || xml;
-  const upload = firstNumber(source, ["tx_byte_all", "total_tx_bytes"]);
-  const download = firstNumber(source, ["rx_byte_all", "total_rx_bytes"]);
-  return { upload, download, total: sum(upload, download), sessionUpload: firstNumber(source, ["tx_byte", "tx_bytes"]), sessionDownload: firstNumber(source, ["rx_byte", "rx_bytes"]) };
+  const upload = firstTraffic(source, ["tx_byte_all", "total_tx_bytes"]);
+  const download = firstTraffic(source, ["rx_byte_all", "total_rx_bytes"]);
+  const sessionUpload = firstTraffic(source, ["tx_byte", "tx_bytes"]);
+  const sessionDownload = firstTraffic(source, ["rx_byte", "rx_bytes"]);
+  const sessionSeconds = connectionSeconds(source);
+  const hasData = [upload, download, sessionUpload, sessionDownload, sessionSeconds].some(v => v !== null && v !== undefined);
+  return { hasData, upload, download, total: sum(upload, download), sessionUpload, sessionDownload, sessionSeconds };
 }
+function firstTraffic(xml, names) { for (const name of names) { const value = trafficValue(tag(xml, name)); if (value !== null) return value; } return null; }
+function trafficValue(value) { const text = String(value || "").trim().replace(",", "."); const m = text.match(/^([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?i?B|B)?$/i); if (!m) return number(text); const n = Number(m[1]); if (!Number.isFinite(n)) return null; const u=(m[2]||"B").toLowerCase(); const p={b:0,kb:1,kib:1,mb:2,mib:2,gb:3,gib:3,tb:4,tib:4}[u]; return p===undefined?null:Math.round(n*Math.pow(1024,p)); }
+function connectionSeconds(source) { const d=firstNumber(source,["conn_days"]), h=firstNumber(source,["conn_hours"]), m=firstNumber(source,["conn_minutes"]), sec=firstNumber(source,["conn_seconds"]); return [d,h,m,sec].some(v=>v!==null) ? (d||0)*86400+(h||0)*3600+(m||0)*60+(sec||0) : null; }
 function parseBattery(xml) {
   const source = tag(xml, "batteryinfo") || xml;
-  const percent = firstNumber(source, ["Battery_percent", "battery_percent", "battery_value"]);
-  const raw = firstText(source, ["Battery_status", "battery_status", "Charger_status", "charger_status", "battery_charging"]);
-  const charging = /charg|adapter|usb|plug|online|^2$|^1$/i.test(raw) && !/discharg|offline/i.test(raw);
-  return { percent: percent === null ? null : Math.min(100, percent), charging, status: batteryStatusLabel(raw, charging, percent), rawStatus: raw || "" };
+  const percent = firstNumber(source, ["Battery_percent", "battery_percent", "battery_value", "batteryPercent", "BatteryValue"]);
+  const raw = firstText(source, ["Battery_status", "battery_status", "Charger_status", "charger_status", "CDetectStatus", "battery_charging"]);
+  const chargerCurrent = firstNumber(source, ["Charger_current", "charger_current"]);
+  const outputCurrent = firstNumber(source, ["Output_current", "output_current"]);
+  const lower = raw.toLowerCase();
+  const charging = /charg|adapter|usb|ac|plug|online/.test(lower) || (chargerCurrent !== null && chargerCurrent > 0);
+  const full = /full|charged|complete|finish/.test(lower) || (percent !== null && percent >= 100 && charging);
+  const discharging = /discharg|unplug|not\s*charg/.test(lower) || (outputCurrent !== null && outputCurrent > 0);
+  const state = full ? "full" : charging ? "charging" : discharging ? "discharging" : "unknown";
+  const status = state === "full" ? "Full" : state === "charging" ? "Charging" : state === "discharging" ? "Discharging" : "Unknown";
+  return { hasData: percent !== null || !!raw || chargerCurrent !== null || outputCurrent !== null, percent: percent === null ? null : Math.min(100, percent), charging, state, status, detailText: status, chargerCurrent, outputCurrent, rawStatus: raw || "" };
 }
 function parseNetwork(xml) {
   const wan = tag(xml, "wan") || xml;
   const cellular = tag(wan, "cellular") || tag(xml, "cellular") || wan;
   const sources = [wan, cellular, xml].join("\n");
   const operator = firstText(sources, ["network_name", "ISP_name", "ISP", "operator_name", "mccmnc"]);
+  const regText = firstText(sources, ["NW_register_status", "nw_register_status", "register_status"]);
+  const registered = regText ? !/^(0|false|no|none|denied|search|unknown)$/i.test(regText.trim()) : null;
+  const roamText = firstText(sources, ["roaming", "roam_status", "roaming_status"]);
+  const roaming = roamText ? /^(1|true|yes|on|roam|roaming)$/i.test(roamText.trim()) : null;
+  const modeCode = firstNumber(sources, ["sys_mode", "sysmode", "system_mode"]);
+  const submodeCode = firstNumber(sources, ["sys_submode", "syssubmode", "system_submode"]);
   const rawMode = firstText(sources, ["network_type", "network_mode", "data_conn_mode", "radio_mode", "rat", "service_type", "NetworkType", "networkType", "current_network_type", "rat_mode", "access_technology", "service_status", "lte_status", "nw_rat", "rat_name"]);
-  const mode = networkModeLabel(rawMode);
-  const signalValue = firstNumber(sources, ["SignalBar", "signalBar", "signalbar", "signal_bar", "signal_level", "signal", "network_signal"]);
-  const dbm = firstSigned(sources, ["RSRP", "rsrp", "lte_rsrp", "RSSI", "rssi", "rscp", "ecio", "sinr", "signal_strength", "SignalStrength"]);
-  const bars = normalizeSignalBars(signalValue, dbm);
+  const proto = networkProtocol(rawMode, modeCode, submodeCode);
+  const rsrp = firstSigned(sources, ["rsrp", "RSRP", "lte_rsrp", "signal_rsrp"]);
+  const rssiValue = firstSigned(sources, ["rssi", "RSSI", "signal_strength", "SignalStrength", "signal"]);
+  const readyBars = firstNumber(sources, ["SignalBar", "signalBar", "signalbar", "signal_bar", "signal_level", "SignalLevel", "network_signal"]);
+  const sig = signalInfo(readyBars, rsrp, rssiValue);
+  const bars = registered === false ? 0 : sig.bars;
+  const protocol = registered === false ? "No service" : proto.protocol;
+  const generation = registered === false ? "Unknown" : proto.generation;
   const lac = firstText(sources, ["lac", "LAC", "tac", "TAC", "location_area_code"]);
   const cellId = firstText(sources, ["cell_id", "cellid", "CellID", "cid", "eci"]);
   const pci = firstText(sources, ["pci", "PCI", "psc"]);
-  return { operator, mode, rawMode, bars, dbm, lac, tac: lac, cellId, pci, quality: signalQuality(bars, dbm) };
+  const dbm = rsrp !== null ? rsrp : sig.dbm;
+  return { operator, mode: protocol, registered, roaming, generation, protocol, modeCode, submodeCode, rawMode, hasData: !!(operator || rawMode || regText || modeCode !== null || submodeCode !== null || bars !== null), detailText: [protocol, roaming ? "Roaming" : ""].filter(Boolean).join(" · "), signalText: signalText(bars), percent: sig.percent, bars, dbm, lac, tac: lac, cellId, pci, quality: signalText(bars) };
 }
 function batteryStatusLabel(value, charging, percent) {
   const text = String(value || "").trim();
   const lower = text.toLowerCase();
-  if (/full|complete|100/.test(lower) || text === "3" || percent === 100) return "Full";
-  if (charging || /charg|adapter|usb|plug|online/.test(lower) || text === "2") return "Charging";
-  if (/battery|discharg|offline/.test(lower) || text === "1") return "Discharging";
+  if (/full|charged|complete|finish/.test(lower) || text === "3" || (percent >= 100 && charging)) return "Full";
+  if (charging || /charg|adapter|usb|ac|plug|online/.test(lower) || text === "2") return "Charging";
+  if (/discharg|unplug|not\s*charg|offline/.test(lower) || text === "1") return "Discharging";
   return "Unknown";
 }
 function batteryInlineLabel(battery) {
   const percent = battery && battery.percent !== null && battery.percent !== undefined ? `${battery.percent}%` : "—";
-  const status = batteryStatusLabel(battery && battery.rawStatus, battery && battery.charging, battery && battery.percent);
+  const status = battery && battery.status ? battery.status : batteryStatusLabel(battery && battery.rawStatus, battery && battery.charging, battery && battery.percent);
   if (status === "Charging") return `🔋 ${percent} ↑ Charging`;
   if (status === "Discharging") return `🔋 ${percent} ↓ Discharging`;
   if (status === "Full") return `🔋 ${percent} Full`;
   return `🔋 ${percent} Unknown`;
 }
-function networkModeLabel(value) {
+const NETWORK_SUBMODES = { 1:["GSM","2G"], 2:["GPRS","2G"], 3:["EDGE","2G"], 4:["WCDMA","3G"], 5:["HSDPA","3G"], 6:["HSUPA","3G"], 7:["HSPA","3G"], 8:["TD-SCDMA","3G"], 9:["HSPA+","3G"], 17:["HSPA+ 64QAM","3G"], 18:["HSPA+ MIMO","3G"], 25:["LTE TDD / 4G","4G"], 26:["LTE FDD / 4G","4G"] };
+const NETWORK_MODES = { 3:["GSM/GPRS","2G"], 4:["WCDMA","3G"], 5:["TD-SCDMA","3G"], 6:["LTE","4G"], 15:["TD-SCDMA","3G"], 16:["LTE FDD","4G"], 17:["LTE / 4G","4G"] };
+function networkProtocol(value, mode, submode) {
   const text = String(value || "").trim();
-  if (!text) return "Unknown";
   const lower = text.toLowerCase();
+  if (mode === 0 || submode === 0 || /unknown|none|no service|limited/.test(lower)) return { protocol: mode === 0 || submode === 0 ? "No service" : "Unknown", generation: "Unknown" };
+  if (/5g|nr/.test(lower)) return { protocol: "5G", generation: "5G" };
+  if (/lte|4g/.test(lower)) return { protocol: "LTE / 4G", generation: "4G" };
+  if (/hspa|hsdpa|hsupa|wcdma|umts|3g/.test(lower)) return { protocol: "3G", generation: "3G" };
+  if (/edge|gprs|gsm|2g/.test(lower)) return { protocol: "2G", generation: "2G" };
+  if (submode !== null && NETWORK_SUBMODES[submode]) return { protocol: NETWORK_SUBMODES[submode][0], generation: NETWORK_SUBMODES[submode][1] };
+  if (mode !== null && NETWORK_MODES[mode]) return { protocol: NETWORK_MODES[mode][0], generation: NETWORK_MODES[mode][1] };
   const code = /^\d+$/.test(text) ? Number(text) : null;
-  if (/5g|nr/.test(lower) || [20, 21, 101].includes(code)) return "5G";
-  if (/lte|4g/.test(lower) || [4, 7, 13, 14, 19, 38, 39, 40, 41].includes(code)) return "LTE / 4G";
-  if (/3g|umts|hspa|wcdma|evdo|td-scdma/.test(lower) || [2, 3, 5, 6, 8, 9, 10, 11, 12, 15].includes(code)) return "3G";
-  if (/2g|edge|gsm|gprs|cdma/.test(lower) || [1, 16].includes(code)) return "2G";
-  if (/unknown|none|no service|limited/.test(lower) || code === 0) return "Unknown";
-  return text;
+  if ([20,21,101].includes(code)) return { protocol: "5G", generation: "5G" };
+  if ([4,7,13,14,19,38,39,40,41].includes(code)) return { protocol: "LTE / 4G", generation: "4G" };
+  if ([2,3,5,6,8,9,10,11,12,15].includes(code)) return { protocol: "3G", generation: "3G" };
+  if ([1,16].includes(code)) return { protocol: "2G", generation: "2G" };
+  return { protocol: text || "Unknown", generation: "Unknown" };
 }
-function normalizeSignalBars(value, dbm) {
+function networkModeLabel(value) { return networkProtocol(value, null, null).protocol; }
+function signalInfo(value, rsrp, rssi) {
+  if (rsrp !== null && rsrp !== undefined) { const b = barsFromThresholds(rsrp, [-125,-115,-105,-95,-85]); return { dbm: rsrp, bars: b, percent: b * 20 }; }
   if (value !== null && value !== undefined) {
     const n = Number(value);
-    if (Number.isFinite(n)) return Math.max(0, Math.min(5, Math.round(n > 5 ? n / 20 : n)));
+    if (!Number.isFinite(n) || n === 99) return { dbm: null, bars: null, percent: null };
+    if (n < 0) { const b=barsFromThresholds(n, [-105,-95,-85,-75,-65]); return { dbm: n, bars: b, percent: b * 20 }; }
+    if (n <= 5) return { dbm: null, bars: Math.round(n), percent: Math.round(n) * 20 };
+    if (n <= 31) { const dbm = -113 + 2 * n, b=barsFromThresholds(dbm, [-105,-95,-85,-75,-65]); return { dbm, bars: b, percent: b * 20 }; }
+    if (n <= 100) return { dbm: null, bars: Math.max(0, Math.min(5, Math.round(n / 20))), percent: n };
   }
-  if (dbm !== null && dbm !== undefined) return dbm >= -75 ? 5 : dbm >= -85 ? 4 : dbm >= -95 ? 3 : dbm >= -105 ? 2 : dbm >= -115 ? 1 : 0;
-  return null;
+  if (rssi !== null && rssi !== undefined) return signalInfo(rssi, null, null);
+  return { dbm: null, bars: null, percent: null };
 }
-function signalQuality(bars, dbm) {
-  const b = normalizeSignalBars(bars, dbm);
-  if (b !== null) return b >= 4 ? "Strong" : b >= 3 ? "Good" : b >= 1 ? "Weak" : "No signal";
-  return "No data";
-}
+function barsFromThresholds(dbm, thresholds) { let bars = 0; for (const t of thresholds) if (dbm >= t) bars++; return Math.max(0, Math.min(5, bars)); }
+function normalizeSignalBars(value, dbm) { return signalInfo(value, null, dbm).bars; }
+function signalText(bars) { return ["No signal", "Very weak", "Weak", "Medium", "Good", "Excellent"][bars == null ? -1 : bars] || "No data"; }
+function signalQuality(bars, dbm) { const b = bars !== null && bars !== undefined ? bars : normalizeSignalBars(null, dbm); return signalText(b); }
 function signalBarsHtml(network) {
-  const bars = normalizeSignalBars(network && network.bars, network && network.dbm);
-  const safe = bars === null ? 0 : bars;
-  const label = bars === null ? "Signal unknown" : `Signal ${safe} of 5`;
+  const bars = network && network.bars !== undefined ? network.bars : normalizeSignalBars(null, network && network.dbm);
+  const safe = bars === null || bars === undefined ? 0 : bars;
+  const label = bars === null || bars === undefined ? "Signal unknown" : `Signal ${safe} of 5`;
   return `<span class="signal-bars" role="img" aria-label="${escapeHtml(label)}">${[1,2,3,4,5].map(i => `<i class="${i <= safe ? "on" : ""}"></i>`).join("")}</span>`;
 }
 function formatBytes(bytes) { if (bytes === null || !Number.isFinite(bytes)) return "—"; if (!bytes) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), 4); return `${(bytes / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${units[i]}`; }
+function formatDuration(seconds) { if (seconds === null || seconds === undefined) return ""; const s=Math.max(0, seconds|0), h=Math.floor(s/3600), m=Math.floor((s%3600)/60); return h ? `${h}h ${m}m` : `${m}m ${s%60}s`; }
 
 // Experimental USSD support is isolated in modules/ussd.js. The API adapter
 // keeps authentication and XML transport in this application module.
@@ -623,7 +726,7 @@ function buildHtml(model) {
   const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}</div>` : "";
   const signalHtml = signalBarsHtml(network);
   const topCards = `<section class="topgrid router-only">
-    <article class="mini"><span>Signal</span><strong>${signalHtml}</strong><small>${escapeHtml(network.mode || "Unknown")}${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</small></article>
+    <article class="mini"><span>Signal</span><strong>${signalHtml}</strong><small>${escapeHtml(network.networkError || network.mode || "Unknown")}${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</small></article>
     <article class="mini"><span>Battery</span><strong>${batteryLabel}</strong><small>${escapeHtml(battery.status || "Unknown")}</small></article>
     <article class="mini"><span>Traffic</span><strong>${totalTraffic}</strong><small>Downloaded: ${formatBytes(traffic.download)} · Uploaded: ${formatBytes(traffic.upload)}</small></article>
   </section>`;
@@ -655,9 +758,9 @@ function buildHtml(model) {
     <form id="smsComposer" class="composer card" onsubmit="submitSmsInline(event)" hidden><input name="to" placeholder="Recipient" autocomplete="tel"><textarea name="text" placeholder="SMS text" rows="3" maxlength="1000"></textarea><div><button class="primary" type="submit">Send SMS</button><button type="button" onclick="toggleSmsComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form>
     <form id="ussdComposer" class="composer card" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Code, for example *100#"><div><button class="primary" type="submit">Send USSD</button><button type="button" onclick="toggleUssdComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form>
     ${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
-    <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>${escapeHtml(network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}</article>
-    <article class="card battery"><small>Battery</small><h2>${escapeHtml(batteryInline)}</h2><p>${escapeHtml(battery.status || "Unknown")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
-    <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Reset traffic</a>${resetTrafficConfirm}</article>
+    <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>${escapeHtml(network.networkError || network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}</article>
+    <article class="card battery"><small>Battery</small><h2>${escapeHtml(batteryInline)}</h2><p>${escapeHtml(battery.batteryError || battery.status || "Unknown")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
+    <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><p>Session: ↓ ${formatBytes(traffic.sessionDownload)} · ↑ ${formatBytes(traffic.sessionUpload)}${traffic.sessionSeconds !== null && traffic.sessionSeconds !== undefined ? ` · ${escapeHtml(formatDuration(traffic.sessionSeconds))}` : ""}</p>${traffic.trafficError ? `<p class="warning">${escapeHtml(traffic.trafficError)}</p>` : ""}<a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Reset traffic</a>${resetTrafficConfirm}</article>
     <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Available" : "Not confirmed"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button onclick="tab('sms');toggleUssdComposer(true)">Dial USSD</button></article>
     <article class="card"><small>Device access</small><h2>${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar">${deviceActions || "<span>No actions available</span>"}</div>${deviceConfirm}</article>
     <article class="card"><small>Power</small><h2>System commands</h2><a class="buttonlike" href="${runUrl("reboot", "router")}">Restart</a> <a class="danger buttonlike" href="${runUrl("powerOff", "router")}">Power off</a>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
@@ -665,7 +768,7 @@ function buildHtml(model) {
 }
 
 function clientScript(model, baseRun) {
-  return `var model={tab:${JSON.stringify(model.tab)},poll:${POLL_SECONDS},baseRun:${JSON.stringify(baseRun)},translateEndpoint:${JSON.stringify(TRANSLATE_ENDPOINT)}};
+  return `var model={tab:${JSON.stringify(model.tab)},poll:${POLL_SECONDS},baseRun:${JSON.stringify(baseRun)},translateEndpoint:${JSON.stringify(TRANSLATE_ENDPOINT)},sms:{fingerprint:${JSON.stringify(model.sms && model.sms.fingerprint || "")},totalPages:${JSON.stringify(model.sms && model.sms.totalPages)},totalMessages:${JSON.stringify(model.sms && model.sms.totalMessages)}}};
 var remaining=model.poll,paused=false,timer=null,navigationInProgress=false;
 function selectedTab(){try{return localStorage.zmiTab||model.tab}catch(e){return model.tab}}
 function runUrl(action,tab,params){var q=new URLSearchParams();q.set('action',action||'dashboard');q.set('tab',tab||selectedTab());if(params){Object.keys(params).forEach(function(k){q.set(k,params[k])})}return model.baseRun+'&'+q.toString()}
@@ -683,6 +786,7 @@ function tab(id){document.querySelectorAll('.tab').forEach(function(x){x.classLi
 function fmt(s){s=Math.max(0,s|0);return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
 function drawTimer(){var c=document.getElementById('countdown'),p=document.getElementById('pauseBtn');if(c)c.textContent=paused?'Paused':'Next refresh: '+fmt(remaining);if(p)p.textContent=paused?'Resume':'Pause'}
 function navigateTo(url,label){if(navigationInProgress)return false;navigationInProgress=true;paused=true;if(timer)clearInterval(timer);document.querySelectorAll('button,a').forEach(function(x){x.disabled=true;x.setAttribute('aria-disabled','true')});setActionStatus('This action will reopen the script. Scriptable is rerunning the dashboard; if the screen closes, open the script again. '+(label||''));setTimeout(function(){window.location.href=url},250);return true}
+function saveSmsFingerprint(){try{localStorage.zmiSmsFingerprint=model.sms.fingerprint||'';localStorage.zmiSmsTotalPages=model.sms.totalPages==null?'':String(model.sms.totalPages);localStorage.zmiSmsTotalMessages=model.sms.totalMessages==null?'':String(model.sms.totalMessages)}catch(e){}}
 function tick(){if(!paused){remaining-=1;if(remaining<=0){navigateTo(runUrl('dashboard',selectedTab()),'Automatic refresh.');return}}drawTimer()}
 function startProgress(label){var bar=document.getElementById('progressbar');if(bar)bar.classList.add('active');if(label)label.textContent='Working…'}
 function refreshNow(e){if(e)e.preventDefault();var link=document.getElementById('refreshLink');startProgress(link);navigateTo(runUrl('dashboard',selectedTab()),'Refresh requested.')}
@@ -691,7 +795,7 @@ function toggleSmsComposer(force){var el=document.getElementById('smsComposer');
 function toggleUssdComposer(force){var el=document.getElementById('ussdComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
 function submitSmsInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),to=f.elements.to.value.trim(),text=f.elements.text.value.trim();if(!to||!text){s.textContent=!to?'Enter a recipient number':'Enter SMS text';return}if(text.length>1000){s.textContent='SMS text is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('send','sms',{to:to,text:text}),'Sending SMS.')}
 function submitUssdInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),code=f.elements.code.value.trim();if(!code){s.textContent='Enter a USSD code';return}if(code.length>128){s.textContent='USSD code is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('ussd',selectedTab(),{code:code}),'Sending USSD.')}
-function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';navigateTo(a.href,'This action will reopen the script.')})}
+function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}saveSmsFingerprint();tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';navigateTo(a.href,'This action will reopen the script.')})}
 document.addEventListener('DOMContentLoaded',initDashboard);
 async function copySms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body');var value=body?body.innerText:'';var old=button.textContent;if(!navigator.clipboard||!navigator.clipboard.writeText){button.textContent='Manual copy';showActionError('Copy SMS manually','Clipboard is unavailable in this WebView. Select the text below and copy it manually.',value);setTimeout(function(){button.textContent=old},1500);return}button.disabled=true;try{await navigator.clipboard.writeText(value);button.textContent='Copied';setActionStatus('SMS copied to the clipboard.')}catch(e){button.textContent='Error';showActionError('Could not copy SMS',describeError(e),value)}finally{setTimeout(function(){button.textContent=old;button.disabled=false},1500)}}
 async function translateSms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),box=card&&card.querySelector('[data-translation] span'),text=card?card.getAttribute('data-msg-text')||'':'';if(!box)return;var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text;if(!text){box.textContent='No text to translate';return}var cached=localStorage.getItem(key);if(cached){box.textContent=cached;return}var old=button.textContent;button.disabled=true;button.textContent='…';try{if(!model.translateEndpoint){box.textContent='Auto-translation is not configured; trying to copy the text for Apple Translate.';if(!navigator.clipboard||!navigator.clipboard.writeText){showActionError('Copy for translation','Clipboard is unavailable. Select the SMS below and copy it manually for Apple Translate.',text);return}await navigator.clipboard.writeText(text);setActionStatus('Copy for translation: SMS text copied for Apple Translate.');box.textContent='Text copied. Open Apple Translate on iPhone and paste it.';return}var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})});var raw=await res.text();if(!res.ok)throw new Error('HTTP '+res.status+' '+res.statusText+'\\n'+raw);var data;try{data=JSON.parse(raw)}catch(jsonError){throw new Error('HTTP '+res.status+', JSON parse error: '+describeError(jsonError)+'\\nResponse: '+raw)}var tr=data.translatedText||data.translation||'';if(!tr)throw new Error('HTTP '+res.status+', empty translation response: '+raw);localStorage.setItem(key,tr);box.textContent=tr}catch(e){box.textContent=model.translateEndpoint?'Translation is unavailable — details are shown below.':'Could not copy text for translation';showActionError('Could not prepare translation',describeError(e),text)}finally{button.textContent=old;button.disabled=false}}
@@ -708,7 +812,7 @@ function runUrl(action, tab, parameters = {}) {
 async function showMessage(title, message, icon) { const web = new WebView(); await web.loadHTML(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css()}</style></head><body><main><article class="card empty"><h1>${icon} ${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></article></main></body></html>`); await web.present(); }
 
 // Generic XML and text helpers
-function tag(xml, name) { const hit = String(xml || "").match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)<\\/${name}>`, "i")); return hit ? htmlDecode(hit[1].trim()) : ""; }
+function tag(xml, name) { const hit = String(xml || "").match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "i")); return hit ? htmlDecode(hit[1].trim()) : ""; }
 function firstText(xml, names) { for (const name of names) { const value = tag(xml, name).trim(); if (value) return value; } return ""; }
 function firstNumber(xml, names) { for (const name of names) { const value = number(tag(xml, name)); if (value !== null) return value; } return null; }
 function firstSigned(xml, names) { for (const name of names) { const hit = tag(xml, name).replace(",", ".").match(/-?[0-9]+(?:\.[0-9]+)?/); if (hit) return Number(hit[0]); } return null; }
