@@ -37,7 +37,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, parseDigestChallenge, buildHtml, clientScript, parseBattery, parseNetwork, batteryInlineLabel, networkModeLabel, signalBarsHtml };
+module.exports = { run, parseDigestChallenge, buildHtml, clientScript, parseBattery, parseNetwork, batteryInlineLabel, networkModeLabel, signalBarsHtml, powerAccepted };
 
 async function main() {
   try {
@@ -152,7 +152,7 @@ async function deviceAccessFlow(auth) {
 
 async function resetTrafficFlow(auth) {
   if (String(QUERY.confirm || "") !== "1") {
-    return dashboardFlow(auth, warningNotice("Confirm total traffic reset. This action will reopen the script."), "router");
+    return dashboardFlow(auth, warningNotice("Confirm total traffic reset in the WebView first."), "router");
   }
   await routerCall(auth, "statistics", "stat_clear_common_data");
   return dashboardFlow(auth, successNotice("Total mobile traffic counters were reset."), "router");
@@ -161,36 +161,42 @@ async function resetTrafficFlow(auth) {
 async function powerFlow(auth, kind) {
   const reboot = kind === "reboot";
   if (String(QUERY.confirm || "") !== "1") {
-    return dashboardFlow(auth, warningNotice(reboot ? "Confirm router restart. This action will reopen the script." : "Confirm router power off. This action will reopen the script."), "router");
+    return dashboardFlow(auth, warningNotice(reboot ? "Confirm router restart in the WebView first." : "Confirm router power off in the WebView first."), "router");
   }
 
   const diagnostics = [];
+  let uncertain = false;
   for (const attempt of powerAttempts(kind)) {
     try {
       const response = await attempt.run(auth);
       diagnostics.push(powerDiagnostic(attempt, response, null));
-      if (powerAccepted(response)) {
+      const accepted = powerAccepted(response);
+      if (accepted === true) {
         return dashboardFlow(auth, successNotice(reboot
           ? "Команда перезапуска подтверждена прошивкой; временная потеря связи ожидаема."
           : "Команда выключения подтверждена прошивкой; включение возможно физической кнопкой."), "router");
       }
+      if (accepted === null) uncertain = true;
     } catch (error) {
       diagnostics.push(powerDiagnostic(attempt, "", error));
+      if (/timed?\s*out|timeout|network|connection|lost|offline|cancel/i.test(cleanError(error))) uncertain = true;
     }
   }
 
-  const message = reboot
-    ? "Прошивка не подтвердила команду перезагрузки"
-    : "Прошивка не подтвердила команду выключения";
-  const detail = DEBUG ? `${message}: ${diagnostics.join(" | ")}` : message;
-  return dashboardFlow(auth, errorNotice(detail), "router");
+  const message = uncertain
+    ? "Команда могла быть отправлена, но подтверждение не получено; проверьте состояние роутера."
+    : (reboot ? "Прошивка не подтвердила команду перезагрузки" : "Прошивка не подтвердила команду выключения");
+  const detail = `${message}\n\nDiagnostics (safe to copy):\n${diagnostics.join("\n")}`;
+  return dashboardFlow(auth, uncertain ? warningNotice(detail) : errorNotice(detail), "router");
 }
 
 function powerAttempts(kind) {
   const reboot = kind === "reboot";
-  const xmlFiles = reboot
+  const preferredFiles = ["device_management"];
+  const fallbackFiles = reboot
     ? ["reset", "reboot", "system", "device", "power"]
     : ["shutdown", "poweroff", "power_off", "system", "device", "power"];
+  const xmlFiles = preferredFiles.concat(fallbackFiles);
   const routerMethods = reboot
     ? ["reset", "reboot"]
     : ["shutdown", "poweroff", "power_off"];
@@ -198,11 +204,11 @@ function powerAttempts(kind) {
   const attempts = xmlFiles.map(file => {
     const field = powerField(kind, file);
     const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><${file}><${field}>1</${field}></${file}></RGW>`;
-    return { name: file, type: "xmlRequest", run: auth => xmlRequest(auth, "POST", file, xml, false) };
+    return { name: file, file, field, endpoint: `xml_action.cgi?method=set&module=duster&file=${file}`, type: "xmlRequest", run: auth => xmlRequest(auth, "POST", file, xml, false) };
   });
   for (const path of routerPaths) {
     for (const method of routerMethods) {
-      attempts.push({ name: `${path}.${method}`, type: "routerCall", run: auth => routerCall(auth, path, method) });
+      attempts.push({ name: `${path}.${method}`, obj_path: path, obj_method: method, type: "routerCall", run: auth => routerCall(auth, path, method) });
     }
   }
   return attempts;
@@ -216,7 +222,9 @@ function powerField(kind, file) {
 }
 
 function powerDiagnostic(attempt, response, error) {
-  const prefix = `${attempt.type}:${attempt.name}`;
+  const prefix = attempt.type === "xmlRequest"
+    ? `${attempt.type}:${attempt.endpoint} root=RGW field=${attempt.field}`
+    : `${attempt.type}:obj_path=${attempt.obj_path} obj_method=${attempt.obj_method}`;
   if (error) return `${prefix} error=${compactDebug(cleanError(error), 500)}`;
   return `${prefix} response=${compactDebug(response, 500) || "<empty>"}`;
 }
@@ -224,10 +232,11 @@ function powerDiagnostic(attempt, response, error) {
 function powerAccepted(xml) {
   const text = String(xml || "");
   const lower = text.toLowerCase();
-  if (!lower.trim()) return false;
+  if (!lower.trim()) return null;
   if (/unauthorized|error|fail|denied|not\s*support|unsupported|unknown\s+file|invalid\s+file/.test(lower)) return false;
-  if (/<status>\s*(?:[2-5]|-1)\s*<\/status>/i.test(text)) return false;
-  return /<rgw\b/i.test(text) || /success|accepted|ok/i.test(text) || /<status>\s*0\s*<\/status>/i.test(text) || /<result>\s*0\s*<\/result>/i.test(text);
+  if (/<status>\s*(?:[2-9]|[1-9][0-9]+|-1)\s*<\/status>/i.test(text)) return false;
+  if (/<result>\s*(?:[1-9][0-9]*|-1)\s*<\/result>/i.test(text)) return false;
+  return /<status>\s*0\s*<\/status>/i.test(text) || /<result>\s*0\s*<\/result>/i.test(text) || /success|accepted|\bok\b/i.test(text);
 }
 
 // Digest authentication and router API
@@ -620,7 +629,9 @@ function buildHtml(model) {
   const batteryInline = batteryInlineLabel(battery);
   const totalTraffic = formatBytes(traffic.total);
   const notice = normalizeNotice(model.notice);
-  const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}</div>` : "";
+  const noticeDiagnostics = notice && notice.text && /Diagnostics \(safe to copy\):/i.test(notice.text) ? String(notice.text).split(/Diagnostics \(safe to copy\):/i).slice(1).join("Diagnostics (safe to copy):").trim() : "";
+  const noticeMain = noticeDiagnostics ? String(notice.text).split(/Diagnostics \(safe to copy\):/i)[0].trim() : (notice ? notice.text : "");
+  const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(noticeMain)}${noticeDiagnostics ? `<p>Power endpoint diagnostics (safe to copy):</p><textarea rows="8" readonly>${escapeHtml(noticeDiagnostics)}</textarea><pre>${escapeHtml(noticeDiagnostics)}</pre>` : ""}</div>` : "";
   const signalHtml = signalBarsHtml(network);
   const topCards = `<section class="topgrid router-only">
     <article class="mini"><span>Signal</span><strong>${signalHtml}</strong><small>${escapeHtml(network.mode || "Unknown")}${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</small></article>
@@ -637,9 +648,8 @@ function buildHtml(model) {
   const pendingDeviceAction = ACTION === "deviceAccess" ? (model.deviceAccess.capabilities || []).find(action => action.id === String(QUERY.deviceAction || "")) : null;
   const deviceConfirm = pendingDeviceAction && String(QUERY.confirm || "") !== "1"
     ? `<div class="warning"><strong>Confirm experimental action: ${escapeHtml(pendingDeviceAction.title)}</strong><p>ADB, Telnet, and shell commands are experimental firmware/debug actions and may be unsupported or ignored. This action will reopen the script. ${escapeHtml(pendingDeviceAction.description || "The command may change router state.")}</p><a class="danger buttonlike" href="${runUrl("deviceAccess", "router", { deviceAction: pendingDeviceAction.id, confirm: "1" })}">Confirm</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Cancel</a></div>` : "";
-  const resetTrafficConfirm = ACTION === "resetTraffic" && String(QUERY.confirm || "") !== "1" ? `<div class="warning"><strong>Reset total traffic?</strong><p>Only the total mobile WAN counters will be reset. This action will reopen the script.</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router", { confirm: "1" })}">Confirm</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Cancel</a></div>` : "";
-  const powerConfirm = (ACTION === "reboot" || ACTION === "powerOff") && String(QUERY.confirm || "") !== "1";
-  const powerConfirmCard = powerConfirm ? `<div class="warning"><strong>${ACTION === "reboot" ? "Restart router?" : "Power off router?"}</strong><p>${ACTION === "reboot" ? "Wi‑Fi and mobile internet will be temporarily unavailable." : "The physical power button is required to turn the router on again."} This action will reopen the script.</p><a class="danger buttonlike" href="${runUrl(ACTION, "router", { confirm: "1" })}">Confirm</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Cancel</a></div>` : "";
+  const resetTrafficConfirm = "";
+  const powerConfirmCard = `<div id="powerConfirmCard" class="warning" hidden><strong data-confirm-title></strong><p data-confirm-detail></p><a class="danger buttonlike" data-confirm-final href="#">Confirm</a> <button type="button" data-confirm-cancel>Cancel</button></div>`;
   const baseRun = `scriptable:///run?scriptName=${encodeURIComponent(Script.name())}`;
   const activeTab = model.tab === "router" ? "router" : "sms";
   const smsActive = activeTab === "sms" ? " active" : "";
@@ -657,10 +667,10 @@ function buildHtml(model) {
     ${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
     <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>${escapeHtml(network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}</article>
     <article class="card battery"><small>Battery</small><h2>${escapeHtml(batteryInline)}</h2><p>${escapeHtml(battery.status || "Unknown")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
-    <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><a class="danger buttonlike" href="${runUrl("resetTraffic", "router")}">Reset traffic</a>${resetTrafficConfirm}</article>
+    <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><button class="danger buttonlike" type="button" data-power-action="resetTraffic">Reset traffic</button>${resetTrafficConfirm}</article>
     <article class="card"><small>USSD</small><h2>${model.ussd.supported ? "Available" : "Not confirmed"}</h2><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button onclick="tab('sms');toggleUssdComposer(true)">Dial USSD</button></article>
     <article class="card"><small>Device access</small><h2>${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h2><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar">${deviceActions || "<span>No actions available</span>"}</div>${deviceConfirm}</article>
-    <article class="card"><small>Power</small><h2>System commands</h2><a class="buttonlike" href="${runUrl("reboot", "router")}">Restart</a> <a class="danger buttonlike" href="${runUrl("powerOff", "router")}">Power off</a>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
+    <article class="card"><small>Power</small><h2>System commands</h2><button class="buttonlike" type="button" data-power-action="reboot">Restart</button> <button class="danger buttonlike" type="button" data-power-action="powerOff">Power off</button>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
   <script>${clientScript(model, baseRun)}</script></body></html>`;
 }
 
@@ -691,13 +701,14 @@ function toggleSmsComposer(force){var el=document.getElementById('smsComposer');
 function toggleUssdComposer(force){var el=document.getElementById('ussdComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
 function submitSmsInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),to=f.elements.to.value.trim(),text=f.elements.text.value.trim();if(!to||!text){s.textContent=!to?'Enter a recipient number':'Enter SMS text';return}if(text.length>1000){s.textContent='SMS text is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('send','sms',{to:to,text:text}),'Sending SMS.')}
 function submitUssdInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),code=f.elements.code.value.trim();if(!code){s.textContent='Enter a USSD code';return}if(code.length>128){s.textContent='USSD code is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('ussd',selectedTab(),{code:code}),'Sending USSD.')}
-function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';navigateTo(a.href,'This action will reopen the script.')})}
+function confirmDangerousAction(action){var cfg={reboot:{title:'Точно перезагрузить?',detail:'Wi‑Fi and mobile internet will be temporarily unavailable.'},powerOff:{title:'Точно выключить?',detail:'The physical power button is required to turn the router on again.'},resetTraffic:{title:'Точно сбросить трафик?',detail:'Only the total mobile WAN counters will be reset.'}}[action];if(!cfg)return;var card=document.getElementById('powerConfirmCard'),title=card&&card.querySelector('[data-confirm-title]'),detail=card&&card.querySelector('[data-confirm-detail]'),finalLink=card&&card.querySelector('[data-confirm-final]');if(!card||!finalLink)return;if(title)title.textContent=cfg.title;if(detail)detail.textContent=cfg.detail+' This action will reopen the script only after final confirmation.';finalLink.href=runUrl(action,'router',{confirm:'1'});finalLink.textContent=action==='resetTraffic'?'Reset traffic now':(action==='reboot'?'Restart now':'Power off now');card.hidden=false;tab('router');card.scrollIntoView&&card.scrollIntoView({block:'nearest'});setActionStatus(cfg.title+' Final confirmation will reopen the script.')}
+function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var power=e.target&&e.target.closest?e.target.closest('[data-power-action]'):null;if(power){e.preventDefault();if(navigationInProgress)return;confirmDangerousAction(power.getAttribute('data-power-action'));return}var cancel=e.target&&e.target.closest?e.target.closest('[data-confirm-cancel]'):null;if(cancel){e.preventDefault();var card=document.getElementById('powerConfirmCard');if(card)card.hidden=true;hideActionStatus();return}var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';navigateTo(a.href,'This action will reopen the script.')})}
 document.addEventListener('DOMContentLoaded',initDashboard);
 async function copySms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body');var value=body?body.innerText:'';var old=button.textContent;if(!navigator.clipboard||!navigator.clipboard.writeText){button.textContent='Manual copy';showActionError('Copy SMS manually','Clipboard is unavailable in this WebView. Select the text below and copy it manually.',value);setTimeout(function(){button.textContent=old},1500);return}button.disabled=true;try{await navigator.clipboard.writeText(value);button.textContent='Copied';setActionStatus('SMS copied to the clipboard.')}catch(e){button.textContent='Error';showActionError('Could not copy SMS',describeError(e),value)}finally{setTimeout(function(){button.textContent=old;button.disabled=false},1500)}}
 async function translateSms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),box=card&&card.querySelector('[data-translation] span'),text=card?card.getAttribute('data-msg-text')||'':'';if(!box)return;var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text;if(!text){box.textContent='No text to translate';return}var cached=localStorage.getItem(key);if(cached){box.textContent=cached;return}var old=button.textContent;button.disabled=true;button.textContent='…';try{if(!model.translateEndpoint){box.textContent='Auto-translation is not configured; trying to copy the text for Apple Translate.';if(!navigator.clipboard||!navigator.clipboard.writeText){showActionError('Copy for translation','Clipboard is unavailable. Select the SMS below and copy it manually for Apple Translate.',text);return}await navigator.clipboard.writeText(text);setActionStatus('Copy for translation: SMS text copied for Apple Translate.');box.textContent='Text copied. Open Apple Translate on iPhone and paste it.';return}var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})});var raw=await res.text();if(!res.ok)throw new Error('HTTP '+res.status+' '+res.statusText+'\\n'+raw);var data;try{data=JSON.parse(raw)}catch(jsonError){throw new Error('HTTP '+res.status+', JSON parse error: '+describeError(jsonError)+'\\nResponse: '+raw)}var tr=data.translatedText||data.translation||'';if(!tr)throw new Error('HTTP '+res.status+', empty translation response: '+raw);localStorage.setItem(key,tr);box.textContent=tr}catch(e){box.textContent=model.translateEndpoint?'Translation is unavailable — details are shown below.':'Could not copy text for translation';showActionError('Could not prepare translation',describeError(e),text)}finally{button.textContent=old;button.disabled=false}}
 `;
 }
-function css() { return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#172033;--text:#f8fafc;--muted:#a8b3c7;--line:#253044;--cyan:#67e8f9;--blue:#60a5fa;--purple:#a78bfa;--bad:#fb7185;--good:#34d399}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#101827 0%,var(--bg) 45%,#070b13 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:env(safe-area-inset-top) 10px 30px}main{max-width:720px;margin:auto}.hero{padding:12px 4px 6px}.hero.compact{display:block}.hero h1{font-size:26px;line-height:1;margin:0 0 4px}.hero strong{color:var(--cyan)}.statusline{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0;color:var(--muted);font-size:14px}.statusline span{border:1px solid var(--line);border-radius:999px;padding:5px 8px;background:#0d1424}.hero>small,.card small,.mini span{color:var(--cyan);font-weight:800;letter-spacing:.1em;font-size:10px;text-transform:uppercase}.card p,.mini small{color:var(--muted)}.topgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}.mini,.card,.notice,.warning{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.mini{min-height:86px;position:relative}.mini:after{display:none}.mini strong{display:block;font-size:21px;margin:8px 0 3px}.seg{display:flex;background:#080d18;border:1px solid var(--line);border-radius:14px;padding:4px;margin:8px 0}.seg button{flex:1}.seg button.active,.primary{background:#dff8ff;color:#03111d;border-color:transparent;font-weight:800}button,a,.buttonlike{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:8px 11px;background:#182235;color:var(--text);text-decoration:none;font:inherit}button:active,a:active{transform:scale(.98)}.danger{color:var(--bad)}.refresh{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:8px 0 10px;color:var(--muted);font-size:14px}.actions,.inline-toolbar{display:flex;gap:8px;flex-wrap:wrap}.inline-toolbar{margin:8px 0}.tab{display:none}.tab.active{display:block}.card{margin:8px 0}.card h2{font-size:24px;margin:6px 0}.composer input,.composer textarea{width:100%;margin:0 0 8px;padding:10px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);font:inherit}.formStatus{margin:8px 0 0;color:#fbbf24}.sms{padding:11px;margin:8px 0}.sms header{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;border-bottom:1px solid #253044aa;padding-bottom:7px}.sms h3{margin:0 0 2px;font-size:15px}.sms time,.sms footer{color:var(--muted);font-size:12px}.sms footer{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid #253044aa;padding-top:8px}.sms footer button,.sms footer a{padding:6px 9px;border-radius:10px}.sms .body{white-space:pre-wrap;word-break:break-word;font-size:17px;line-height:1.45;color:#f8fafc;margin:10px 0}.translation{color:var(--muted);font-size:14px}.translation span:empty{display:none}.quality{display:inline-block;padding:6px 10px;border-radius:999px;background:#34d39922;color:var(--good)}.codes{font-family:ui-monospace,Menlo,monospace}.bar{height:10px;background:#ffffff14;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--purple),var(--blue),var(--cyan));border-radius:inherit}.progressbar{position:fixed;left:0;right:0;top:0;height:3px;z-index:1000;background:transparent;overflow:hidden}.progressbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--blue));box-shadow:0 0 16px var(--cyan)}.progressbar.active i{animation:progressStart 1.2s ease-in-out infinite}@keyframes progressStart{0%{width:0;transform:translateX(0)}55%{width:72%;transform:translateX(12%)}100%{width:40%;transform:translateX(160%)}}.notice{color:var(--good);margin:8px 0}.notice.warning{color:#fbbf24;border-color:#fbbf2466;background:linear-gradient(180deg,#3b2f14,#1f1a0f)}.notice.error{color:var(--bad);border-color:#fb718566;background:linear-gradient(180deg,#3b1720,#1f0f14)}.warning{color:#fbbf24}.signal-bars{display:inline-flex;gap:3px;align-items:flex-end;height:22px;vertical-align:middle}.signal-bars i{display:block;width:5px;border-radius:3px;background:#ffffff30}.signal-bars i:nth-child(1){height:6px}.signal-bars i:nth-child(2){height:9px}.signal-bars i:nth-child(3){height:12px}.signal-bars i:nth-child(4){height:16px}.signal-bars i:nth-child(5){height:20px}.signal-bars i.on{background:var(--cyan)}.action-status{margin:8px 0;border:1px solid #fbbf2466;border-radius:18px;background:linear-gradient(180deg,#3b2f14,#1f1a0f);box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.action-status header{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px}.action-status p{white-space:pre-wrap;color:#fde68a;margin:8px 0}.action-status textarea,.action-status pre{width:100%;max-width:100%;min-height:96px;margin:8px 0 0;padding:10px;border-radius:12px;border:1px solid #fbbf2466;background:#0b1220;color:#f8fafc;font:13px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;overflow:auto;user-select:text;-webkit-user-select:text}.action-status textarea[hidden],.action-status pre[hidden]{display:none}.empty{text-align:center}@media(max-width:520px){.topgrid{grid-template-columns:1fr}.refresh{align-items:flex-start}.actions{justify-content:flex-end}}`; }
+function css() { return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#172033;--text:#f8fafc;--muted:#a8b3c7;--line:#253044;--cyan:#67e8f9;--blue:#60a5fa;--purple:#a78bfa;--bad:#fb7185;--good:#34d399}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#101827 0%,var(--bg) 45%,#070b13 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:env(safe-area-inset-top) 10px 30px}main{max-width:720px;margin:auto}.hero{padding:12px 4px 6px}.hero.compact{display:block}.hero h1{font-size:26px;line-height:1;margin:0 0 4px}.hero strong{color:var(--cyan)}.statusline{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0;color:var(--muted);font-size:14px}.statusline span{border:1px solid var(--line);border-radius:999px;padding:5px 8px;background:#0d1424}.hero>small,.card small,.mini span{color:var(--cyan);font-weight:800;letter-spacing:.1em;font-size:10px;text-transform:uppercase}.card p,.mini small{color:var(--muted)}.topgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}.mini,.card,.notice,.warning{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.mini{min-height:86px;position:relative}.mini:after{display:none}.mini strong{display:block;font-size:21px;margin:8px 0 3px}.seg{display:flex;background:#080d18;border:1px solid var(--line);border-radius:14px;padding:4px;margin:8px 0}.seg button{flex:1}.seg button.active,.primary{background:#dff8ff;color:#03111d;border-color:transparent;font-weight:800}button,a,.buttonlike{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:8px 11px;background:#182235;color:var(--text);text-decoration:none;font:inherit}button:active,a:active{transform:scale(.98)}.danger{color:var(--bad)}.refresh{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:8px 0 10px;color:var(--muted);font-size:14px}.actions,.inline-toolbar{display:flex;gap:8px;flex-wrap:wrap}.inline-toolbar{margin:8px 0}.tab{display:none}.tab.active{display:block}.card{margin:8px 0}.card h2{font-size:24px;margin:6px 0}.composer input,.composer textarea{width:100%;margin:0 0 8px;padding:10px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);font:inherit}.formStatus{margin:8px 0 0;color:#fbbf24}.sms{padding:11px;margin:8px 0}.sms header{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;border-bottom:1px solid #253044aa;padding-bottom:7px}.sms h3{margin:0 0 2px;font-size:15px}.sms time,.sms footer{color:var(--muted);font-size:12px}.sms footer{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid #253044aa;padding-top:8px}.sms footer button,.sms footer a{padding:6px 9px;border-radius:10px}.sms .body{white-space:pre-wrap;word-break:break-word;font-size:17px;line-height:1.45;color:#f8fafc;margin:10px 0}.translation{color:var(--muted);font-size:14px}.translation span:empty{display:none}.quality{display:inline-block;padding:6px 10px;border-radius:999px;background:#34d39922;color:var(--good)}.codes{font-family:ui-monospace,Menlo,monospace}.bar{height:10px;background:#ffffff14;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--purple),var(--blue),var(--cyan));border-radius:inherit}.progressbar{position:fixed;left:0;right:0;top:0;height:3px;z-index:1000;background:transparent;overflow:hidden}.progressbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--blue));box-shadow:0 0 16px var(--cyan)}.progressbar.active i{animation:progressStart 1.2s ease-in-out infinite}@keyframes progressStart{0%{width:0;transform:translateX(0)}55%{width:72%;transform:translateX(12%)}100%{width:40%;transform:translateX(160%)}}.notice{color:var(--good);margin:8px 0}.notice.warning{color:#fbbf24;border-color:#fbbf2466;background:linear-gradient(180deg,#3b2f14,#1f1a0f)}.notice.error{color:var(--bad);border-color:#fb718566;background:linear-gradient(180deg,#3b1720,#1f0f14)}.warning{color:#fbbf24}.signal-bars{display:inline-flex;gap:3px;align-items:flex-end;height:22px;vertical-align:middle}.signal-bars i{display:block;width:5px;border-radius:3px;background:#ffffff30}.signal-bars i:nth-child(1){height:6px}.signal-bars i:nth-child(2){height:9px}.signal-bars i:nth-child(3){height:12px}.signal-bars i:nth-child(4){height:16px}.signal-bars i:nth-child(5){height:20px}.signal-bars i.on{background:var(--cyan)}.action-status{margin:8px 0;border:1px solid #fbbf2466;border-radius:18px;background:linear-gradient(180deg,#3b2f14,#1f1a0f);box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.action-status header{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px}.action-status p{white-space:pre-wrap;color:#fde68a;margin:8px 0}.notice textarea,.notice pre,.action-status textarea,.action-status pre{width:100%;max-width:100%;min-height:96px;margin:8px 0 0;padding:10px;border-radius:12px;border:1px solid #fbbf2466;background:#0b1220;color:#f8fafc;font:13px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;overflow:auto;user-select:text;-webkit-user-select:text}.notice textarea[hidden],.notice pre[hidden],.action-status textarea[hidden],.action-status pre[hidden]{display:none}.empty{text-align:center}@media(max-width:520px){.topgrid{grid-template-columns:1fr}.refresh{align-items:flex-start}.actions{justify-content:flex-end}}`; }
 function runUrl(action, tab, parameters = {}) {
   const query = Object.assign({ action, tab: tab || "sms" }, parameters);
   return "scriptable:///run?scriptName=" + encodeURIComponent(Script.name()) +

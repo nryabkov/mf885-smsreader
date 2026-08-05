@@ -63,7 +63,7 @@ test("dashboard labels are English and error notices are not green success notic
   assert.match(html, /Compose SMS/);
   assert.match(html, /class="notice error"/);
   assert.doesNotMatch(html, /class="notice">Deletion failed/);
-  assert.doesNotMatch(html, /[А-Яа-я]/);
+  assert.doesNotMatch(html.replace(/Точно (?:перезагрузить|выключить|сбросить трафик)\?/g, ""), /[А-Яа-я]/);
 });
 
 test("battery inline labels show charging direction in English", () => {
@@ -86,4 +86,34 @@ test("network mode and alternate signal fields render readable protocol and bars
   assert.equal(parsed.mode, "LTE / 4G");
   assert.equal(parsed.bars, 4);
   assert.match(signalBarsHtml(parsed), /aria-label="Signal 4 of 5"/);
+});
+
+test("dangerous primary buttons use local WebView confirmation", () => {
+  const html = buildHtml(model("router"));
+
+  assert.match(html, /data-power-action="reboot"[^>]*>Restart/);
+  assert.match(html, /data-power-action="powerOff"[^>]*>Power off/);
+  assert.match(html, /data-power-action="resetTraffic"[^>]*>Reset traffic/);
+  assert.doesNotMatch(html, />Restart<[^\n]*scriptable:\/\/\/run\?[^"']*confirm=1/);
+  assert.doesNotMatch(html, />Power off<[^\n]*scriptable:\/\/\/run\?[^"']*confirm=1/);
+  assert.doesNotMatch(html, />Reset traffic<[^\n]*scriptable:\/\/\/run\?[^"']*confirm=1/);
+});
+
+test("client script contains inline confirmation flow for power actions", () => {
+  const script = clientScript(model("router"), "scriptable:///run?scriptName=MF885%20Test");
+
+  assert.match(script, /confirmDangerousAction/);
+  assert.match(script, /data-power-action/);
+  assert.match(script, /runUrl\(action,'router',\{confirm:'1'\}\)/);
+  assert.match(script, /Точно перезагрузить\?/);
+  assert.match(script, /Точно выключить\?/);
+});
+
+test("powerAccepted requires explicit firmware success", () => {
+  const { powerAccepted } = require("../scriptable.js");
+
+  assert.equal(powerAccepted("<RGW></RGW>"), false);
+  assert.equal(powerAccepted("<RGW><status>0</status></RGW>"), true);
+  assert.equal(powerAccepted("<RGW><result>0</result></RGW>"), true);
+  assert.equal(powerAccepted(""), null);
 });

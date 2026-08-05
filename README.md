@@ -84,7 +84,11 @@ The WebView contains a reusable action status panel for copy, translation, refre
 
 `TRANSLATE_ENDPOINT` is empty by default, so automatic translation is not configured. In that default mode, **Перевести** means “copy for translation”: the script tries to place the SMS text in the clipboard for Apple Translate. To get inline automatic translation, configure a LibreTranslate-compatible endpoint in `scriptable.js`; endpoint failures now include HTTP status, JSON parsing, or empty-response details in the diagnostics panel.
 
-Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. If the screen closes during refresh, open the Scriptable script again.
+Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. Dangerous router actions such as **Restart**, **Power off**, and **Reset traffic** are now confirmed inline inside the WebView on the first tap; Scriptable is relaunched only after the final confirmation tap sends the command with `confirm=1`. If the screen closes during refresh or final command execution, open the Scriptable script again.
+
+### Power endpoint diagnostics
+
+MF855/MF885-family firmware variants expose restart and shutdown through different internal endpoints. If **Restart** or **Power off** is not confirmed by the router, copy the diagnostics shown in the Power/action status panel and include them in an issue or support message. The diagnostics intentionally list safe endpoint details such as `xml_action.cgi?method=set&module=duster&file=...`, XML root/field names, and `routerCall()` object path/method attempts, but not the router password, digest nonce response, or sensitive headers. If possible, also capture the matching request from the router's native web UI with a packet capture or browser/network proxy so the working firmware endpoint can be added safely.
 
 ## Run instructions
 
