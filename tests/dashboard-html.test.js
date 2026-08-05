@@ -87,3 +87,63 @@ test("network mode and alternate signal fields render readable protocol and bars
   assert.equal(parsed.bars, 4);
   assert.match(signalBarsHtml(parsed), /aria-label="Signal 4 of 5"/);
 });
+
+test("network parser understands MF885 sys_mode and sys_submode details", () => {
+  const { parseNetwork } = require("../scriptable.js");
+
+  assert.equal(parseNetwork("<RGW><sys_mode>17</sys_mode><SignalBar>3</SignalBar></RGW>").protocol, "LTE / 4G");
+  assert.equal(parseNetwork("<RGW><sys_submode>25</sys_submode></RGW>").protocol, "LTE TDD / 4G");
+  assert.equal(parseNetwork("<RGW><sys_submode>26</sys_submode></RGW>").protocol, "LTE FDD / 4G");
+  const noService = parseNetwork("<RGW><NW_register_status>0</NW_register_status><sys_mode>0</sys_mode><SignalBar>5</SignalBar></RGW>");
+  assert.equal(noService.registered, false);
+  assert.equal(noService.protocol, "No service");
+  assert.equal(noService.bars, 0);
+});
+
+test("network parser detects roaming and signal scales", () => {
+  const { parseNetwork } = require("../scriptable.js");
+
+  const rsrp = parseNetwork("<RGW><roaming>1</roaming><rsrp>-88</rsrp><rat_name>LTE</rat_name></RGW>");
+  assert.equal(rsrp.roaming, true);
+  assert.equal(rsrp.bars, 4);
+  assert.equal(rsrp.signalText, "Good");
+  assert.equal(parseNetwork("<RGW><RSSI>-82</RSSI></RGW>").bars, 3);
+  assert.equal(parseNetwork("<RGW><signal_strength>20</signal_strength></RGW>").dbm, -73);
+  assert.equal(parseNetwork("<RGW><network_signal>80</network_signal></RGW>").percent, 80);
+  assert.equal(parseNetwork("<RGW><signal>99</signal></RGW>").bars, null);
+});
+
+test("battery parser uses charger and output current details", () => {
+  const { parseBattery } = require("../scriptable.js");
+
+  const charging = parseBattery("<RGW><batteryPercent>55</batteryPercent><Charger_current>120</Charger_current></RGW>");
+  assert.equal(charging.charging, true);
+  assert.equal(charging.state, "charging");
+  assert.equal(charging.chargerCurrent, 120);
+  const discharging = parseBattery("<RGW><BatteryValue>44</BatteryValue><Output_current>80</Output_current></RGW>");
+  assert.equal(discharging.state, "discharging");
+  assert.equal(discharging.outputCurrent, 80);
+});
+
+test("traffic parser understands units and WAN session duration", () => {
+  const { parseTraffic } = require("../scriptable.js");
+  const traffic = parseTraffic("<RGW><WanStatistics><tx_byte_all>4 MB</tx_byte_all><rx_byte_all>1.2 GB</rx_byte_all><tx_byte>12.5 KiB</tx_byte><rx_byte>1.2 GiB</rx_byte><conn_days>1</conn_days><conn_hours>2</conn_hours><conn_minutes>3</conn_minutes><conn_seconds>4</conn_seconds></WanStatistics></RGW>");
+
+  assert.equal(traffic.upload, 4 * 1024 * 1024);
+  assert.equal(traffic.download, Math.round(1.2 * 1024 * 1024 * 1024));
+  assert.equal(traffic.sessionUpload, Math.round(12.5 * 1024));
+  assert.equal(traffic.sessionDownload, Math.round(1.2 * 1024 * 1024 * 1024));
+  assert.equal(traffic.sessionSeconds, 93784);
+});
+
+test("SMS parser treats total_number as messages and fingerprints repeated pages", () => {
+  const { parseSmsPage, pageMessageFingerprint, smsEdgeFingerprint, unchangedSms } = require("../scriptable.js");
+  const xml = "<RGW><total_number>42</total_number><Item index=\"1\"><index>a</index><from>+1</from><content>hello</content><date>now</date></Item></RGW>";
+  const page = parseSmsPage(xml, 1);
+
+  assert.equal(page.totalMessages, 42);
+  assert.equal(page.totalPages, null);
+  assert.equal(pageMessageFingerprint(page.messages), pageMessageFingerprint(parseSmsPage(xml, 2).messages));
+  const fingerprint = smsEdgeFingerprint(page, null, page.totalPages, page.totalMessages);
+  assert.equal(unchangedSms({ fingerprint, totalPages: null, totalMessages: 42 }, { fingerprint, totalPages: null, totalMessages: 42 }), true);
+});
