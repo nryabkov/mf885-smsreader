@@ -102,6 +102,61 @@ test("dashboard hides Translate button when endpoint is not configured", () => {
   assert.doesNotMatch(html, />Translate</);
 });
 
+test("copy fallback selects manual textarea when clipboard is unavailable", async () => {
+  const script = clientScript(model("sms"), "scriptable:///run?scriptName=MF885%20Test");
+  const selection = { focused: false, selected: false, range: null };
+  const textarea = {
+    value: "",
+    hidden: true,
+    focus() { selection.focused = true; },
+    select() { selection.selected = true; },
+    setSelectionRange(start, end) { selection.range = [start, end]; }
+  };
+  const status = {
+    hidden: true,
+    classList: { toggle() {} },
+    querySelector(selector) {
+      if (selector === "[data-status-title]" || selector === "[data-status-detail]") return { textContent: "" };
+      if (selector === "[data-status-copy]") return textarea;
+      if (selector === "[data-status-pre]") return { textContent: "", hidden: false };
+      return null;
+    }
+  };
+  const card = {
+    querySelector: selector => selector === ".body" ? { innerText: "hello" } : null
+  };
+  const button = {
+    disabled: false,
+    textContent: "Copy",
+    closest: selector => selector === ".sms" ? card : null
+  };
+  const context = {
+    localStorage: {},
+    URLSearchParams,
+    navigator: {},
+    document: {
+      addEventListener() {},
+      querySelectorAll() { return []; },
+      getElementById(id) { return id === "actionStatus" ? status : null; }
+    },
+    window: {},
+    setInterval() { return 1; },
+    clearInterval() {},
+    setTimeout(fn) { fn(); }
+  };
+
+  vm.createContext(context);
+  vm.runInContext(script, context);
+
+  await context.copySms(button);
+
+  assert.equal(textarea.value, "hello");
+  assert.equal(textarea.hidden, false);
+  assert.equal(selection.focused, true);
+  assert.equal(selection.selected, true);
+  assert.deepEqual(selection.range, [0, 5]);
+});
+
 test("dashboard shows Translate button when endpoint is configured", () => {
   const fs = require("node:fs");
   const path = require("node:path");
@@ -244,6 +299,14 @@ test("battery parser understands numeric status values independently", () => {
   const chargerDisconnected = parseBattery("<RGW><Battery_percent>55</Battery_percent><Charger_status>0</Charger_status></RGW>");
   assert.equal(chargerDisconnected.state, "discharging");
   assert.equal(chargerDisconnected.status, "Discharging");
+
+  const unpluggedStatus3 = parseBattery("<RGW><Battery_percent>92</Battery_percent><Battery_status>3</Battery_status><Charger_status>0</Charger_status></RGW>");
+  assert.equal(unpluggedStatus3.state, "discharging");
+  assert.equal(unpluggedStatus3.status, "Discharging");
+
+  const outputStatus3 = parseBattery("<RGW><Battery_percent>92</Battery_percent><Battery_status>3</Battery_status><Output_current>80</Output_current></RGW>");
+  assert.equal(outputStatus3.state, "discharging");
+  assert.equal(outputStatus3.status, "Discharging");
 });
 
 
