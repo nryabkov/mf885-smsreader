@@ -7,6 +7,7 @@ const USERNAME = "admin";
 let PASSWORD = "zimifi";
 let ussdModule = null;
 let deviceAccessModule = null;
+let cellularControlModule = null;
 
 const POLL_SECONDS = 30;
 const SMS_PAGE_SIZE = 10;
@@ -34,10 +35,11 @@ async function run(options = {}) {
   }
   ussdModule = importModule(`${options.moduleDirectory}/modules/ussd.js`);
   deviceAccessModule = importModule(`${options.moduleDirectory}/modules/device-access.js`);
+  cellularControlModule = importModule(`${options.moduleDirectory}/modules/cellular-control.js`);
   await main();
 }
 
-module.exports = { run, parseDigestChallenge, buildHtml, clientScript, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, powerAccepted };
+module.exports = { run, parseDigestChallenge, buildHtml, clientScript, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, powerAccepted, sanitizeDiagnostics };
 
 async function main() {
   try {
@@ -47,6 +49,8 @@ async function main() {
     if (ACTION === "delete") return await deleteFlow(auth);
     if (ACTION === "ussd") return await ussdFlow(auth);
     if (ACTION === "deviceAccess") return await deviceAccessFlow(auth);
+    if (ACTION === "cellularReconnect") return await cellularReconnectFlow(auth);
+    if (ACTION === "cellularMode") return await cellularModeFlow(auth);
     if (ACTION === "resetTraffic") return await resetTrafficFlow(auth);
     if (ACTION === "reboot" || ACTION === "powerOff") return await powerFlow(auth, ACTION);
     return await dashboardFlow(auth, null, INITIAL_TAB);
@@ -110,7 +114,7 @@ function webPollPayload(model) {
 
 async function loadModel(auth) {
   const model = {
-    sms: emptySms(), traffic: {}, battery: {}, network: {}, ussd: {}, deviceAccess: {},
+    sms: emptySms(), traffic: {}, battery: {}, network: {}, ussd: {}, deviceAccess: {}, cellularControl: {},
     errors: {}, notice: "", tab: "sms", loadedAt: Date.now()
   };
   try {
@@ -127,6 +131,8 @@ async function loadModel(auth) {
   catch (error) { model.errors.ussdError = cleanError(error); model.errors.ussd = model.errors.ussdError; }
   try { model.deviceAccess = await detectDeviceAccess(auth); }
   catch (error) { model.errors.deviceAccess = cleanError(error); }
+  try { model.cellularControl = await detectCellularControl(auth); }
+  catch (error) { model.errors.cellularControl = cleanError(error); }
   return model;
 }
 
@@ -181,6 +187,27 @@ async function deviceAccessFlow(auth) {
     ? `${result.message} (${result.diagnostics})`
     : result.message;
   return dashboardFlow(auth, { text: `${result.title}: ${detail}`, type: result.ok ? "success" : "error" }, "router");
+}
+
+async function cellularReconnectFlow(auth) {
+  const capability = await detectCellularControl(auth);
+  if (String(QUERY.confirm || "") !== "1") {
+    return dashboardFlow(auth, warningNotice("Confirm experimental cellular reconnect. Mobile internet will be temporarily unavailable."), "router");
+  }
+  const result = await cellularControlModule.executeReconnect(cellularControlApi(auth), capability);
+  return dashboardFlow(auth, { text: `${result.title}: ${result.message}`, type: result.ok ? "success" : "error", diagnostics: result.diagnostics }, "router");
+}
+
+async function cellularModeFlow(auth) {
+  const capability = await detectCellularControl(auth);
+  const modeId = String(QUERY.mode || "").trim();
+  const mode = cellularControlModule.modeById(modeId);
+  if (!mode) return dashboardFlow(auth, errorNotice("Unknown cellular network mode."), "router");
+  if (String(QUERY.confirm || "") !== "1") {
+    return dashboardFlow(auth, warningNotice(`Confirm experimental cellular mode change: ${mode.title}. Mobile internet may be temporarily unavailable.`), "router");
+  }
+  const result = await cellularControlModule.executeSetMode(cellularControlApi(auth), capability, mode.id);
+  return dashboardFlow(auth, { text: `${result.title}: ${result.message}`, type: result.ok ? "success" : "error", diagnostics: result.diagnostics }, "router");
 }
 
 async function resetTrafficFlow(auth) {
@@ -306,10 +333,11 @@ function powerResponseResult(xml) {
 function powerAccepted(xml) { return powerResponseResult(xml) === "accepted"; }
 function sanitizeDiagnostics(value) {
   return String(value || "")
-    .replace(/(password|passwd|pwd)=[^\s&|]+/ig, "$1=<redacted>")
+    .replace(/(password|passwd|pwd)([=:\s]+)[^\s&|<]+/ig, "$1$2<redacted>")
     .replace(/(response=)[0-9a-f]{16,}/ig, "$1<redacted>")
     .replace(/(authorization:\s*Digest[^\n]*)/ig, "Authorization: <redacted>")
-    .replace(/(nonce=)[^\s,&|]+/ig, "$1<redacted>");
+    .replace(/(nonce|cnonce)([=:\s"]+)[^\s,&|"]+/ig, "$1$2<redacted>")
+    .replace(/(cookie:|set-cookie:|x-[^:\n]*token:)[^\n]*/ig, "$1 <redacted>");
 }
 
 // Digest authentication and router API
@@ -776,6 +804,21 @@ function deviceAccessApi(auth) {
   };
 }
 
+async function detectCellularControl(auth) {
+  return cellularControlModule.detect(cellularControlApi(auth));
+}
+function cellularControlApi(auth) {
+  return {
+    xmlRequest: (method, file, body, retry, timeout) => xmlRequest(auth, method, file, body, retry, timeout),
+    routerCall: (path, method) => routerCall(auth, path, method),
+    cleanError,
+    escapeXml,
+    firstText,
+    sleep,
+    parseNetwork: async () => parseNetwork(await getStatus(auth))
+  };
+}
+
 function sleep(ms) { return new Promise(resolve => { const timer = Timer.schedule(ms, false, () => { timer.invalidate(); resolve(); }); }); }
 
 // WebView rendering
@@ -811,6 +854,10 @@ function buildHtml(model) {
   const pendingDeviceAction = ACTION === "deviceAccess" ? (model.deviceAccess.capabilities || []).find(action => action.id === String(QUERY.deviceAction || "")) : null;
   const deviceConfirm = pendingDeviceAction && String(QUERY.confirm || "") !== "1"
     ? `<div class="warning"><strong>Confirm experimental action: ${escapeHtml(pendingDeviceAction.title)}</strong><p>ADB, Telnet, and shell commands are experimental firmware/debug actions and may be unsupported or ignored. This action will reopen the script. ${escapeHtml(pendingDeviceAction.description || "The command may change router state.")}</p><a class="danger buttonlike" href="${runUrl("deviceAccess", "router", { deviceAction: pendingDeviceAction.id, confirm: "1" })}">Confirm</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Cancel</a></div>` : "";
+  const cellular = model.cellularControl || {};
+  const defaultCellularModes = [{ id: "auto", title: "Automatic" }, { id: "lteOnly", title: "4G/LTE only" }, { id: "ltePreferred", title: "LTE preferred" }, { id: "wcdmaOnly", title: "3G only" }, { id: "gsmOnly", title: "2G only" }];
+  const cellularModes = (cellular.modes || (cellularControlModule && cellularControlModule.modes ? cellularControlModule.modes() : defaultCellularModes)).map(mode => `<a class="buttonlike" data-cellular-mode="${escapeHtml(mode.id)}" href="${runUrl("cellularMode", "router", { mode: mode.id })}">${escapeHtml(mode.title)}</a>`).join(" ");
+  const cellularReconnect = `<button class="danger buttonlike" type="button" data-cellular-action="reconnect" data-cellular-url="${runUrl("cellularReconnect", "router")}">Reconnect cellular network</button>`;
   const resetTrafficConfirm = "";
   const powerConfirmCard = `<div class="warning" data-power-confirm hidden></div>`;
   const baseRun = `scriptable:///run?scriptName=${encodeURIComponent(Script.name())}`;
@@ -827,7 +874,7 @@ function buildHtml(model) {
     <section id="sms" class="tab${smsActive}"><div class="inline-toolbar"><button onclick="toggleSmsComposer()">📝 Compose SMS</button></div>
     <form id="smsComposer" class="composer card" onsubmit="submitSmsInline(event)" hidden><input name="to" placeholder="Recipient" autocomplete="tel"><textarea name="text" placeholder="SMS text" rows="3" maxlength="1000"></textarea><div><button class="primary" type="submit">Send SMS</button><button type="button" onclick="toggleSmsComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form>
     ${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
-    <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>${escapeHtml(network.networkError || network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}</article>
+    <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>Current mode: <strong>${escapeHtml(network.mode || "Unknown")}</strong></p><p>${escapeHtml(network.networkError || network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}<div class="warning"><strong>Experimental cellular controls</strong><p>Firmware endpoints differ across MF855/MF885 builds. Reconnect and protocol changes can temporarily interrupt mobile internet; unsupported firmware should be reported with diagnostics.</p>${cellularReconnect}<h3>Preferred protocol</h3><div class="inline-toolbar">${cellularModes}</div></div></article>
     <article class="card battery"><small>Battery</small><h2>${escapeHtml(batteryInline)}</h2><p>${escapeHtml(battery.batteryError || battery.status || "Unknown")}</p><div class="bar"><i style="width:${battery.percent === null || battery.percent === undefined ? 0 : battery.percent}%"></i></div></article>
     <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><p>Session: ↓ ${formatBytes(traffic.sessionDownload)} · ↑ ${formatBytes(traffic.sessionUpload)}${traffic.sessionSeconds !== null && traffic.sessionSeconds !== undefined ? ` · ${escapeHtml(formatDuration(traffic.sessionSeconds))}` : ""}</p>${traffic.trafficError ? `<p class="warning">${escapeHtml(traffic.trafficError)}</p>` : ""}<button class="danger buttonlike" type="button" data-power-action="resetTraffic">Reset traffic</button>${resetTrafficConfirm}</article>
     <article class="card experimental" id="routerExperimental"><small>Experimental router controls</small><h2>USSD and device access</h2><section data-ussd-section><h3>USSD: ${model.ussd.supported ? "Available" : "Not confirmed"}</h3><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button type="button" onclick="toggleUssdComposer(true)">Dial USSD</button><form id="ussdComposer" class="composer" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Code, for example *100#"><div><button class="primary" type="submit">Send USSD</button><button type="button" onclick="toggleUssdComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form></section><section data-device-access-section><h3>Device access: ${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h3><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar">${deviceActions || "<span>No actions available</span>"}</div>${deviceConfirm}</section></article>
@@ -869,9 +916,11 @@ function toggleSmsComposer(force){var el=document.getElementById('smsComposer');
 function toggleUssdComposer(force){var el=document.getElementById('ussdComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
 function submitSmsInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),to=f.elements.to.value.trim(),text=f.elements.text.value.trim();if(!to||!text){s.textContent=!to?'Enter a recipient number':'Enter SMS text';return}if(text.length>1000){s.textContent='SMS text is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('send','sms',{to:to,text:text}),'Sending SMS.')}
 function submitUssdInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),code=f.elements.code.value.trim();if(!code){s.textContent='Enter a USSD code';return}if(code.length>128){s.textContent='USSD code is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('ussd','router',{code:code}),'Sending USSD.')}
+function cellularActionCopy(kind,label){if(kind==='reconnect')return{title:'Reconnect cellular network?',detail:'Experimental action: mobile internet may be temporarily unavailable while the router disconnects and reconnects.'};return{title:'Set cellular mode?',detail:'Experimental mode change to '+(label||'selected mode')+'. Mobile internet may be temporarily unavailable and firmware support varies.'}}
+function showCellularConfirm(el){if(!el||navigationInProgress)return;var mode=el.getAttribute('data-cellular-mode'),kind=el.getAttribute('data-cellular-action'),label=el.textContent||mode,url=mode?runUrl('cellularMode','router',{mode:mode,confirm:'1'}):runUrl('cellularReconnect','router',{confirm:'1'});var card=el.closest('.card')||el.parentNode;var box=card&&card.querySelector('[data-cellular-confirm]');if(!box){box=document.createElement('div');box.className='warning';box.setAttribute('data-cellular-confirm','');card.appendChild(box)}var copy=cellularActionCopy(kind,label);box.hidden=false;box.innerHTML='';var strong=document.createElement('strong');strong.textContent=copy.title;var p=document.createElement('p');p.textContent=copy.detail;var final=document.createElement('a');final.className='danger buttonlike';final.href=url;final.textContent='Confirm';final.setAttribute('data-final-confirm','1');box.appendChild(strong);box.appendChild(p);box.appendChild(final);box.appendChild(document.createTextNode(' '));var cancel=document.createElement('button');cancel.type='button';cancel.className='buttonlike';cancel.textContent='Cancel';cancel.onclick=function(){box.hidden=true};box.appendChild(cancel);fillActionStatus(copy.title,copy.detail+' Final confirmation will reopen the script.','',true)}
 function powerActionCopy(action){if(action==='reboot')return{title:'Restart router?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u043f\\u0435\\u0440\\u0435\\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u0438\\u0442\\u044c? Wi‑Fi and mobile internet will be temporarily unavailable.'};if(action==='powerOff')return{title:'Power off router?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u0432\\u044b\\u043a\\u043b\\u044e\\u0447\\u0438\\u0442\\u044c? The physical power button is required to turn the router on again.'};return{title:'Reset total traffic?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u0441\\u0431\\u0440\\u043e\\u0441\\u0438\\u0442\\u044c \\u0441\\u0447\\u0451\\u0442\\u0447\\u0438\\u043a \\u0442\\u0440\\u0430\\u0444\\u0438\\u043a\\u0430? Only the total mobile WAN counters will be reset.'}}
 function showInlineConfirm(button){var action=button&&button.getAttribute('data-power-action');if(!action||navigationInProgress)return;var card=button.closest('.card')||button.parentNode;var box=card&&card.querySelector('[data-power-confirm]');if(!box){box=document.createElement('div');box.className='warning';box.setAttribute('data-power-confirm','');card.appendChild(box)}var copy=powerActionCopy(action);box.hidden=false;box.innerHTML='';var strong=document.createElement('strong');strong.textContent=copy.title;var p=document.createElement('p');p.textContent=copy.detail;var final=document.createElement('a');final.className='danger buttonlike';final.href=runUrl(action,'router',{confirm:'1'});final.textContent='Confirm';final.setAttribute('data-final-confirm','1');var cancel=document.createElement('button');cancel.type='button';cancel.className='buttonlike';cancel.textContent='Cancel';cancel.onclick=function(){box.hidden=true};box.appendChild(strong);box.appendChild(p);box.appendChild(final);box.appendChild(document.createTextNode(' '));box.appendChild(cancel);fillActionStatus(copy.title,copy.detail+' Final confirmation will reopen the script.','',true)}
-function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}saveSmsFingerprint();tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var powerButton=e.target&&e.target.closest?e.target.closest('[data-power-action]'):null;if(powerButton){e.preventDefault();showInlineConfirm(powerButton);return}var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';var final=a.getAttribute('data-final-confirm')==='1';navigateTo(a.href,final?'Final confirmation. This action will reopen the script.':'This action will reopen the script.')})}
+function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}saveSmsFingerprint();tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('click',function(e){var cellularButton=e.target&&e.target.closest?e.target.closest('[data-cellular-action],[data-cellular-mode]'):null;if(cellularButton){e.preventDefault();showCellularConfirm(cellularButton);return}var powerButton=e.target&&e.target.closest?e.target.closest('[data-power-action]'):null;if(powerButton){e.preventDefault();showInlineConfirm(powerButton);return}var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(navigationInProgress)return;startProgress(a);if(a.dataset.action==='delete')a.textContent='Deleting…';var final=a.getAttribute('data-final-confirm')==='1';navigateTo(a.href,final?'Final confirmation. This action will reopen the script.':'This action will reopen the script.')})}
 document.addEventListener('DOMContentLoaded',initDashboard);
 async function copySms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body');var value=body?body.innerText:'';var old=button.textContent;if(!navigator.clipboard||!navigator.clipboard.writeText){button.textContent='Manual copy';showActionError('Copy SMS manually','Clipboard is unavailable in this WebView. Select the text below and copy it manually.',value);setTimeout(function(){button.textContent=old},1500);return}button.disabled=true;try{await navigator.clipboard.writeText(value);button.textContent='Copied';setActionStatus('SMS copied to the clipboard.')}catch(e){button.textContent='Error';showActionError('Could not copy SMS',describeError(e),value)}finally{setTimeout(function(){button.textContent=old;button.disabled=false},1500)}}
 async function translateSms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),box=card&&card.querySelector('[data-translation] span'),text=card?card.getAttribute('data-msg-text')||'':'';if(!box)return;if(!model.translateEndpoint){box.textContent='Translation is not configured';return}var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text;if(!text){box.textContent='No text to translate';return}var cached=safeStorageGet(key);if(cached){box.textContent=cached;return}var old=button.textContent;button.disabled=true;button.textContent='…';try{var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})});var raw=await res.text();if(!res.ok)throw new Error('HTTP '+res.status+' '+res.statusText+'\\n'+raw);var data;try{data=JSON.parse(raw)}catch(jsonError){throw new Error('HTTP '+res.status+', JSON parse error: '+describeError(jsonError)+'\\nResponse: '+raw)}var tr=data.translatedText||data.translation||'';if(!tr)throw new Error('HTTP '+res.status+', empty translation response: '+raw);safeStorageSet(key,tr);box.textContent=tr}catch(e){box.textContent='Translation is unavailable — details are shown below.';showActionError('Could not prepare translation',describeError(e),text)}finally{button.textContent=old;button.disabled=false}}

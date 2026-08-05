@@ -7,6 +7,7 @@
   "files": [
     "scriptable.js",
     "modules/ussd.js",
-    "modules/device-access.js"
+    "modules/device-access.js",
+    "modules/cellular-control.js"
   ]
 }

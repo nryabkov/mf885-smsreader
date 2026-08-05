@@ -402,3 +402,44 @@ test("powerAccepted requires explicit firmware acceptance", () => {
   assert.equal(powerAccepted("<RGW><status>0</status></RGW>"), true);
   assert.equal(powerAccepted("<RGW><result>0</result></RGW>"), true);
 });
+
+test("router UI shows experimental cellular reconnect and whitelist modes", () => {
+  const data = model("router");
+  data.network = { mode: "4G · LTE", bars: 4 };
+  data.cellularControl = { modes: [
+    { id: "auto", title: "Automatic" },
+    { id: "lteOnly", title: "4G/LTE only" },
+    { id: "ltePreferred", title: "LTE preferred" },
+    { id: "wcdmaOnly", title: "3G only" },
+    { id: "gsmOnly", title: "2G only" }
+  ] };
+  const html = buildHtml(data);
+
+  assert.match(html, /Reconnect cellular network/);
+  assert.match(html, /Current mode: <strong>4G · LTE<\/strong>/);
+  assert.match(html, /Experimental cellular controls/);
+  for (const mode of ["auto", "lteOnly", "ltePreferred", "wcdmaOnly", "gsmOnly"]) {
+    assert.match(html, new RegExp(`action=cellularMode[^\"]*mode=${mode}`));
+    assert.match(html, new RegExp(`data-cellular-mode="${mode}"`));
+  }
+});
+
+test("client cellular confirmation adds final confirm URL only after inline prompt", () => {
+  const script = clientScript(model("router"), "scriptable:///run?scriptName=MF885%20Test");
+
+  assert.match(script, /showCellularConfirm/);
+  assert.match(script, /runUrl\('cellularMode','router',\{mode:mode,confirm:'1'\}\)/);
+  assert.match(script, /runUrl\('cellularReconnect','router',\{confirm:'1'\}\)/);
+  assert.match(script, /\[data-cellular-action\],\[data-cellular-mode\]/);
+  assert.doesNotThrow(() => new Function(script));
+});
+
+test("cellular diagnostics sanitizer redacts digest and secrets", () => {
+  const { sanitizeDiagnostics } = require("../scriptable.js");
+  const raw = 'Authorization: Digest username="admin", nonce="abcdef123456", response="1234567890abcdef"\npassword=secret\nCookie: sid=secret';
+  const clean = sanitizeDiagnostics(raw);
+
+  assert.doesNotMatch(clean, /abcdef123456|1234567890abcdef|password=secret|sid=secret/);
+  assert.match(clean, /Authorization: <redacted>/);
+  assert.match(clean, /password=<redacted>/);
+});
