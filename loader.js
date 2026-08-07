@@ -9,6 +9,8 @@ const DEFAULT_CONFIG = {
   routerAddress: "192.168.21.1",
   storage: "local",
   pollSeconds: 30,
+  debug: true,
+  debugSensitivePayloads: false,
   translationEndpoint: "",
   translationTarget: "en",
   showExperimentalControls: true,

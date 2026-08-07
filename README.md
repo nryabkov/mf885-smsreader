@@ -149,3 +149,15 @@ The Scriptable-specific APIs such as `Alert`, `Request`, and `WebView` are only 
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+## Debug logging
+
+Safe diagnostic logging is enabled by default. In Scriptable, run the loader, then open the script's run log/console from the Scriptable editor (the console icon at the bottom of the editor) to copy lines beginning with `[ZMI DEBUG]`.
+
+The log records authentication **stages** (never the Digest challenge), request IDs, operation names, HTTP methods, safe URLs, attempts and retries, timeout and timing information, HTTP status and selected non-sensitive response headers, response sizes, XML summaries, and failures. XML bodies are redacted before logging and large values are emitted as bounded, numbered parts with an explicit `truncated` marker.
+
+Passwords, GitHub tokens, Authorization and Digest values, cookies, phone numbers, SMS text and contacts, USSD codes, and credential-like fields are removed. Set `"debug": false` in `mf885-smsreader-config.json` to disable all diagnostic records.
+
+`debugSensitivePayloads` is an explicitly dangerous troubleshooting option and is `false` by default. Enabling it may expose otherwise private application payload fields to the Scriptable console; do so only temporarily, away from shared logs or screen recordings. Security-critical credentials, Digest material, cookies, SMS/contact fields, phone numbers, and USSD values remain redacted by the central logger.
+
+For an incompatible `status1` response, look for `status1:xml-summary` (especially `WanStatistics`, `batteryinfo`, and `cellularFields`) and `loadModel:complete`. These show whether the selected compatibility profile recognizes the router response without revealing the response's private values.
