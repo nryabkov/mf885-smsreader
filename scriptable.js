@@ -79,9 +79,31 @@ async function dashboardFlow(auth, notice = "", tab = "sms") {
   const model = await loadModel(auth);
   model.notice = normalizeNotice(notice);
   model.tab = tab;
+  let html;
+  try {
+    html = buildHtml(model);
+    validateDashboardHtml(html);
+  } catch (error) {
+    await showMessage("ZMI dashboard", `HTML build stage failed: ${cleanError(error)}`, "⚠️");
+    return;
+  }
   const web = new WebView();
-  await web.loadHTML(buildHtml(model));
-  const presented = web.present();
+  try {
+    await web.loadHTML(html);
+    const ready = await web.evaluateJavaScript("document.documentElement.dataset.zmiReady === 'true'");
+    if (!ready) throw new Error("document readiness marker was not set");
+  } catch (error) {
+    await showMessage("ZMI dashboard", `WebView loadHTML stage failed: ${cleanError(error)}`, "⚠️");
+    return;
+  }
+  let presented;
+  try {
+    presented = web.present();
+  } catch (error) {
+    await showMessage("ZMI dashboard", `WebView present stage failed: ${cleanError(error)}`, "⚠️");
+    return;
+  }
+  const presentationResult = Promise.resolve(presented).then(() => ({ closed: true }), error => ({ closed: true, error }));
   const smsGuard = createInFlightGuard();
   const refreshGuard = createInFlightGuard();
   // History is deliberately sequential: several MF885 firmwares lose requests
@@ -98,17 +120,24 @@ async function dashboardFlow(auth, notice = "", tab = "sms") {
     }
   });
   const dispatcher = createDashboardDispatcher(auth, model, web, { smsGuard, refreshGuard });
-  let open = true;
-  presented.then(() => { open = false; }, () => { open = false; });
-  while (open) {
+  while (true) {
     try {
-      const message = await nextWebViewCommand(web);
-      if (message) await dispatcher(message);
+      const event = await Promise.race([nextWebViewCommand(web).then(message => ({ message })), presentationResult]);
+      if (event.closed) {
+        if (event.error) await showMessage("ZMI dashboard", `WebView present stage failed: ${cleanError(event.error)}`, "⚠️");
+        break;
+      }
+      if (event.message) await dispatcher(event.message);
     } catch (error) {
-      if (open) console.warn(`WebView channel: ${cleanError(error)}`);
+      console.warn(`WebView channel: ${cleanError(error)}`);
     }
   }
-  await presented;
+}
+
+function validateDashboardHtml(html) {
+  if (typeof html !== "string" || !html.trim()) throw new Error("buildHtml returned empty HTML");
+  if (!/<main(?:\s|>)/i.test(html)) throw new Error("dashboard HTML has no <main> element");
+  if (!/<section[^>]*class=["'][^"']*\btab\b[^"']*\bactive\b[^"']*["']/i.test(html)) throw new Error("dashboard HTML has no active tab section");
 }
 
 async function loadPollingSnapshot(auth, currentSms) {
@@ -1007,13 +1036,20 @@ function showCellularConfirm(el){var mode=el.getAttribute('data-cellular-mode-se
 function confirmSmsDelete(card,item){makeConfirm(card,{title:'Delete this SMS?',detail:String(item.content||'').slice(0,80)},'deleteSms',{id:String(item.id||'')},'data-delete-confirm')}
 function detectCapability(kind,button){bridge('detectCapability',{kind:kind},button).catch(function(e){showActionError('Detection failed',describeError(e),'')})}
 function initDashboard(){paused=safeStorageGet('zmiPaused')==='1';tab(selectedTab());var draft=safeStorageGet('zmiSmsDraft'),form=document.getElementById('smsComposer');if(form&&draft)form.elements.text.value=draft;if(form)form.elements.text.addEventListener('input',function(){safeStorageSet('zmiSmsDraft',this.value)});var sy=safeStorageGet('zmiScrollY');if(sy)setTimeout(function(){window.scrollTo(0,Number(sy)||0)},0);window.addEventListener('scroll',function(){safeStorageSet('zmiScrollY',String(window.scrollY||0))});timer=setInterval(tick,1000);drawTimer();document.addEventListener('change',function(e){if(e.target.matches&&e.target.matches('[data-cellular-mode-select]'))showCellularConfirm(e.target)});document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-delete-action],[data-power-action],[data-cellular-action],[data-device-action],[data-detect]');if(!b)return;if(b.hasAttribute('data-delete-action')){var c=b.closest('.sms');confirmSmsDelete(c,{id:c.getAttribute('data-msg-id'),content:c.getAttribute('data-msg-text')})}else if(b.hasAttribute('data-power-action'))showInlineConfirm(b);else if(b.hasAttribute('data-cellular-action'))showCellularConfirm(b);else if(b.hasAttribute('data-device-action'))bridge('deviceAccess',{deviceAction:b.getAttribute('data-device-action')},b);else detectCapability(b.getAttribute('data-detect'),b)})}
-document.addEventListener('DOMContentLoaded',initDashboard);
+function markDashboardReady(){document.documentElement.dataset.zmiReady='true';initDashboard()}
+document.addEventListener('DOMContentLoaded',markDashboardReady);
 async function copySms(button){var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body'),value=body?body.innerText:'';if(!navigator.clipboard||!navigator.clipboard.writeText){showActionError('Copy SMS manually','Clipboard is unavailable in this WebView.',value);return}button.disabled=true;try{await navigator.clipboard.writeText(value)}catch(e){showActionError('Could not copy SMS',describeError(e),value)}finally{button.disabled=false}}
 async function translateSms(button){var card=button&&button.closest('.sms'),box=card&&card.querySelector('[data-translation] span'),text=card?card.getAttribute('data-msg-text')||'':'';if(!box||!model.translateEndpoint)return;var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text,cached=safeStorageGet(key);if(cached){box.textContent=cached;return}button.disabled=true;try{var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})}),raw=await res.text(),data=JSON.parse(raw),tr=data.translatedText||data.translation||'';if(!res.ok||!tr)throw new Error('HTTP '+res.status+'\\nResponse: '+raw);safeStorageSet(key,tr);box.textContent=tr}catch(e){showActionError('Could not prepare translation',describeError(e),text)}finally{button.disabled=false}}
 `;
 }
 function css() { return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#172033;--text:#f8fafc;--muted:#a8b3c7;--line:#253044;--cyan:#67e8f9;--blue:#60a5fa;--purple:#a78bfa;--bad:#fb7185;--good:#34d399}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#101827 0%,var(--bg) 45%,#070b13 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:env(safe-area-inset-top) 10px 30px}main{max-width:720px;margin:auto}.hero{padding:12px 4px 6px}.hero.compact{display:block}.hero h1{font-size:26px;line-height:1;margin:0 0 4px}.hero strong{color:var(--cyan)}.statusline{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0;color:var(--muted);font-size:14px}.statusline span{border:1px solid var(--line);border-radius:999px;padding:5px 8px;background:#0d1424}.hero>small,.card small,.mini span{color:var(--cyan);font-weight:800;letter-spacing:.1em;font-size:10px;text-transform:uppercase}.card p,.mini small{color:var(--muted)}.topgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}.mini,.card,.notice,.warning{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.mini{min-height:86px;position:relative}.mini:after{display:none}.mini strong{display:block;font-size:21px;margin:8px 0 3px}.seg{display:flex;background:#080d18;border:1px solid var(--line);border-radius:14px;padding:4px;margin:8px 0}.seg button{flex:1}.seg button.active,.primary{background:#dff8ff;color:#03111d;border-color:transparent;font-weight:800}button,a,.buttonlike{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:8px 11px;background:#182235;color:var(--text);text-decoration:none;font:inherit}button:active,a:active{transform:scale(.98)}.danger{color:var(--bad)}.refresh{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:8px 0 10px;color:var(--muted);font-size:14px}.actions,.inline-toolbar{display:flex;gap:8px;flex-wrap:wrap}.inline-toolbar{margin:8px 0}.tab{display:none}.tab.active{display:block}.card{margin:8px 0}.card h2{font-size:24px;margin:6px 0}.composer input,.composer textarea,.selectline select{width:100%;margin:0 0 8px;padding:10px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);font:inherit}.formStatus{margin:8px 0 0;color:#fbbf24}.selectline{display:block;color:var(--muted);margin:8px 0}.selectline select{display:block;margin-top:6px;padding:10px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);font:inherit}.sms{padding:11px;margin:8px 0}.sms header{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;border-bottom:1px solid #253044aa;padding-bottom:7px}.sms h3{margin:0 0 2px;font-size:15px}.sms time,.sms footer{color:var(--muted);font-size:12px}.sms footer{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid #253044aa;padding-top:8px}.sms footer button,.sms footer a{padding:6px 9px;border-radius:10px}.sms .body{white-space:pre-wrap;word-break:break-word;font-size:17px;line-height:1.45;color:#f8fafc;margin:10px 0}.translation{color:var(--muted);font-size:14px}.translation span:empty{display:none}.cellular-diagnostics ol{padding-left:22px}.diag-stage{margin:7px 0}.diag-stage.ok{color:var(--good)}.diag-stage.pending{color:#fbbf24}.diag-stage.failed{color:var(--bad)}.diag-stage.unknown{color:var(--muted)}.diag-grid{border-top:1px solid var(--line);margin-top:10px}.active-apn{color:var(--cyan)}.quality{display:inline-block;padding:6px 10px;border-radius:999px;background:#34d39922;color:var(--good)}.codes{font-family:ui-monospace,Menlo,monospace}.bar{height:10px;background:#ffffff14;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--purple),var(--blue),var(--cyan));border-radius:inherit}.progressbar{position:fixed;left:0;right:0;top:0;height:3px;z-index:1000;background:transparent;overflow:hidden}.progressbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--blue));box-shadow:0 0 16px var(--cyan)}.progressbar.active i{animation:progressStart 1.2s ease-in-out infinite}@keyframes progressStart{0%{width:0;transform:translateX(0)}55%{width:72%;transform:translateX(12%)}100%{width:40%;transform:translateX(160%)}}.notice{color:var(--good);margin:8px 0}.notice.warning{color:#fbbf24;border-color:#fbbf2466;background:linear-gradient(180deg,#3b2f14,#1f1a0f)}.notice.error{color:var(--bad);border-color:#fb718566;background:linear-gradient(180deg,#3b1720,#1f0f14)}.warning{color:#fbbf24}.signal-bars{display:inline-flex;gap:3px;align-items:flex-end;height:22px;vertical-align:middle}.signal-bars i{display:block;width:5px;border-radius:3px;background:#ffffff30}.signal-bars i:nth-child(1){height:6px}.signal-bars i:nth-child(2){height:9px}.signal-bars i:nth-child(3){height:12px}.signal-bars i:nth-child(4){height:16px}.signal-bars i:nth-child(5){height:20px}.signal-bars i.on{background:var(--cyan)}.action-status{margin:8px 0;border:1px solid #fbbf2466;border-radius:18px;background:linear-gradient(180deg,#3b2f14,#1f1a0f);box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.action-status header{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px}.action-status p{white-space:pre-wrap;color:#fde68a;margin:8px 0}.action-status textarea,.action-status pre{width:100%;max-width:100%;min-height:96px;margin:8px 0 0;padding:10px;border-radius:12px;border:1px solid #fbbf2466;background:#0b1220;color:#f8fafc;font:13px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;overflow:auto;user-select:text;-webkit-user-select:text}.action-status textarea[hidden],.action-status pre[hidden]{display:none}.empty{text-align:center}@media(max-width:520px){.topgrid{grid-template-columns:1fr}.refresh{align-items:flex-start}.actions{justify-content:flex-end}}`; }
-async function showMessage(title, message, icon) { const web = new WebView(); await web.loadHTML(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css()}</style></head><body><main><article class="card empty"><h1>${icon} ${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></article></main></body></html>`); await web.present(); }
+async function showMessage(title, message, icon) {
+  const alert = new Alert();
+  alert.title = `${icon || ""} ${title || "ZMI"}`.trim();
+  alert.message = String(message || "");
+  alert.addAction("OK");
+  await alert.presentAlert();
+}
 
 // Generic XML and text helpers
 function tag(xml, name) { const hit = String(xml || "").match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "i")); return hit ? htmlDecode(hit[1].trim()) : ""; }
