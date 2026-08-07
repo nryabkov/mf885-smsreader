@@ -15,17 +15,6 @@ const CAPABILITIES = [
     ]
   },
   {
-    id: "tryEnableTelnet",
-    title: "Try to enable Telnet",
-    description: "Attempt to enable a Telnet service, if supported by the firmware.",
-    probes: ["telnet", "telnet_enable", "debug_telnet", "device_debug"],
-    attempts: [
-      { type: "routerCall", path: "debug", method: "enable_telnet" },
-      { type: "xml", file: "telnet", root: "telnet", field: "enable", value: "1" },
-      { type: "xml", file: "debug", root: "debug", field: "telnet", value: "1" }
-    ]
-  },
-  {
     id: "tryOpenShell",
     title: "Try to enable vendor shell",
     description: "Attempt to enable a vendor shell/debug service, if present.",
@@ -37,6 +26,11 @@ const CAPABILITIES = [
     ]
   }
 ];
+
+const TELNET_METADATA = Object.freeze({ id: "tryEnableTelnet", title: "Telnet", description: "Enable Telnet only when the active firmware profile contains a fully confirmed contract.", telnet: true });
+function capabilities() {
+  return CAPABILITIES.map(({ id, title, description }) => ({ id, title, description })).concat([{ ...TELNET_METADATA }]);
+}
 
 async function detect(api) {
   const diagnostics = [];
@@ -51,7 +45,7 @@ async function detect(api) {
   return {
     supported: diagnostics.some(item => item.status === "responded") ? true : null,
     detail: "Safe GET diagnostics completed. Execution actions are experimental and require a separate confirmation.",
-    capabilities: CAPABILITIES.map(({ id, title, description }) => ({ id, title, description })),
+    capabilities: capabilities(),
     diagnostics
   };
 }
@@ -86,4 +80,4 @@ function accepted(xml) { return !isUnsupported(xml) && !/error|fail|denied|<stat
 function attemptName(attempt) { return attempt.type === "routerCall" ? `routerCall ${attempt.path}/${attempt.method}` : `${attempt.file}/${attempt.field}`; }
 function compact(value) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 300); }
 
-module.exports = { detect, execute };
+module.exports = { capabilities, detect, execute };

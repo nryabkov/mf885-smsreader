@@ -1,5 +1,17 @@
 // Values in this file must come from the named firmware, never from probing.
 const PROFILES = Object.freeze({
+  "2.5.94_release_MF855_NZ_CP_2.129.003": Object.freeze({
+    id: "zmi-mf855-nz-2.5.94",
+    firmware: "2.5.94_release_MF855_NZ_CP_2.129.003",
+    confirmed: true,
+    xmlRequestPath: "/xml_action.cgi",
+    diagnosticEndpoints: Object.freeze(["status1", "wan", "Engineer_parameter"]),
+    // Only the existence of these read endpoints/fields has been observed on
+    // this build.  Enum meanings (including SIM_status=0) remain intentionally
+    // absent until they are independently confirmed.
+    wan: Object.freeze({ mappings: Object.freeze({}), modes: Object.freeze([]), operations: Object.freeze({}) }),
+    destructive: Object.freeze({})
+  }),
   "2.5.96": Object.freeze({
     id: "zmi-mf855-mf885-2.5.96",
     firmware: "2.5.96",

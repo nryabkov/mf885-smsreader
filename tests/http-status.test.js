@@ -61,16 +61,16 @@ test("loadModel exposes request errors and does not parse or continue rejected i
 
   try {
     const model = await app.loadModel(auth());
-    assert.equal(model.errors.status, "status1 request failed: HTTP 404 from /cgi/xml_action.cgi");
+    assert.equal(model.errors.status, "status1 request failed: HTTP 404 from /xml_action.cgi");
     assert.equal(model.errors.statusRequest, true);
-    assert.equal(model.errors.sms, "message request failed: HTTP 404 from /cgi/xml_action.cgi");
+    assert.equal(model.errors.sms, "message request failed: HTTP 404 from /xml_action.cgi");
     assert.equal(model.sms.loading, false);
     assert.deepEqual(calls, ["status1", "message"]);
 
     const html = app.buildHtml(model);
     assert.match(html, /Status request error/);
-    assert.match(html, /status1 request failed: HTTP 404 from \/cgi\/xml_action\.cgi/);
-    assert.match(html, /message request failed: HTTP 404 from \/cgi\/xml_action\.cgi/);
+    assert.match(html, /status1 request failed: HTTP 404 from \/xml_action\.cgi/);
+    assert.match(html, /message request failed: HTTP 404 from \/xml_action\.cgi/);
     assert.doesNotMatch(html, /Status compatibility warning|status-secret|sms-secret/);
   } finally {
     global.Request = originalRequest;
