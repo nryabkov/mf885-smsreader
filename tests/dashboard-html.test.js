@@ -95,6 +95,31 @@ test('native dashboard sleep paths do not contain setTimeout Promise wrappers',(
 test('client applies complete and partial SMS history without document reload',()=>{const js=app.clientScript(model());assert.match(js,/window\.zmiApplySmsHistory=function/);assert.match(js,/payload\.warning/);assert.match(js,/Message history is incomplete|⚠️/);assert.doesNotMatch(js,/location\.(?:href|assign|replace)|location\s*=/);});
 test('document has no Scriptable relaunch links',()=>{const text=app.buildHtml(model())+app.clientScript(model());assert.doesNotMatch(text,/scriptable:\/\/\/run|This action will reopen|runUrl|navigationInProgress/);});
 test('client exposes targeted status, capability and action updates',()=>{const js=app.clientScript(model());for(const name of ['zmiApplyStatus','zmiApplySmsHistory','zmiApplyCapability','zmiApplyActionResult'])assert.match(js,new RegExp('window\\.'+name));assert.match(js,/CustomEvent\('ZMICommand'/);});
+test('delete result is successful only after updated history no longer contains the SMS',()=>{
+  const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');
+  const js=app.clientScript(model());
+  assert.match(source,/deleteSms:async p=>\{const r=await deleteSms[\s\S]*?if\(!r\.ok\)[\s\S]*?throw error/);
+  assert.match(js,/verified=deletion&&payload\.ok/);
+  assert.match(js,/!smsHistoryContains\(payload\.result\.history,p\.params\.id\)/);
+  assert.match(js,/deletion\?'Deleted'/);
+  assert.match(js,/deletion\?'Retry':'Failed'/);
+});
+test('delete failures stay in the card accessible live region instead of the global error',()=>{
+  const html=app.buildHtml(model()),js=app.clientScript(model());
+  assert.match(html,/data-delete-confirm role="status" aria-live="polite"/);
+  assert.match(js,/setDeleteStatus\(p,message/);
+  assert.match(js,/setAttribute\('role',isError\?'alert':'status'\)/);
+  assert.match(js,/if\(!payload\.ok&&\(!p\|\|p\.action!==['"]deleteSms['"]\)\)/);
+  assert.match(js,/bridge\('deleteSms'[\s\S]*?\.catch\(function\(\)\{\}\)/);
+});
+test('router deletion statuses require an explicit known success and reject known failures',()=>{
+  assert.equal(app.routerAccepted('<RGW><message><sms_cmd_status_result>0</sms_cmd_status_result></message></RGW>'),true);
+  assert.equal(app.routerAccepted('<RGW><delete_status>completed</delete_status></RGW>'),true);
+  assert.equal(app.routerAccepted('<RGW><delete_status>3</delete_status></RGW>'),false);
+  assert.equal(app.routerAccepted('<RGW><status>failed</status></RGW>'),false);
+  assert.equal(app.routerAccepted('<RGW><status>mystery</status></RGW>'),false);
+  assert.equal(app.routerAccepted('<RGW></RGW>'),false);
+});
 test('tab, scroll and unsent SMS draft survive DOM updates',()=>{const js=app.clientScript(model());assert.match(js,/zmiTab/);assert.match(js,/zmiScrollY/);assert.match(js,/zmiSmsDraft/);assert.match(js,/window\.scrollTo/);});
 test('SMS pages merge with deduplication',()=>{let r={messages:[],loadedPages:0,totalPages:null,totalMessages:null};app.mergeSmsPage(r,{page:1,totalPages:2,totalMessages:2,messages:[{id:'1',phone:'a',date:'d',content:'x'}]});app.mergeSmsPage(r,{page:2,messages:[{id:'1',phone:'a',date:'d',content:'x'},{id:'2',phone:'b',date:'d',content:'y'}]});assert.deepEqual(r.messages.map(x=>x.id),['1','2']);assert.equal(r.loadedPages,2);});
 test('in-flight guard shares concurrent operation',async()=>{const guard=app.createInFlightGuard();let calls=0,release;const gate=new Promise(r=>release=r);const a=guard.run(async()=>{calls++;await gate;return 7});const b=guard.run(async()=>{calls++;return 8});assert.equal(a,b);release();assert.equal(await b,7);assert.equal(calls,1);});
