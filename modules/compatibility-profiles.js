@@ -22,6 +22,13 @@ const PROFILES = Object.freeze({
       // These read mappings were captured from 2.5.96. No write operation is
       // advertised until its complete request and verification are confirmed.
       mappings: Object.freeze({
+        // Captured simultaneously with the stock network screen on 2.5.96.
+        // RAT enums are deliberately firmware-scoped: numeric codes from a
+        // different build must never be inferred from this table.
+        sys_mode: Object.freeze({ "0": "No service", "3": "2G · GSM/GPRS", "4": "3G · WCDMA", "6": "4G · LTE" }),
+        sys_submode: Object.freeze({ "1": "2G · GSM", "2": "2G · GPRS", "3": "2G · EDGE", "4": "3G · WCDMA", "5": "3G · HSDPA", "6": "3G · HSUPA", "7": "3G · HSPA", "9": "3G · HSPA+", "17": "3G · HSPA+ 64QAM", "25": "4G · LTE TDD", "26": "4G · LTE FDD" }),
+        ConnType: Object.freeze({ "0": "No service", "1": "2G · GSM", "2": "3G · WCDMA", "3": "4G · LTE", LTE: "4G · LTE", WCDMA: "3G · WCDMA", GSM: "2G · GSM" }),
+        proto: Object.freeze({ LTE: "4G · LTE", WCDMA: "3G · WCDMA", HSPA: "3G · HSPA", GSM: "2G · GSM" }),
         sim: Object.freeze({ "1": "Ready", ready: "Ready", "0": "Initializing" }),
         registration: Object.freeze({ "0": "Not registered", "1": "Registered (home)", "2": "Searching", "5": "Registered (roaming)" }),
         roaming: Object.freeze({ "0": "Home network", "1": "Roaming" }),
