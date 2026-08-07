@@ -14,7 +14,9 @@ let engineerParameterModule = null;
 let cellularDiagnosticsModule = null;
 let ACTIVE_PROFILE = { id: "unknown", confirmed: false };
 
-const XML_API_PATH = "/cgi/xml_action.cgi";
+const XML_REQUEST_PATH = "/cgi/xml_action.cgi";
+const XML_DIGEST_URI = "/cgi/xml_action.cgi";
+let ACTIVE_XML_REQUEST_PATH = XML_REQUEST_PATH;
 
 let POLL_SECONDS = 30;
 const SMS_PAGE_SIZE = 10;
@@ -54,10 +56,11 @@ async function run(options = {}) {
   engineerParameterModule = importModule(`${options.moduleDirectory}/modules/engineer-parameter.js`);
   cellularDiagnosticsModule = importModule(`${options.moduleDirectory}/modules/cellular-diagnostics.js`);
   ACTIVE_PROFILE = compatibilityModule.selectProfile(options.compatibilityProfile);
+  ACTIVE_XML_REQUEST_PATH = options.xmlRequestPath || ACTIVE_PROFILE.xmlRequestPath || XML_REQUEST_PATH;
   await main();
 }
 
-module.exports = { run, dashboardFlow, inspectDashboardDocument, XML_API_PATH, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, statusCompatibilityError };
+module.exports = { run, dashboardFlow, inspectDashboardDocument, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, statusCompatibilityError };
 
 function configureDebug(options = {}) {
   DEBUG = options.debug !== false;
@@ -429,21 +432,21 @@ async function login(auth) {
 function authorization(auth, method) {
   const nc = Number(auth.nc).toString(16).padStart(8, "0");
   const cnonce = randomCnonce();
-  const response = md5(`${auth.ha1}:${auth.nonce}:${nc}:${cnonce}:${auth.qop}:${md5(`${method}:${XML_API_PATH}`)}`);
-  return digestAuthorization(auth, method, XML_API_PATH, nc, cnonce, response);
+  const response = md5(`${auth.ha1}:${auth.nonce}:${nc}:${cnonce}:${auth.qop}:${md5(`${method}:${XML_DIGEST_URI}`)}`);
+  return digestAuthorization(auth, method, XML_DIGEST_URI, nc, cnonce, response);
 }
 function digestAuthorization(auth, method, path, nc, cnonce, response) { const opaque=auth.opaque?`, opaque="${auth.opaque}"`:""; return `Digest username="${USERNAME}", realm="${auth.realm}", nonce="${auth.nonce}", uri="${path}", response="${response}", qop=${auth.qop}, nc=${nc}, cnonce="${cnonce}"${opaque}`; }
 
-function xmlRequestUrl(host, method, file, command) {
+function xmlRequestUrl(host, method, file, command, requestPath = XML_REQUEST_PATH) {
   const query = [`method=${method === "GET" ? "get" : "set"}`, "module=duster", `file=${encodeURIComponent(file)}`];
   if (command !== undefined && command !== null) query.push(`command=${encodeURIComponent(command)}`);
-  return `http://${host}${XML_API_PATH}?${query.join("&")}`;
+  return `http://${host}${requestPath}?${query.join("&")}`;
 }
 
 async function xmlRequest(auth, method, file, body = null, retry = true, timeout = 15) {
   const operation = method === "GET" ? "get" : "set";
   const text = await authenticatedRequest(auth, () => {
-    const req = new Request(xmlRequestUrl(ROUTER_HOST, method, file));
+    const req = new Request(xmlRequestUrl(ROUTER_HOST, method, file, null, ACTIVE_XML_REQUEST_PATH));
     req.method = method;
     req.headers = requestHeaders(auth, method);
     req.timeoutInterval = timeout;
@@ -458,7 +461,7 @@ async function xmlRequest(auth, method, file, body = null, retry = true, timeout
 async function routerCall(auth, path, method) {
   const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><param><method>call</method><session>000</session><obj_path>${escapeXml(path)}</obj_path><obj_method>${escapeXml(method)}</obj_method></param></RGW>`;
   return authenticatedRequest(auth, () => {
-    const req = new Request(xmlRequestUrl(ROUTER_HOST, "POST", path, method));
+    const req = new Request(xmlRequestUrl(ROUTER_HOST, "POST", path, method, ACTIVE_XML_REQUEST_PATH));
     req.method = "POST"; req.headers = requestHeaders(auth, "POST"); req.body = xml;
     return req;
   }, method);

@@ -16,6 +16,7 @@ const DEFAULT_CONFIG = {
   showExperimentalControls: true,
   locale: "en",
   compatibilityProfile: "2.5.96",
+  xmlRequestPath: "/cgi/xml_action.cgi",
   telnetPortCheckTimeoutMs: 1000,
   telnetPortCheckRetries: 2
 };
@@ -331,6 +332,7 @@ function normalizeConfig(value) {
   config.locale="en"; config.translationTarget=String(config.translationTarget||"en").replace(/[^A-Za-z-]/g,"")||"en";
   const endpoint=String(config.translationEndpoint||"").trim(); config.translationEndpoint=/^https?:\/\//i.test(endpoint)?endpoint:"";
   config.showExperimentalControls=config.showExperimentalControls===true;
+  config.xmlRequestPath=["/cgi/xml_action.cgi","/xml_action.cgi"].includes(config.xmlRequestPath)?config.xmlRequestPath:"/cgi/xml_action.cgi";
   return config;
 }
 function readState(fm, path) { try { if (!fm.fileExists(path)) return null; const s = JSON.parse(fm.readString(path)); return validState(s) ? s : null; } catch (_) { return null; } }

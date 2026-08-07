@@ -1,9 +1,10 @@
-const XML_API_PATH = "/cgi/xml_action.cgi";
+const XML_REQUEST_PATH = "/cgi/xml_action.cgi";
+const XML_DIGEST_URI = "/cgi/xml_action.cgi";
 
-function requestUrl(host, method, file, command) {
+function requestUrl(host, method, file, command, requestPath = XML_REQUEST_PATH) {
   const query = [`method=${method === "GET" ? "get" : "set"}`, "module=duster", `file=${encodeURIComponent(file)}`];
   if (command !== undefined && command !== null) query.push(`command=${encodeURIComponent(command)}`);
-  return `http://${host}${XML_API_PATH}?${query.join("&")}`;
+  return `http://${host}${requestPath}?${query.join("&")}`;
 }
 
 async function writeThenVerify(options) {
@@ -29,4 +30,4 @@ async function writeThenVerify(options) {
   return { outcome: "unknown", response, control };
 }
 
-module.exports = { XML_API_PATH, requestUrl, writeThenVerify };
+module.exports = { XML_REQUEST_PATH, XML_DIGEST_URI, requestUrl, writeThenVerify };

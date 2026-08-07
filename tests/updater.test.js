@@ -97,3 +97,8 @@ test("experimental controls are enabled by default but can be explicitly hidden"
   assert.equal(updater.normalizeConfig({}).showExperimentalControls, true);
   assert.equal(updater.normalizeConfig({ showExperimentalControls: false }).showExperimentalControls, false);
 });
+
+test("XML request path supports the shorter compatibility endpoint", () => {
+  assert.equal(updater.normalizeConfig({ xmlRequestPath: "/xml_action.cgi" }).xmlRequestPath, "/xml_action.cgi");
+  assert.equal(updater.normalizeConfig({ xmlRequestPath: "/unexpected.cgi" }).xmlRequestPath, "/cgi/xml_action.cgi");
+});
