@@ -17,5 +17,6 @@
     ,"modules/autoreboot.js"
     ,"modules/telnet-control.js"
     ,"modules/localization.js"
+    ,"modules/cellular-diagnostics.js"
   ]
 }
