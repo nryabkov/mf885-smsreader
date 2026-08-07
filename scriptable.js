@@ -75,11 +75,15 @@ function successNotice(text, diagnostics = "") { return { text, type: "success",
 function warningNotice(text, diagnostics = "") { return { text, type: "warning", diagnostics }; }
 function errorNotice(text, diagnostics = "") { return { text, type: "error", diagnostics }; }
 
+function scriptableSleep(milliseconds) {
+  return new Promise(resolve => Timer.schedule(milliseconds, false, resolve));
+}
+
 async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
   const dependencies = {
     loadModel, buildHtml, WebView: () => new WebView(), showMessage,
     createDispatcher: createDashboardDispatcher, loadRemainingSms,
-    sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+    sleep: scriptableSleep,
     ...overrides
   };
   const model = await dependencies.loadModel(auth);
@@ -946,7 +950,7 @@ function dashboardDocumentIsUsable(state) {
 async function registerWebViewCommandChannel(web) {
   await web.evaluateJavaScript(`(function(){if(window.__zmiCommandQueue)return true;window.__zmiCommandQueue=[];window.addEventListener('ZMICommand',function(e){window.__zmiCommandQueue.push(e.detail)});return true})()`, false);
 }
-async function nextWebViewCommand(web, sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)), stopped = () => false) {
+async function nextWebViewCommand(web, sleep = scriptableSleep, stopped = () => false) {
   // Scriptable completion callbacks can contend with present(). Polling keeps
   // every evaluation finite and only starts after the visible-document check.
   while (true) {
