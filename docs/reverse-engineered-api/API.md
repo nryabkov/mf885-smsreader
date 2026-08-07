@@ -6,11 +6,16 @@ Base address used by factory configuration:
 http://192.168.21.1
 ```
 
-Main endpoint:
+Physical request endpoint:
 
 ```text
-/cgi/xml_action.cgi
+/xml_action.cgi
 ```
+
+This transport path is not the URI used to calculate HTTP Digest authentication.
+For XML API requests, HA2 is calculated with `/cgi/xml_action.cgi`, and the Digest
+Authorization header contains `uri="/cgi/xml_action.cgi"`, even though the HTTP
+request itself targets `/xml_action.cgi`.
 
 The API is XML-over-HTTP and behaves more like a firmware RPC/data-model interface than REST.
 
@@ -19,18 +24,18 @@ The API is XML-over-HTTP and behaves more like a firmware RPC/data-model interfa
 The common model reads/writes are:
 
 ```text
-GET  /cgi/xml_action.cgi?method=get&module=duster&file=<model>
-POST /cgi/xml_action.cgi?method=set&module=duster&file=<model>
+GET  /xml_action.cgi?method=get&module=duster&file=<model>
+POST /xml_action.cgi?method=set&module=duster&file=<model>
 ```
 
 Additional forms seen in the vendor UI/firmware include:
 
 ```text
-GET /cgi/xml_action.cgi?method=get&file=<model>
-GET /cgi/xml_action.cgi?method=get&file=<model>&command=<command>
-GET /cgi/xml_action.cgi?Action=GetInfo&Id=<id>
-GET /cgi/xml_action.cgi?Action=BackupFwStart
-GET /cgi/xml_action.cgi?Action=BackupFw
+GET /xml_action.cgi?method=get&file=<model>
+GET /xml_action.cgi?method=get&file=<model>&command=<command>
+GET /xml_action.cgi?Action=GetInfo&Id=<id>
+GET /xml_action.cgi?Action=BackupFwStart
+GET /xml_action.cgi?Action=BackupFw
 ```
 
 Firmware/configuration upload uses multipart POST actions rather than a normal XML model write.
@@ -50,7 +55,7 @@ For authentication, see [AUTHENTICATION.md](AUTHENTICATION.md).
 Typical request:
 
 ```http
-GET /cgi/xml_action.cgi?method=get&module=duster&file=status1
+GET /xml_action.cgi?method=get&module=duster&file=status1
 ```
 
 Important field groups include:
@@ -333,13 +338,13 @@ backup_fail_cause
 Start:
 
 ```http
-GET /cgi/xml_action.cgi?Action=BackupFwStart
+GET /xml_action.cgi?Action=BackupFwStart
 ```
 
 Download prepared backup:
 
 ```http
-GET /cgi/xml_action.cgi?Action=BackupFw
+GET /xml_action.cgi?Action=BackupFw
 ```
 
 **Risk:** sensitive download / high device load.  
@@ -354,7 +359,7 @@ Static analysis shows `Action=BackupFw` in an allowlist before the ordinary sess
 Vendor UI path observed:
 
 ```text
-POST multipart /cgi/xml_action.cgi?Action=Upload&file=upgrade&command=
+POST multipart /xml_action.cgi?Action=Upload&file=upgrade&command=
 ```
 
 This is destructive and outside the normal XML-model POST pattern.
@@ -366,7 +371,7 @@ This is destructive and outside the normal XML-model POST pattern.
 Vendor UI path observed:
 
 ```text
-POST multipart /cgi/xml_action.cgi?Action=Upload&file=backfile&config_backup=
+POST multipart /xml_action.cgi?Action=Upload&file=backfile&config_backup=
 ```
 
 Treat restore input as untrusted and device-specific. Keep a recovery path before experimenting.

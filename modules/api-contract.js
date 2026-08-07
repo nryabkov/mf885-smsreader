@@ -1,4 +1,4 @@
-const XML_REQUEST_PATH = "/cgi/xml_action.cgi";
+const XML_REQUEST_PATH = "/xml_action.cgi";
 const XML_DIGEST_URI = "/cgi/xml_action.cgi";
 
 function requestUrl(host, method, file, command, requestPath = XML_REQUEST_PATH) {

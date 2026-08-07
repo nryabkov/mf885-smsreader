@@ -5,14 +5,15 @@ const api = require("../modules/api-contract.js");
 const scriptable = require("../scriptable.js");
 
 test("physical XML endpoint can differ from the Digest URI", () => {
-  const url = api.requestUrl("192.168.21.1", "POST", "status1", undefined, "/xml_action.cgi");
+  const url = api.requestUrl("192.168.21.1", "POST", "status1");
 
   assert.equal(url, "http://192.168.21.1/xml_action.cgi?method=set&module=duster&file=status1");
+  assert.equal(api.XML_REQUEST_PATH, "/xml_action.cgi");
   assert.equal(api.XML_DIGEST_URI, "/cgi/xml_action.cgi");
 });
 
-test("scriptable URL construction does not change the authorization URI", () => {
-  const url = scriptable.xmlRequestUrl("router.test", "GET", "status1", undefined, "/xml_action.cgi");
+test("router request URL and corresponding Digest header use their distinct paths", () => {
+  const url = scriptable.xmlRequestUrl("192.168.21.1", "GET", "status1");
   const header = scriptable.authorization({
     nc: 1,
     ha1: "0123456789abcdef0123456789abcdef",
@@ -21,7 +22,8 @@ test("scriptable URL construction does not change the authorization URI", () => 
     realm: "router"
   }, "GET");
 
-  assert.match(url, /^http:\/\/router\.test\/xml_action\.cgi\?/);
+  assert.equal(url, "http://192.168.21.1/xml_action.cgi?method=get&module=duster&file=status1");
   assert.match(header, /uri="\/cgi\/xml_action\.cgi"/);
+  assert.equal(scriptable.XML_REQUEST_PATH, "/xml_action.cgi");
   assert.equal(scriptable.XML_DIGEST_URI, "/cgi/xml_action.cgi");
 });
