@@ -1,0 +1,12 @@
+{
+  "routerAddress": "192.168.21.1",
+  "storage": "local",
+  "pollSeconds": 30,
+  "translationEndpoint": "",
+  "translationTarget": "en",
+  "showExperimentalControls": true,
+  "locale": "en",
+  "compatibilityProfile": "2.5.96",
+  "telnetPortCheckTimeoutMs": 1000,
+  "telnetPortCheckRetries": 2
+}

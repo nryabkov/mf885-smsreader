@@ -7,7 +7,15 @@ const DEFAULT_CONFIG = {
   repositoryName: "mf885-smsreader",
   branch: "main",
   routerAddress: "192.168.21.1",
-  storage: "local"
+  storage: "local",
+  pollSeconds: 30,
+  translationEndpoint: "",
+  translationTarget: "en",
+  showExperimentalControls: true,
+  locale: "en",
+  compatibilityProfile: "2.5.96",
+  telnetPortCheckTimeoutMs: 1000,
+  telnetPortCheckRetries: 2
 };
 const MARKER = "MF885_LOADER_STABLE_MARKER";
 const SHA_RE = /^[0-9a-f]{40}$/i;
@@ -134,7 +142,7 @@ async function main() {
   if (!Keychain.contains(passwordKey)) Keychain.set(passwordKey, "zimifi");
   const application = importModule(entryFile);
   if (!application || typeof application.run !== "function") throw new Error("The installed application does not export run(options)");
-  await application.run({ ip: config.routerAddress, password: Keychain.get(passwordKey), moduleDirectory: appDir });
+  await application.run({ ...normalizeConfig(config), ip: config.routerAddress, password: Keychain.get(passwordKey), moduleDirectory: appDir });
 }
 
 async function synchronize(context) {
@@ -311,7 +319,17 @@ function recoverInterruptedLoader(loader, stateFm, statePath, state) {
 
 function readConfig(fm, path) {
   if (!fm.fileExists(path)) { fm.writeString(path, JSON.stringify(DEFAULT_CONFIG, null, 2)); return { ...DEFAULT_CONFIG }; }
-  try { return { ...DEFAULT_CONFIG, ...JSON.parse(fm.readString(path)) }; } catch (_) { console.log("[Sync warning] Configuration is corrupt; defaults are in memory only. Repair mf885-smsreader-config.json."); return { ...DEFAULT_CONFIG }; }
+  try { return normalizeConfig({ ...DEFAULT_CONFIG, ...JSON.parse(fm.readString(path)) }); } catch (_) { console.log("[Sync warning] Configuration is corrupt; defaults are in memory only. Repair mf885-smsreader-config.json."); return { ...DEFAULT_CONFIG }; }
+}
+function normalizeConfig(value) {
+  const config={...DEFAULT_CONFIG,...value};
+  config.pollSeconds=Math.max(15,Math.min(300,Number(config.pollSeconds)||30));
+  config.telnetPortCheckTimeoutMs=Math.max(250,Math.min(5000,Number(config.telnetPortCheckTimeoutMs)||1000));
+  config.telnetPortCheckRetries=Math.max(1,Math.min(5,Math.trunc(Number(config.telnetPortCheckRetries)||2)));
+  config.locale="en"; config.translationTarget=String(config.translationTarget||"en").replace(/[^A-Za-z-]/g,"")||"en";
+  const endpoint=String(config.translationEndpoint||"").trim(); config.translationEndpoint=/^https?:\/\//i.test(endpoint)?endpoint:"";
+  config.showExperimentalControls=config.showExperimentalControls===true;
+  return config;
 }
 function readState(fm, path) { try { if (!fm.fileExists(path)) return null; const s = JSON.parse(fm.readString(path)); return validState(s) ? s : null; } catch (_) { return null; } }
 function writeStateAtomic(fm, path, state) { if (!validState(state)) throw new Error("Refusing to persist invalid synchronization state"); const temp = `${path}.tmp`; fm.writeString(temp, JSON.stringify(state, null, 2)); if (fm.fileExists(path)) fm.remove(path); fm.move(temp, path); }
@@ -322,6 +340,6 @@ function removeIfExists(fm, path) { if (fm.fileExists(path)) fm.remove(path); }
 async function downloadICloud(fm, path) { if (fm.isFileDownloaded && !fm.isFileDownloaded(path)) await fm.downloadFileFromiCloud(path); }
 async function showMessage(title, message) { const a = new Alert(); a.title = title; a.message = message; a.addAction("OK"); await a.presentAlert(); }
 
-const exported = { SHA_RE, LOADER_PROTOCOL, commitApiUrl, rawBaseUrl, artifactUrls, assertSha, safeRelativePath, validateManifest, validState, synchronizationNeeded, requestHeaders, abbreviate };
+const exported = { SHA_RE, LOADER_PROTOCOL, DEFAULT_CONFIG, normalizeConfig, commitApiUrl, rawBaseUrl, artifactUrls, assertSha, safeRelativePath, validateManifest, validState, synchronizationNeeded, requestHeaders, abbreviate };
 if (typeof module !== "undefined" && module.exports) module.exports = exported;
 if (typeof Script !== "undefined" && typeof FileManager !== "undefined") main().catch(error => { console.log(`[Router/startup error] ${error}`); throw error; });
