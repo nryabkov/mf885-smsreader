@@ -134,20 +134,23 @@ test('status compatibility warning precedes Router cards',()=>{
   assert.match(html,/Status compatibility warning/);
 });
 
-test('status1 network code 17 and RSSI 25 render known protocol and about -63 dBm',()=>{
-  const parsed=app.parseNetwork('<RGW><wan><cellular><sys_mode>4</sys_mode><sys_submode>17</sys_submode><rssi>25</rssi></cellular></wan></RGW>',{wan:{mappings:{}}});
-  assert.match(parsed.mode,/HSPA\+/);
-  assert.equal(parsed.dbm,-63);
-  assert.equal(parsed.signalRaw,'25');
-  assert.ok(parsed.bars>0 && parsed.percent>0);
+test('firmware RAT fixtures distinguish LTE, 3G, unknown codes and conflicts',()=>{
+  const profile=require('../modules/compatibility-profiles.js').selectProfile('2.5.96');
+  const lte=app.parseNetwork('<RGW><wan><cellular><ConnType>LTE</ConnType><sys_mode>6</sys_mode><rssi>25</rssi></cellular></wan></RGW>',profile);
+  assert.match(lte.mode,/4G/); assert.equal(lte.dbm,-63); assert.match(lte.networkDiagnostic,/ConnType=LTE/);
+  const threeG=app.parseNetwork('<RGW><wan><cellular><sys_mode>4</sys_mode><sys_submode>17</sys_submode></cellular></wan></RGW>',profile);
+  assert.match(threeG.mode,/3G/);
+  const unknown=app.parseNetwork('<RGW><wan><cellular><sys_submode>777</sys_submode></cellular></wan></RGW>',profile);
+  assert.equal(unknown.mode,'Unknown (raw: 777)');
+  const conflict=app.parseNetwork('<RGW><wan><cellular><ConnType>LTE</ConnType><sys_mode>4</sys_mode></cellular></wan></RGW>',profile);
+  assert.equal(conflict.mode,'Conflicting network data'); assert.equal(conflict.networkConflict,true);
 });
 
-test('configured and reported firmware mismatch is prominently rendered',()=>{
-  const fixture=model('router');
-  fixture.errors.profile='Firmware profile mismatch: configured 2.5.96, but status1 reports 2.5.94_release_MF855_NZ_CP_2.129.003. Manual compatibilityProfile override remains active.';
-  const html=app.buildHtml(fixture);
-  assert.match(html,/Status compatibility warning/);
-  assert.match(html,/Firmware profile mismatch/);
+test('firmware mismatch stays out of UI while a real status request error remains visible',()=>{
+  const fixture=model('router'); fixture.errors.profile='Firmware profile mismatch'; fixture.firmwareWarning={id:'firmware-x',configured:'x',detected:'y'};
+  let html=app.buildHtml(fixture); assert.doesNotMatch(html,/Firmware profile mismatch|data-warning-id|data-warning-dismiss/);
+  fixture.errors.status='HTTP 401 authentication failed'; fixture.errors.statusRequest=true;
+  html=app.buildHtml(fixture); assert.match(html,/Status request error/); assert.match(html,/HTTP 401 authentication failed/);
 });
 
 test('debug defaults are safe and explicit false silences the central logger',()=>{
@@ -196,12 +199,24 @@ test('SMS XML bodies are omitted by default and opt-in still uses central redact
   } finally { app.configureDebug({debug:true}); console.log=original; }
 });
 
-test('firmware mismatch warnings have stable acknowledgement identity and retained details',()=>{
-  const fixture=model('router'); fixture.errors.profile='Firmware profile mismatch';
-  fixture.firmwareWarning={id:app.firmwareWarningId('detected','configured'),configured:'configured',detected:'detected'};
-  const html=app.buildHtml(fixture);
-  assert.match(html,/data-warning-id="firmware-[0-9a-f]+"/); assert.match(html,/data-warning-dismiss/); assert.match(html,/Firmware mismatch details/);
-  assert.equal(app.firmwareWarningId('detected','configured'),app.firmwareWarningId('detected','configured'));
+test('Router groups are ordered, compact, and retain command hooks',()=>{
+  const page=app.buildHtml(model('router')),html=page.slice(page.indexOf('<section id=\"router\"'),page.indexOf('</section></main>'));
+  const labels=['Overview','Mobile network','Connection diagnostics','Cellular controls','USSD','Device access','System'];
+  for(let i=1;i<labels.length;i++)assert.ok(html.indexOf(labels[i-1])<html.indexOf(labels[i]));
+  for(const hook of ['data-ussd-section','data-device-access-section','data-cellular-control-section','data-power-action'])assert.match(html,new RegExp(hook));
+  assert.equal((html.match(/topgrid router-only/g)||[]).length,1); assert.match(html,/Loading diagnostics…/);
+});
+
+test('polling exposes full Router and diagnostics update hooks with stale preservation',()=>{
+  const js=app.clientScript(model('router'));
+  assert.match(js,/window\.zmiApplyCellularDiagnostics/); assert.match(js,/lastDiagnostics/); assert.match(js,/classList\.toggle\('stale'/);
+  for(const hook of ['data-network-current','data-network-preferred','data-network-operator','data-network-dbm','data-diag-stage'])assert.match(app.buildHtml(model('router')),new RegExp(hook));
+});
+
+test('experimental progress is a live region with attempts, elapsed time and timer cleanup',()=>{
+  const html=app.buildHtml(model('router')),js=app.clientScript(model());
+  assert.match(html,/role="status" aria-live="polite" data-detection-status/);
+  assert.match(js,/Attempt '\+detectionAttempt/); assert.match(js,/formatDetectionElapsed/); assert.match(js,/clearInterval\(detectionTimer\)/); assert.match(js,/1000/);
 });
 
 test('one experimental command is validated and automatically dispatched with independent results',()=>{

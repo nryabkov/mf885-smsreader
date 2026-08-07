@@ -49,6 +49,7 @@ function diagnostic(name, responses, profile) {
   return { value: hit.raw === null ? null : (mapped !== null ? mapped : enumField ? `Unknown (raw: ${hit.raw})` : hit.raw), raw: hit.raw, source: hit.source, confirmed: mapped !== null };
 }
 function stage(state, detail, raw) { return { state, detail, raw: raw === undefined ? null : raw }; }
+function endpointErrorState(error) { const text=String(error||"").toLowerCase(); if(/timeout|timed out/.test(text))return "timeout"; if(/401|403|auth/.test(text))return "authentication"; if(/http/.test(text))return "http"; if(/parse|xml/.test(text))return "parse"; if(/unsupported|404/.test(text))return "unsupported"; return "error"; }
 function normalize(responses, profile) {
   const values = {}; for (const name of Object.keys(FIELD_ALIASES)) values[name] = diagnostic(name, responses, profile);
   const is = (field, values) => field.confirmed && values.includes(String(field.raw));
@@ -56,7 +57,8 @@ function normalize(responses, profile) {
   const registration = values.registration.raw === null ? stage("unknown", "Registration unavailable") : is(values.registration, ["1", "registered", "home", "5", "roaming"]) ? stage("ok", values.registration.value) : is(values.registration, ["2", "searching"]) ? stage("pending", values.registration.value) : values.registration.confirmed ? stage("failed", values.registration.value, values.registration.raw) : stage("unknown", values.registration.value, values.registration.raw);
   const pdp = values.pdpState.raw === null ? stage("unknown", "PDP status unavailable") : is(values.pdpState, ["1", "connected", "active"]) ? stage("ok", values.pdpState.value) : is(values.pdpState, ["2", "connecting"]) ? stage("pending", values.pdpState.value) : values.pdpState.confirmed ? stage("failed", values.pdpState.value, values.pdpCause.raw || values.pdpError.raw) : stage("unknown", values.pdpState.value, values.pdpCause.raw || values.pdpError.raw);
   const hasIp = !!(values.ipv4.raw || values.ipv6.raw); const hasDns = !!(values.dns1.raw || values.dns2.raw);
-  return { values, stages: { sim, registration: { ...registration, roaming: values.roaming }, pdp, ip: stage(hasIp ? "ok" : pdp.state === "ok" ? "pending" : "unknown", hasIp ? "Address assigned" : "No IP address"), dns: stage(hasDns ? "ok" : hasIp ? "pending" : "unknown", hasDns ? "DNS available" : "No DNS servers") }, endpointErrors: responses && responses.__errors || {} };
+  const endpointErrors=responses && responses.__errors || {}; const endpoints={}; for(const name of Object.keys(endpointErrors))endpoints[name]={state:endpointErrorState(endpointErrors[name]),detail:endpointErrors[name]};
+  return { values, stages: { sim, registration: { ...registration, roaming: values.roaming }, pdp, ip: stage(hasIp ? "ok" : pdp.state === "ok" ? "pending" : "unknown", hasIp ? "Address assigned" : "No IP address"), dns: stage(hasDns ? "ok" : hasIp ? "pending" : "unknown", hasDns ? "DNS available" : "No DNS servers") }, endpointErrors, endpoints };
 }
 
-module.exports = { FIELD_ALIASES, leafValues, normalize };
+module.exports = { FIELD_ALIASES, leafValues, endpointErrorState, normalize };

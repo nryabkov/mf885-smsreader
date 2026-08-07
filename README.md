@@ -173,3 +173,9 @@ For a short, private troubleshooting session only, set `"skipSmsContentLog": fal
 `debugSensitivePayloads` is an explicitly dangerous troubleshooting option and is `false` by default. Enabling it may expose otherwise private application payload fields to the Scriptable console; do so only temporarily, away from shared logs or screen recordings. Security-critical credentials, Digest material, cookies, SMS/contact fields, phone numbers, and USSD values remain redacted by the central logger.
 
 For an incompatible `status1` response, look for `status1:xml-summary` (especially `WanStatistics`, `batteryinfo`, and `cellularFields`) and `loadModel:complete`. These show whether the selected compatibility profile recognizes the router response without revealing the response's private values.
+
+### Router dashboard and cellular troubleshooting
+
+The Router tab is ordered as **Overview**, **Mobile network**, **Connection diagnostics**, **Cellular controls**, **USSD**, **Device access**, and **System**. The overview is intentionally compact; polling updates it and the detailed network fields from the same snapshot. Diagnostics load after first paint, show endpoint-specific failures, and retain the last successful values as stale when a later poll fails.
+
+Current RAT and preferred/configured mode are separate. Numeric RAT values are decoded only by a mapping confirmed for the active firmware profile; unknown values display their safe raw field/code and conflicting fields are reported without guessing. Debug logging records firmware-profile mismatches and safe RAT sources/codes. Logs redact IMEI/ICCID, telephone numbers, credentials, cookies, tokens, Digest material, SMS, and USSD payloads. For troubleshooting, enable debug logging, reproduce while the stock router network screen is visible, and share only anonymized XML summaries—never raw authentication or subscriber identifiers.
