@@ -74,3 +74,9 @@ test("safe paths reject traversal, absolute paths, and empty segments", () => {
   for (const path of ["loader.js", "modules/ussd.js"]) assert.equal(updater.safeRelativePath(path), true);
   for (const path of ["../loader.js", "/loader.js", "a//b", "", "a?b"]) assert.equal(updater.safeRelativePath(path), false);
 });
+
+test("experimental controls are enabled by default but can be explicitly hidden", () => {
+  assert.equal(updater.DEFAULT_CONFIG.showExperimentalControls, true);
+  assert.equal(updater.normalizeConfig({}).showExperimentalControls, true);
+  assert.equal(updater.normalizeConfig({ showExperimentalControls: false }).showExperimentalControls, false);
+});

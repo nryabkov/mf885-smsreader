@@ -1,5 +1,33 @@
 # MF885 SMS Reader
 
+## API safety and firmware compatibility
+
+The application uses the ZMI XML API at `/cgi/xml_action.cgi`. Digest authentication
+uses that exact request path; the vendor login handshake remains separate. Ordinary
+writes use a single POST followed by a control GET. A successful HTTP response alone
+is not treated as proof that a setting changed.
+
+Compatibility profiles contain only values confirmed for a named firmware. Unknown
+enum values are displayed with their raw vendor value, and controls remain read-only
+when their field names or action values are not confirmed. The application never
+probes write values. In particular, Telnet, cellular, statistics-reset, autoreboot,
+and true-shutdown controls can remain unavailable even when their read model exists.
+
+WAN byte totals are parsed as unsigned decimal `BigInt` values. Download is
+`rx_byte_all`, upload is `tx_byte_all`, and total is their sum; LAN/WLAN, device, and
+billing-period counters are not combined with these values.
+
+## Stable configuration
+
+Copy `mf885-smsreader-config.json` to Scriptable's documents directory. Polling is
+bounded to 15–300 seconds and Telnet check settings are bounded to safe values. Only
+HTTP(S) translation endpoints are accepted. Passwords and translation credentials
+belong in Keychain and must not be placed in the JSON file or URL query strings.
+
+Experimental controls are shown by default. Setting `showExperimentalControls` to
+`false` hides them; showing them does not bypass compatibility checks or confirmation
+dialogs.
+
 MF885 SMS Reader is an English-language [Scriptable](https://scriptable.app/) dashboard for iPhone that connects directly to a ZMI MF855/MF885-family mobile router.
 
 The script does **not** read or send messages through Apple Messages on the iPhone. Instead, it talks directly to the router over its local web interface, authenticates with HTTP Digest authentication, and uses the router XML API to read and send SMS messages stored on or sent through the router.
