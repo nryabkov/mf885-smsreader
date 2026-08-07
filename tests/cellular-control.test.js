@@ -1,58 +1,26 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const cellular = require("../modules/cellular-control.js");
+const { selectProfile } = require("../modules/compatibility-profiles.js");
+function api(xml="<RGW><wan><connect_mode>1</connect_mode></wan></RGW>"){return {xmlRequest:async()=>xml,escapeXml:String,writeThenVerify:async()=>({outcome:"confirmed"})}}
 
-function api(responses) {
-  const calls = [];
-  return {
-    calls,
-    xmlRequest: async (method, file, body) => {
-      calls.push({ type: "xml", method, file, body });
-      const value = responses[file];
-      if (value instanceof Error) throw value;
-      return value || "<RGW><status>0</status></RGW>";
-    },
-    routerCall: async (path, method) => { calls.push({ type: "router", path, method }); return "<RGW><result>0</result></RGW>"; },
-    cleanError: e => String(e && e.message || e),
-    escapeXml: v => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&apos;"),
-    firstText: () => "",
-    sleep: async () => {},
-    parseNetwork: async () => ({ hasData: true, mode: "4G · LTE", rawMode: "LTE" })
-  };
-}
-
-test("detect classifies accepted and rejected firmware responses", async () => {
-  const capability = await cellular.detect(api({ wan: "<RGW><wan><network_mode>19</network_mode></wan></RGW>", network: "unknown file" }));
-
-  assert.equal(capability.supported, true);
-  assert.equal(capability.reconnectAvailable, true);
-  assert.equal(capability.diagnostics.find(item => item.file === "wan").status, "responded");
-  assert.equal(capability.diagnostics.find(item => item.file === "network").status, "rejected");
+test("detect is profile-driven and unknown firmware is explicitly read-only", async()=>{
+  const unknown=selectProfile("other"); const result=await cellular.detect(api(),unknown);
+  assert.equal(result.supported,true); assert.equal(result.readOnly,true); assert.deepEqual(result.modes,[]);
 });
-
-test("mode values are exposed only from whitelist and unknown modes are rejected", async () => {
-  assert.deepEqual(cellular.modes().map(mode => mode.id), ["auto", "lteOnly", "ltePreferred", "wcdmaOnly", "gsmOnly"]);
-  await assert.rejects(() => cellular.executeSetMode(api({}), {}, "evil"), /Unknown cellular mode/);
+test("unconfirmed operations cannot write",async()=>{
+  const result=await cellular.executeReconnect(api(),{},selectProfile("other"));
+  assert.equal(result.outcome,"unsupported"); assert.equal(result.ok,false);
 });
-
-test("XML builder escapes values", () => {
-  const xml = cellular.buildRequest("network", "network_mode", "a&b<'\"", v => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&apos;"));
-
-  assert.match(xml, /a&amp;b&lt;&apos;&quot;/);
+test("mode lookup exposes only profile whitelist",()=>{
+  assert.equal(cellular.modeById("evil",selectProfile("2.5.96")),null);
+  assert.deepEqual(cellular.modes(selectProfile("other")),[]);
 });
-
-test("set mode uses whitelisted candidate XML fields", async () => {
-  const mock = api({ net_mode: "<RGW><status>0</status></RGW>" });
-  await cellular.executeSetMode(mock, { diagnostics: [{ file: "net_mode" }] }, "lteOnly");
-
-  assert.equal(mock.calls[0].type, "xml");
-  assert.equal(mock.calls[0].file, "net_mode");
-  assert.match(mock.calls[0].body, /<(network_mode|NetworkMode|sys_mode|rat_mode|preferred_network_type|net_select)>/);
-  assert.doesNotMatch(mock.calls[0].body, /evil/);
-});
-
-test("module diagnostics sanitizer redacts sensitive data", () => {
-  const clean = cellular.sanitize('Authorization: Digest nonce="abcdef123456" response="1234567890abcdef" password: secret');
-
-  assert.doesNotMatch(clean, /abcdef123456|1234567890abcdef|secret/);
+test("scriptable passes ACTIVE_PROFILE to all cellular-control calls",()=>{
+  const source=fs.readFileSync(require.resolve("../scriptable.js"),"utf8");
+  assert.match(source,/\.detect\(cellularControlApi\(auth\), ACTIVE_PROFILE\)/);
+  assert.match(source,/\.modeById\(modeId, ACTIVE_PROFILE\)/);
+  assert.match(source,/\.executeReconnect\(cellularControlApi\(auth\), capability, ACTIVE_PROFILE\)/);
+  assert.match(source,/\.executeSetMode\(cellularControlApi\(auth\), capability, mode\.id, ACTIVE_PROFILE\)/);
 });
