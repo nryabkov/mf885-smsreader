@@ -174,21 +174,24 @@ async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
     html = dependencies.buildHtml(model);
     validateDashboardHtml(html);
   } catch (error) {
-    await dependencies.showMessage("ZMI dashboard", `HTML build stage failed: ${cleanError(error)}`, "⚠️");
+    console.error(`ZMI dashboard HTML build stage failed: ${cleanError(error)}`);
+    await dependencies.showMessage("ZMI dashboard", "The dashboard could not be built.", "⚠️");
     return;
   }
   const web = dependencies.WebView();
   try {
     await web.loadHTML(html);
   } catch (error) {
-    await dependencies.showMessage("ZMI dashboard", `WebView loadHTML stage failed: ${cleanError(error)}`, "⚠️");
+    console.error(`ZMI dashboard WebView loadHTML stage failed: ${cleanError(error)}`);
+    await dependencies.showMessage("ZMI dashboard", "The dashboard could not be opened.", "⚠️");
     return;
   }
   let presented;
   try {
     presented = web.present();
   } catch (error) {
-    await dependencies.showMessage("ZMI dashboard", `WebView present stage failed: ${cleanError(error)}`, "⚠️");
+    console.error(`ZMI dashboard WebView present stage failed: ${cleanError(error)}`);
+    await dependencies.showMessage("ZMI dashboard", "The dashboard could not be displayed.", "⚠️");
     return;
   }
   let presentationClosed = false;
@@ -206,8 +209,9 @@ async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
     if (typeof web.dismiss === "function") {
       try { web.dismiss(); } catch (_) {}
     }
-    const diagnostics = JSON.stringify(documentState || { evaluationError: cleanError(error) }, null, 2);
-    await dependencies.showMessage("ZMI dashboard", `WebView document check failed: ${cleanError(error)}\n\n${diagnostics}`, "⚠️");
+    // mainText can contain complete SMS messages (including OTPs), so never
+    // forward the raw inspection result to either a logger or an Alert.
+    console.warn(`ZMI dashboard WebView document check failed: ${cleanError(error)} ${JSON.stringify(dashboardDocumentDiagnostics(documentState))}`);
     return;
   }
   const smsGuard = createInFlightGuard();
@@ -230,7 +234,9 @@ async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
     try {
       const event = await Promise.race([nextWebViewCommand(web, dependencies.sleep, () => presentationClosed).then(message => ({ message })), presentationResult]);
       if (event.closed) {
-        if (event.error) await dependencies.showMessage("ZMI dashboard", `WebView present stage failed: ${cleanError(event.error)}`, "⚠️");
+        // A rejected presentation may occur after the WebView became visible;
+        // do not cover it with a native Alert.
+        if (event.error) console.error(`ZMI dashboard WebView present stage failed: ${cleanError(event.error)}`);
         break;
       }
       if (event.message) await dispatcher(event.message);
@@ -1082,6 +1088,17 @@ async function inspectDashboardDocument(web) {
 }
 function dashboardDocumentIsUsable(state) {
   return !!state && (state.readyState === "interactive" || state.readyState === "complete") && state.hasMain === true && typeof state.mainText === "string" && state.mainText.length > 0 && state.body && Number(state.body.width) > 0 && Number(state.body.height) > 0 && state.zmiReady === "true";
+}
+function dashboardDocumentDiagnostics(state) {
+  if (!state || typeof state !== "object") return { inspected:false };
+  const body = state.body && typeof state.body === "object" ? state.body : {};
+  return {
+    inspected:true,
+    readyState:String(state.readyState || ""),
+    hasMain:state.hasMain === true,
+    zmiReady:String(state.zmiReady || ""),
+    body:{ scrollWidth:Number(body.scrollWidth) || 0, scrollHeight:Number(body.scrollHeight) || 0, width:Number(body.width) || 0, height:Number(body.height) || 0 }
+  };
 }
 async function registerWebViewCommandChannel(web) {
   await web.evaluateJavaScript(`(function(){if(window.__zmiCommandQueue)return true;window.__zmiCommandQueue=[];window.addEventListener('ZMICommand',function(e){window.__zmiCommandQueue.push(e.detail)});return true})()`, false);
