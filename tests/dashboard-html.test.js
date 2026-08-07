@@ -450,3 +450,15 @@ test("cellular diagnostics sanitizer redacts digest and secrets", () => {
   assert.match(clean, /Authorization: <redacted>/);
   assert.match(clean, /password=<redacted>/);
 });
+
+test("cellular diagnostic stages and values render and polling updates them", () => {
+  const data = model("router");
+  data.cellularDiagnostics = { values: {
+    configuredApn:{value:"configured.apn"}, activeApn:{value:"active.apn"}, pdpType:{value:"IPv4/IPv6"},
+    ipv4:{value:"10.0.0.2"}, ipv6:{value:"2001:db8::2"}, gateway4:{value:"10.0.0.1"}, gateway6:{value:"2001:db8::1"},
+    dns1:{value:"1.1.1.1"}, dns2:{value:"8.8.8.8"}, band:{value:"3"}, pci:{value:"42"}, earfcn:{value:"1300"}, rsrp:{value:"-97"}, rsrq:{value:"-11"}, sinr:{value:"18"}
+  }, stages:{ sim:{state:"ok",detail:"Ready"}, registration:{state:"ok",detail:"Registered",roaming:{value:"Roaming"}}, pdp:{state:"failed",detail:"Unknown (raw: 9)",raw:"33"}, ip:{state:"ok",detail:"Address assigned"}, dns:{state:"ok",detail:"DNS available"} } };
+  const html=buildHtml(data), script=clientScript(data,"scriptable:///run?scriptName=test");
+  for(const label of ["SIM","Registration and roaming","PDP activation","IP assignment","DNS availability","configured.apn","active.apn","10.0.0.2","1.1.1.1","RSRP","RSRQ","SINR","raw: 33"]) assert.match(html,new RegExp(label));
+  assert.match(script,/payload\.cellularDiagnostics/); assert.match(script,/data-diag-stage/); assert.match(script,/data-diag/);
+});
