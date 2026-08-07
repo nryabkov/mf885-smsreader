@@ -20,7 +20,11 @@ let POLL_SECONDS = 30;
 const SMS_PAGE_SIZE = 10;
 const SMS_MAX_PAGES = 500;
 const USSD_RESPONSE_POLLS = 8;
-const DEBUG = false;
+let DEBUG = true;
+let DEBUG_SENSITIVE_PAYLOADS = false;
+let DEBUG_REQUEST_SEQUENCE = 0;
+const DEBUG_CHUNK_SIZE = 900;
+const DEBUG_MAX_CHUNKS = 4;
 const TRANSLATE_ENDPOINT = ""; // LibreTranslate-compatible endpoint, e.g. https://libretranslate.example/translate
 
 const QUERY = typeof args !== "undefined" && args.queryParameters
@@ -35,6 +39,7 @@ const INITIAL_TAB = String(QUERY.tab || "sms") === "router" ? "router" : "sms";
  * Keychain instead of writing them into the downloaded application module.
  */
 async function run(options = {}) {
+  configureDebug(options);
   if (options.ip) ROUTER_HOST = String(options.ip);
   if (options.password) PASSWORD = String(options.password);
   POLL_SECONDS = Math.max(15, Math.min(300, Number(options.pollSeconds) || 30));
@@ -52,7 +57,52 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, inspectDashboardDocument, XML_API_PATH, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand };
+module.exports = { run, dashboardFlow, inspectDashboardDocument, XML_API_PATH, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, statusCompatibilityError };
+
+function configureDebug(options = {}) {
+  DEBUG = options.debug !== false;
+  DEBUG_SENSITIVE_PAYLOADS = options.debugSensitivePayloads === true;
+}
+
+function redactDebugValue(value) {
+  let text = String(value === undefined || value === null ? "" : value);
+  text = text.replace(/<(content|message_content|subject|contacts|from|phone_number|sender|recipient|password|passwd|pwd|pin|puk|psk|ussd(?:_code|code)?)\b[^>]*>[\s\S]*?<\/\1>/gi, "<$1><redacted></$1>");
+  text = text.replace(/\b(Authorization|Cookie|Set-Cookie|password|passwd|pwd|token|nonce|cnonce|response)\b\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)/gi, "$1=<redacted>");
+  text = text.replace(/([?&](?:token|password|passwd|pwd|nonce|cnonce|response|code)=)[^&#]*/gi, "$1<redacted>");
+  text = text.replace(/(?:\+\d[\d ()-]{6,}\d)/g, "<redacted-phone>");
+  return text.replace(/[\r\n]+/g, " ");
+}
+function redactDebugPayload(payload) {
+  if (payload === null || payload === undefined) return payload;
+  if (typeof payload !== "object") return redactDebugValue(payload);
+  const blocked = /authorization|cookie|password|passwd|pwd|token|nonce|cnonce|response|content|contacts|phone|sender|recipient|ussd/i;
+  const copy = Array.isArray(payload) ? [] : {};
+  Object.keys(payload).forEach(key => { copy[key] = blocked.test(key) ? "<redacted>" : redactDebugPayload(payload[key]); });
+  return copy;
+}
+function debugLog(event, data) {
+  if (!DEBUG) return;
+  const safe = redactDebugPayload(data || {});
+  const fields = Object.keys(safe).map(key => `${key}=${typeof safe[key] === "object" ? JSON.stringify(safe[key]) : safe[key]}`).join(" ");
+  console.log(`[ZMI DEBUG]${event ? `[${redactDebugValue(event)}]` : ""}${fields ? ` ${fields}` : ""}`);
+}
+function debugXml(event, xml) {
+  if (!DEBUG) return;
+  const safe = redactDebugValue(xml);
+  const total = Math.min(DEBUG_MAX_CHUNKS, Math.max(1, Math.ceil(safe.length / DEBUG_CHUNK_SIZE)));
+  for (let index=0; index<total; index++) debugLog(event, { part:`${index+1}/${total}`, truncated:safe.length > DEBUG_CHUNK_SIZE * DEBUG_MAX_CHUNKS, xml:safe.slice(index*DEBUG_CHUNK_SIZE,(index+1)*DEBUG_CHUNK_SIZE) });
+}
+function xmlStructure(xml) {
+  const source=String(xml||"");
+  const cellular=["network_type","network_mode","network_name","signalbar","signal_strength","rssi","rsrp","operator","plmn"].filter(name=>new RegExp(`<${name}\\b`,"i").test(source));
+  return { sections:Array.from(new Set(Array.from(source.matchAll(/<RGW[^>]*>\s*(?:<[^>]+>\s*)?<([A-Za-z_][\w.-]*)\b/gi),m=>m[1]))), WanStatistics:/<WanStatistics\b/i.test(source), batteryinfo:/<batteryinfo\b/i.test(source), cellularFields:cellular };
+}
+function logXmlSummary(operation, xml) { const summary=xmlStructure(xml); debugLog(`${operation}:xml-summary`,summary); return summary; }
+function statusCompatibilityError(xml, profile = ACTIVE_PROFILE) {
+  const structure=xmlStructure(xml);
+  if (structure.WanStatistics || structure.batteryinfo || structure.cellularFields.length) return "";
+  return `Router responded successfully, but status1 format does not match compatibility profile ${profile.id}. Missing expected XML sections: WanStatistics, batteryinfo, cellular/network fields.`;
+}
 
 async function main() {
   try {
@@ -206,12 +256,15 @@ async function loadModel(auth) {
   };
   let status = null;
   const initial = await Promise.allSettled([getStatus(auth), getSmsPage(auth, 1)]);
+  debugLog("loadModel:allSettled", { status1:initial[0].status, message:initial[1].status });
   try {
     if (initial[0].status === "rejected") throw initial[0].reason;
     status = initial[0].value;
     model.traffic = sectionWithError(parseTraffic(status), "trafficError", "status1 has no WanStatistics data");
     model.battery = sectionWithError(parseBattery(status), "batteryError", "status1 has no batteryinfo data");
     model.network = sectionWithError(parseNetwork(status), "networkError", "status1 has no cellular network data");
+    const compatibilityError=statusCompatibilityError(status);
+    if (compatibilityError) model.errors.status=compatibilityError;
   } catch (error) {
     model.errors.status = cleanError(error);
   }
@@ -224,6 +277,7 @@ async function loadModel(auth) {
   model.ussd = readCapabilityCache("ussd") || { state: "unchecked", detail: "Not checked" };
   model.deviceAccess = readCapabilityCache("deviceAccess") || { state: "unchecked", detail: "Not checked", capabilities: [] };
   model.cellularControl = readCapabilityCache("cellularControl") || { state: "unchecked", detail: "Not checked" };
+  debugLog("loadModel:complete", { smsCount:model.sms.messages.length, traffic:!!model.traffic.hasData, battery:!!model.battery.hasData, network:!!model.network.hasData, errors:model.errors });
   return model;
 }
 
@@ -345,12 +399,15 @@ async function getAuthChallenge() {
   const req = new Request(`http://${ROUTER_HOST}/login.cgi`);
   req.method = "GET";
   req.headers = baseHeaders();
-  try { await req.loadString(); } catch (_) {}
+  debugLog("auth:challenge", { stage:"request", url:`http://${ROUTER_HOST}/login.cgi` });
+  try { await req.loadString(); } catch (error) { debugLog("auth:challenge", { stage:"exception", error:cleanError(error) }); }
   const headers = req.response ? req.response.headers : {};
   const challengeKey = Object.keys(headers).find(key => key.toLowerCase() === "www-authenticate");
   const challenge = challengeKey ? headers[challengeKey] : undefined;
+  debugLog("auth:challenge", { stage:"response", status:req.response&&req.response.statusCode, wwwAuthenticate:!!challenge });
   if (!challenge) throw new Error("No authentication challenge. Check the ZMI Wi-Fi connection and router address.");
   const auth = parseDigestChallenge(challenge);
+  debugLog("auth:challenge", { stage:"parsed", qop:auth.qop });
   return Object.assign(auth, { nc: 1, ha1: md5(`${USERNAME}:${auth.realm}:${PASSWORD}`) });
 }
 
@@ -363,7 +420,9 @@ async function login(auth) {
   const req = new Request(`http://${ROUTER_HOST}/login.cgi?${query}`);
   req.method = "GET";
   req.headers = Object.assign({}, baseHeaders(), { Authorization: digestAuthorization(auth, "GET", path, nc, cnonce, response) });
+  debugLog("auth:login", { stage:"request", url:`http://${ROUTER_HOST}/login.cgi`, qop:auth.qop });
   await req.loadString();
+  debugLog("auth:login", { stage:"result", status:req.response&&req.response.statusCode, success:!(req.response&&Number(req.response.statusCode)>=400) });
   auth.nc++;
 }
 
@@ -389,9 +448,10 @@ async function xmlRequest(auth, method, file, body = null, retry = true, timeout
     req.headers = requestHeaders(auth, method);
     req.timeoutInterval = timeout;
     if (body !== null) req.body = body;
+    req._zmi = { method, operation:file, timeout, body };
     return req;
   }, file, retry);
-  if (DEBUG) console.log(text);
+  logXmlSummary(file, text);
   return text;
 }
 
@@ -404,12 +464,21 @@ async function routerCall(auth, path, method) {
   }, method);
 }
 
-async function loadResponse(req) {
+async function loadResponse(req, context = {}) {
   let text = "";
   let exception = null;
+  const started=Date.now();
   try { text = await req.loadString(); }
   catch (error) { exception = error; }
-  return { text, exception, response: req.response };
+  const response=req.response;
+  const allowed={};
+  const responseHeaders=response&&response.headers||{};
+  Object.keys(responseHeaders).forEach(key=>{if(/^(content-type|content-length|date|server)$/i.test(key))allowed[key]=responseHeaders[key];});
+  debugLog(`request:${context.requestId}:response`, { operation:context.operation, method:req.method, url:String(req.url||"").replace(/([?&](?:command|token|password|nonce|cnonce|response)=)[^&#]*/gi,"$1<redacted>"), attempt:context.attempt, retry:context.attempt>1, timeout:req.timeoutInterval, startedAt:context.startedAt, durationMs:Date.now()-started, status:response&&response.statusCode, headers:allowed, bytes:String(text||"").length });
+  if (req.body) debugXml(`request:${context.requestId}:request-xml`, req.body);
+  if (text) debugXml(`request:${context.requestId}:response-xml`, text);
+  if (exception) debugLog(`request:${context.requestId}:exception`, { operation:context.operation, stage:"loadResponse", error:cleanError(exception) });
+  return { text, exception, response };
 }
 
 async function authenticatedRequest(auth, makeRequest, operation, retry = true) {
@@ -424,12 +493,16 @@ async function authenticatedRequest(auth, makeRequest, operation, retry = true) 
 
 async function authenticatedRequestLocked(auth, makeRequest, operation, retry = true) {
   const attempts = retry ? 2 : 1;
+  const requestId=++DEBUG_REQUEST_SEQUENCE;
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const result = await loadResponse(makeRequest());
+    const req=makeRequest();
+    debugLog(`request:${requestId}:start`, { operation, method:req.method, attempt:attempt+1, retry:attempt>0, timeout:req.timeoutInterval, startedAt:Date.now() });
+    const result = await loadResponse(req,{requestId,operation,attempt:attempt+1,startedAt:Date.now()});
     auth.nc++;
     const statusCode = result.response && Number(result.response.statusCode);
     const authenticationFailed = statusCode === 401 || unauthorized(result.text);
     if (authenticationFailed) {
+      debugLog(`request:${requestId}:reauth`, { operation, reason:statusCode===401?"HTTP 401":"XML unauthorized", attempt:attempt+1 });
       if (attempt + 1 < attempts) {
         const fresh = await getAuthChallenge();
         await login(fresh);
@@ -994,6 +1067,7 @@ function buildHtml(model) {
   const notice = normalizeNotice(model.notice);
   const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}${notice.diagnostics ? `<details><summary>Diagnostics</summary><textarea rows="7" readonly>${escapeHtml(notice.diagnostics)}</textarea><pre>${escapeHtml(notice.diagnostics)}</pre></details>` : ""}</div>` : "";
   const signalHtml = signalBarsHtml(network);
+  const statusWarning = model.errors && model.errors.status ? `<div class="warning status-compatibility" data-status-warning><strong>Status compatibility warning</strong><p>${escapeHtml(model.errors.status)}</p></div>` : "";
   const topCards = `<section class="topgrid router-only">
     <article class="mini"><span>Signal</span><strong>${signalHtml}</strong><small>${escapeHtml(network.networkError || network.mode || "Unknown")}${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</small></article>
     <article class="mini"><span>Battery</span><strong>${batteryLabel}</strong><small>${escapeHtml(batteryInline)}</small></article>
@@ -1034,11 +1108,11 @@ function buildHtml(model) {
     <section id="sms" class="tab${smsActive}"><div class="inline-toolbar"><button onclick="toggleSmsComposer()">📝 Compose SMS</button></div>
     <form id="smsComposer" class="composer card" onsubmit="submitSmsInline(event)" hidden><input name="to" placeholder="Recipient" autocomplete="tel"><textarea name="text" placeholder="SMS text" rows="3" maxlength="1000"></textarea><div><button class="primary" type="submit">Send SMS</button><button type="button" onclick="toggleSmsComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form>
     ${model.sms.loading ? `<div class="notice" data-history-warning>Loading message history…</div>` : ""}${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
-    <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>Current network: <strong>${escapeHtml(network.mode || "Unknown")}</strong></p><p>Current preferred protocol: <strong>${escapeHtml(network.preferredMode || "Unknown")}</strong></p><p>${escapeHtml(network.networkError || network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}${diagnosticBlock}<div class="warning"><strong>Experimental cellular controls</strong><p>Firmware endpoints differ across MF855/MF885 builds. Reconnect and protocol changes can temporarily interrupt mobile internet; unsupported firmware should be reported with diagnostics.</p>${cellularReconnect}<h3>Preferred protocol</h3>${cellularModeSelect}</div></article>
+    <section id="router" class="tab${routerActive}">${statusWarning}${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>Current network: <strong>${escapeHtml(network.mode || "Unknown")}</strong></p><p>Current preferred protocol: <strong>${escapeHtml(network.preferredMode || "Unknown")}</strong></p><p>${escapeHtml(network.networkError || network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}${diagnosticBlock}<div class="warning"><strong>Experimental cellular controls</strong><p>Firmware endpoints differ across MF855/MF885 builds. Reconnect and protocol changes can temporarily interrupt mobile internet; unsupported firmware should be reported with diagnostics.</p>${cellularReconnect}<h3>Preferred protocol</h3>${cellularModeSelect}</div></article>
     <article class="card battery"><small>Battery</small><h2>${escapeHtml(batteryInline)}</h2><p>${escapeHtml(battery.batteryError || battery.status || "Unknown")}</p>${battery.percentValid ? `<div class="bar"><i style="width:${battery.percent}%"></i></div>` : `<p>Battery percentage unavailable</p>`}</article>
     <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><p>Session: ↓ ${formatBytes(traffic.sessionDownload)} · ↑ ${formatBytes(traffic.sessionUpload)}${traffic.sessionSeconds !== null && traffic.sessionSeconds !== undefined ? ` · ${escapeHtml(formatDuration(traffic.sessionSeconds))}` : ""}</p>${traffic.trafficError ? `<p class="warning">${escapeHtml(traffic.trafficError)}</p>` : ""}<button class="danger buttonlike" type="button" data-power-action="resetTraffic">Reset traffic</button>${resetTrafficConfirm}</article>
     <article class="card experimental" id="routerExperimental"><small>Experimental router controls</small><h2>USSD and device access</h2><section data-ussd-section><h3>USSD: ${model.ussd.state === "unchecked" ? "Not checked" : model.ussd.supported ? "Available" : "Unavailable"}</h3><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button type="button" data-detect="ussd">Detect</button> <button type="button" onclick="toggleUssdComposer(true)">Dial USSD</button><form id="ussdComposer" class="composer" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Code, for example *100#"><div><button class="primary" type="submit">Send USSD</button><button type="button" onclick="toggleUssdComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form></section><section data-device-access-section><h3>Device access: ${model.deviceAccess.state === "unchecked" ? "Not checked" : model.deviceAccess.supported ? "Diagnostics available" : "Unavailable"}</h3><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar"><button type="button" data-detect="deviceAccess">Detect</button>${deviceActions}</div>${deviceConfirm}</section></article>
-    <article class="card"><small>Power</small><h2>System commands</h2><button class="buttonlike" type="button" data-power-action="reboot">Restart</button> <button class="danger buttonlike" type="button" data-power-action="powerOff">Power off</button>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
+    <article class="card"><small>Power</small><h2>System commands</h2><button class="buttonlike" type="button" data-power-action="reboot">Restart</button> <button class="danger buttonlike" type="button" data-power-action="powerOff">Power off</button>${powerConfirmCard}</article></section></main>
   <script>${clientScript(model)}</script></body></html>`;
 }
 
@@ -1048,7 +1122,7 @@ var remaining=model.poll,paused=false,timer=null,pending={},sequence=0;
 function safeStorageGet(k){try{return localStorage.getItem?localStorage.getItem(k):localStorage[k]}catch(e){return null}}
 function safeStorageSet(k,v){try{if(localStorage.setItem)localStorage.setItem(k,v);else localStorage[k]=v}catch(e){}}
 function selectedTab(){return safeStorageGet('zmiTab')||model.tab}
-function tab(name){name=name==='router'?'router':'sms';document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x.id===name)});document.querySelectorAll('[data-tab-button]').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-tab-button')===name)});safeStorageSet('zmiTab',name)}
+function tab(name){name=name==='router'?'router':'sms';var current=document.querySelector('.tab.active');if(current)safeStorageSet('zmiScrollY:'+current.id,String(window.scrollY||0));document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x.id===name)});document.querySelectorAll('[data-tab-button]').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-tab-button')===name)});safeStorageSet('zmiTab',name);var saved=safeStorageGet('zmiScrollY:'+name);setTimeout(function(){window.scrollTo(0,saved===null?0:Number(saved)||0)},0)}
 function describeError(e){return String(e&&e.message||e||'Unknown error')}
 function setActionStatus(text){fillActionStatus('Dashboard',text||'','',false)}
 function fillActionStatus(title,detail,raw,isError){var box=document.getElementById('actionStatus');if(!box)return;box.hidden=false;box.classList.toggle('error',!!isError);var t=box.querySelector('[data-status-title]'),d=box.querySelector('[data-status-detail]'),pre=box.querySelector('[data-status-pre]');if(t)t.textContent=title||'';if(d)d.textContent=detail||'';if(pre){pre.textContent=raw||'';pre.hidden=!raw}}
@@ -1057,7 +1131,7 @@ function hideActionStatus(){var x=document.getElementById('actionStatus');if(x)x
 function hideWebviewDiagnostics(){var x=document.getElementById('webviewDiagnostics');if(x)x.hidden=true}
 function bridge(action,params,button){var id=Date.now().toString(36)+'-'+(++sequence);if(button)button.disabled=true;return new Promise(function(resolve,reject){pending[id]={resolve:resolve,reject:reject,button:button};window.dispatchEvent(new CustomEvent('ZMICommand',{detail:{id:id,action:action,params:params||{}}}))})}
 window.zmiApplyActionResult=function(payload){var p=payload&&pending[payload.id];if(p){delete pending[payload.id];if(p.button)p.button.disabled=false;if(payload.ok)p.resolve(payload.result);else p.reject(new Error(payload.error||'Command failed'))}if(!payload.ok){stopProgress();showActionError('Command failed',payload.error||'Unknown error','')}};
-function renderPolledSms(payload){var messages=payload.messages||payload.smsMessages;if(!Array.isArray(messages))return false;var section=document.getElementById('sms');if(!section)return false;section.querySelectorAll('.sms,.empty,[data-history-warning]').forEach(function(x){x.remove()});messages.slice(0,200).forEach(function(item,index){var card=document.createElement('article');card.className='card sms';card.setAttribute('data-msg-id',item.id||'');card.setAttribute('data-msg-text',item.content||'');card.setAttribute('data-msg-sender',item.phone||'');card.setAttribute('data-msg-date',item.date||'');card.innerHTML='<header><div><h3></h3><small></small></div><time></time></header><p class="body"></p><div class="translation" data-translation><span></span></div><footer><button data-copy>Copy</button><button class="danger" data-delete-action>Delete</button></footer>';card.querySelector('h3').textContent=item.phone||'Unknown sender';card.querySelector('small').textContent='SMS #'+(item.row||index+1);card.querySelector('time').textContent=item.date||'Unknown time';card.querySelector('.body').textContent=item.content||'';section.appendChild(card)});return true}
+function renderPolledSms(payload){var messages=payload.messages||payload.smsMessages;if(!Array.isArray(messages))return false;var section=document.getElementById('sms');if(!section)return false;section.querySelectorAll('.sms,.empty,[data-history-warning]').forEach(function(x){x.remove()});if(messages.length===0){var empty=document.createElement('article');empty.className='card empty';var title=document.createElement('h2');title.textContent='No SMS found';var description=document.createElement('p');description.textContent='No inbox messages are available. They may not have arrived yet, or message history could not be loaded.';empty.appendChild(title);empty.appendChild(description);section.appendChild(empty)}messages.slice(0,200).forEach(function(item,index){var card=document.createElement('article');card.className='card sms';card.setAttribute('data-msg-id',item.id||'');card.setAttribute('data-msg-text',item.content||'');card.setAttribute('data-msg-sender',item.phone||'');card.setAttribute('data-msg-date',item.date||'');card.innerHTML='<header><div><h3></h3><small></small></div><time></time></header><p class="body"></p><div class="translation" data-translation><span></span></div><footer><button data-copy>Copy</button><button class="danger" data-delete-action>Delete</button></footer>';card.querySelector('h3').textContent=item.phone||'Unknown sender';card.querySelector('small').textContent='SMS #'+(item.row||index+1);card.querySelector('time').textContent=item.date||'Unknown time';card.querySelector('.body').textContent=item.content||'';section.appendChild(card)});return true}
 window.zmiApplySmsHistory=function(payload){payload=payload||{};renderPolledSms(payload);model.sms.fingerprint=payload.fingerprint||model.sms.fingerprint;var hero=document.querySelector('.hero strong');if(hero)hero.textContent='SMS: '+((payload.messages||[]).length);var note=document.createElement('div');note.setAttribute('data-history-warning','');note.className=payload.warning?'warning':'notice';note.textContent=payload.loading?'Loading message history…':payload.warning?'⚠️ '+payload.warning:'Message history loaded';var section=document.getElementById('sms');if(section)section.insertBefore(note,section.firstChild)};
 window.zmiApplyStatus=function(payload){payload=payload||{};remaining=model.poll;drawTimer();var spans=document.querySelectorAll('.statusline span');if(spans[0]&&payload.networkMode)spans[0].textContent='📶 '+payload.networkMode;if(spans[1]&&payload.batteryInline)spans[1].textContent=payload.batteryInline;if(spans[2]&&payload.trafficTotal)spans[2].textContent='⇅ '+payload.trafficTotal;if(payload.smsMessages)window.zmiApplySmsHistory({messages:payload.smsMessages,fingerprint:payload.smsFingerprint,totalMessages:payload.smsTotalMessages});stopProgress()};
 window.zmiApplyCapability=function(payload){var section=document.querySelector('[data-'+(payload.kind==='deviceAccess'?'device-access':payload.kind==='cellularControl'?'cellular-control':'ussd')+'-section]');if(section){var h=section.querySelector('h3'),p=section.querySelector('p');if(h)h.textContent=(payload.kind==='ussd'?'USSD':payload.kind==='deviceAccess'?'Device access':'Cellular control')+': '+(payload.value&&payload.value.supported?'Available':'Unavailable');if(p)p.textContent=payload.value&&payload.value.detail||''}};
@@ -1080,7 +1154,7 @@ function showInlineConfirm(button){var action=button.getAttribute('data-power-ac
 function showCellularConfirm(el){var mode=el.getAttribute('data-cellular-mode-select')!==null?el.value:'',action=mode?'cellularMode':'cellularReconnect',copy=cellularActionCopy(mode?'mode':'reconnect',mode);makeConfirm(el.closest('.card'),copy,action,mode?{mode:mode}:{},'data-cellular-confirm')}
 function confirmSmsDelete(card,item){makeConfirm(card,{title:'Delete this SMS?',detail:String(item.content||'').slice(0,80)},'deleteSms',{id:String(item.id||'')},'data-delete-confirm')}
 function detectCapability(kind,button){bridge('detectCapability',{kind:kind},button).catch(function(e){showActionError('Detection failed',describeError(e),'')})}
-function initDashboard(){paused=safeStorageGet('zmiPaused')==='1';tab(selectedTab());var draft=safeStorageGet('zmiSmsDraft'),form=document.getElementById('smsComposer');if(form&&draft)form.elements.text.value=draft;if(form)form.elements.text.addEventListener('input',function(){safeStorageSet('zmiSmsDraft',this.value)});var sy=safeStorageGet('zmiScrollY');if(sy)setTimeout(function(){window.scrollTo(0,Number(sy)||0)},0);window.addEventListener('scroll',function(){safeStorageSet('zmiScrollY',String(window.scrollY||0))});timer=setInterval(tick,1000);drawTimer();document.addEventListener('change',function(e){if(e.target.matches&&e.target.matches('[data-cellular-mode-select]'))showCellularConfirm(e.target)});document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-delete-action],[data-power-action],[data-cellular-action],[data-device-action],[data-detect]');if(!b)return;if(b.hasAttribute('data-delete-action')){var c=b.closest('.sms');confirmSmsDelete(c,{id:c.getAttribute('data-msg-id'),content:c.getAttribute('data-msg-text')})}else if(b.hasAttribute('data-power-action'))showInlineConfirm(b);else if(b.hasAttribute('data-cellular-action'))showCellularConfirm(b);else if(b.hasAttribute('data-device-action'))bridge('deviceAccess',{deviceAction:b.getAttribute('data-device-action')},b);else detectCapability(b.getAttribute('data-detect'),b)})}
+function initDashboard(){paused=safeStorageGet('zmiPaused')==='1';tab(selectedTab());var draft=safeStorageGet('zmiSmsDraft'),form=document.getElementById('smsComposer');if(form&&draft)form.elements.text.value=draft;if(form)form.elements.text.addEventListener('input',function(){safeStorageSet('zmiSmsDraft',this.value)});window.addEventListener('scroll',function(){var active=document.querySelector('.tab.active');if(active)safeStorageSet('zmiScrollY:'+active.id,String(window.scrollY||0))});timer=setInterval(tick,1000);drawTimer();document.addEventListener('change',function(e){if(e.target.matches&&e.target.matches('[data-cellular-mode-select]'))showCellularConfirm(e.target)});document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-delete-action],[data-power-action],[data-cellular-action],[data-device-action],[data-detect]');if(!b)return;if(b.hasAttribute('data-delete-action')){var c=b.closest('.sms');confirmSmsDelete(c,{id:c.getAttribute('data-msg-id'),content:c.getAttribute('data-msg-text')})}else if(b.hasAttribute('data-power-action'))showInlineConfirm(b);else if(b.hasAttribute('data-cellular-action'))showCellularConfirm(b);else if(b.hasAttribute('data-device-action'))bridge('deviceAccess',{deviceAction:b.getAttribute('data-device-action')},b);else detectCapability(b.getAttribute('data-detect'),b)})}
 function markDashboardReady(){document.documentElement.dataset.zmiReady='true';initDashboard()}
 document.addEventListener('DOMContentLoaded',markDashboardReady);
 async function copySms(button){var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body'),value=body?body.innerText:'';if(!navigator.clipboard||!navigator.clipboard.writeText){showActionError('Copy SMS manually','Clipboard is unavailable in this WebView.',value);return}button.disabled=true;try{await navigator.clipboard.writeText(value)}catch(e){showActionError('Could not copy SMS',describeError(e),value)}finally{button.disabled=false}}

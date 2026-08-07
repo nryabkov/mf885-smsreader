@@ -102,3 +102,66 @@ test('capability cache keeps positives and expires negative entries after 24 hou
 test('dispatcher whitelists actions, validates parameters and correlates ids',async()=>{const replies=[];const dispatch=app.createWebViewDispatcher({refresh:async()=>({fresh:true}),sendSms:async p=>p.text},r=>replies.push(r));assert.equal((await dispatch({id:'one',action:'refresh',params:{}})).id,'one');assert.equal((await dispatch({id:'two',action:'sendSms',params:{to:'+1',text:'hi'}})).result,'hi');assert.equal((await dispatch({id:'bad',action:'arbitraryFunction',params:{}})).ok,false);assert.deepEqual(replies.map(x=>x.id),['one','two','bad']);});
 test('dispatcher requires danger confirmation and converts handler errors',async()=>{let called=0;const dispatch=app.createWebViewDispatcher({reboot:async()=>{called++;return 'ok'},refresh:async()=>{throw new Error('offline')} });assert.equal((await dispatch({id:'a',action:'reboot',params:{}})).ok,false);assert.equal(called,0);assert.equal((await dispatch({id:'b',action:'reboot',params:{confirmed:true}})).ok,true);const failed=await dispatch({id:'c',action:'refresh',params:{}});assert.equal(failed.ok,false);assert.equal(failed.error,'offline');});
 test('arbitrary function names can never be selected by WebView data',()=>{assert.throws(()=>app.validateWebViewCommand({id:'x',action:'constructor',params:{}}),/not allowed/);assert.throws(()=>app.validateWebViewCommand({id:'x',action:'cellularMode',params:{mode:'evil',confirmed:true}}),/Invalid cellular mode/);});
+
+test('polled empty SMS history renders an empty card and preserves its warning',()=>{
+  const js=app.clientScript(model());
+  assert.match(js,/messages\.length===0/);
+  assert.match(js,/empty\.className='card empty'/);
+  assert.match(js,/title\.textContent='No SMS found'/);
+  assert.match(js,/payload\.warning\?'⚠️ '\+payload\.warning/);
+});
+
+test('tabs have independent scroll positions and unsaved tabs restore to top',()=>{
+  const js=app.clientScript(model());
+  assert.match(js,/zmiScrollY:'\+current\.id/);
+  assert.match(js,/zmiScrollY:'\+active\.id/);
+  assert.match(js,/saved===null\?0:Number\(saved\)\|\|0/);
+  assert.doesNotMatch(js,/safeStorage(?:Get|Set)\('zmiScrollY'/);
+});
+
+test('structurally incompatible status1 gets a profile-specific aggregate error',()=>{
+  const error=app.statusCompatibilityError('<RGW><status><foo>ok</foo></status></RGW>',{id:'fixture-profile'});
+  assert.match(error,/Router responded successfully/); assert.match(error,/fixture-profile/);
+  for(const missing of ['WanStatistics','batteryinfo','cellular\/network fields'])assert.match(error,new RegExp(missing));
+  assert.equal(app.statusCompatibilityError('<RGW><status><batteryinfo/></status></RGW>',{id:'fixture-profile'}),'');
+});
+
+test('status compatibility warning precedes Router cards',()=>{
+  const fixture=model('router');
+  fixture.errors.status='Router responded successfully, but status1 format does not match compatibility profile fixture.';
+  const html=app.buildHtml(fixture);
+  assert.ok(html.indexOf('data-status-warning') < html.indexOf('topgrid router-only'));
+  assert.match(html,/Status compatibility warning/);
+});
+
+test('debug defaults are safe and explicit false silences the central logger',()=>{
+  const config=require('../mf885-smsreader-config.json');
+  const loader=require('node:fs').readFileSync(require.resolve('../loader.js'),'utf8');
+  assert.equal(config.debug,true);
+  assert.equal(config.debugSensitivePayloads,false);
+  assert.match(loader,/debug: true/);
+  assert.match(loader,/debugSensitivePayloads: false/);
+  const original=console.log,calls=[]; console.log=(...values)=>calls.push(values.join(' '));
+  try { app.configureDebug({debug:false}); app.debugLog('hidden',{status:200}); assert.deepEqual(calls,[]); }
+  finally { app.configureDebug({debug:true}); console.log=original; }
+});
+
+test('debug redaction removes secrets and retains useful structural fields',()=>{
+  const original=console.log,calls=[]; console.log=(...values)=>calls.push(values.join(' '));
+  try {
+    app.configureDebug({debug:true,debugSensitivePayloads:false});
+    app.debugLog('request:12:response',{operation:'status1',method:'GET',attempt:1,status:200,durationMs:184,bytes:2371,password:'zimifi',token:'github-secret',Authorization:'Digest response=deadbeef',Cookie:'sid=secret',phone:'+12345678901',content:'private SMS',ussd:'*100#'});
+    app.logXmlSummary('status1','<RGW><status><WanStatistics/><batteryinfo/><network_type>LTE</network_type></status></RGW>');
+  } finally { console.log=original; }
+  const log=calls.join('\n');
+  for(const secret of ['zimifi','github-secret','deadbeef','sid=secret','+12345678901','private SMS','*100#'])assert.doesNotMatch(log,new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+  for(const safe of ['request:12:response','operation=status1','method=GET','attempt=1','status=200','durationMs=184','bytes=2371','WanStatistics','batteryinfo','cellularFields'])assert.match(log,new RegExp(safe));
+});
+
+test('large debug XML is emitted in bounded numbered chunks with truncation',()=>{
+  const original=console.log,calls=[]; console.log=(...values)=>calls.push(values.join(' '));
+  try { app.configureDebug({debug:true}); app.debugXml('request:99:response-xml','<RGW><status>'+('x'.repeat(6000))+'</status></RGW>'); } finally { console.log=original; }
+  assert.equal(calls.length,4);
+  assert.match(calls[0],/part=1\/4/); assert.match(calls[3],/part=4\/4/);
+  assert.ok(calls.every(line=>line.length<1200)); assert.ok(calls.every(line=>/truncated=true/.test(line)));
+});
