@@ -5,7 +5,7 @@ const app = require('../scriptable.js');
 
 function model(tab='sms') { return {tab,loadedAt:Date.now(),sms:{messages:[{id:'1',phone:'+1',date:'now',content:'hello'}],loading:true},errors:{},network:{},battery:{},traffic:{},cellularDiagnostics:{},ussd:{state:'unchecked',detail:'Not checked'},deviceAccess:{state:'unchecked',detail:'Not checked',capabilities:[]},cellularControl:{state:'unchecked',detail:'Not checked'}}; }
 
-test('initial HTML is immediately useful and marks history as loading',()=>{const html=app.buildHtml(model());assert.match(html,/hello/);assert.match(html,/Loading message history…/);assert.match(html,/Not checked/);assert.match(html,/data-detect="ussd"/);});
+test('initial HTML is immediately useful and marks history as loading',()=>{const html=app.buildHtml(model());assert.match(html,/hello/);assert.match(html,/Loading message history…/);assert.match(html,/Not checked/);assert.match(html,/data-detect-experimental/);assert.match(html,/Detect experimental features/);assert.doesNotMatch(html,/data-detect="ussd"/);});
 test('SMS and router models render a non-empty main with the requested active tab',()=>{for(const tab of ['sms','router']){const html=app.buildHtml(model(tab));const main=html.match(/<main>([\s\S]*?)<\/main>/i);assert.ok(main&&main[1].trim(),`${tab} main must not be empty`);assert.match(html,new RegExp(`<section id="${tab}" class="tab active"`));}});
 test('dashboard has a readiness marker and native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/dataset\.zmiReady\s*=\s*'true'/);assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
 
@@ -155,8 +155,10 @@ test('debug defaults are safe and explicit false silences the central logger',()
   const loader=require('node:fs').readFileSync(require.resolve('../loader.js'),'utf8');
   assert.equal(config.debug,true);
   assert.equal(config.debugSensitivePayloads,false);
+  assert.equal(config.skipSmsContentLog,true);
   assert.match(loader,/debug: true/);
   assert.match(loader,/debugSensitivePayloads: false/);
+  assert.match(loader,/skipSmsContentLog: true/);
   const original=console.log,calls=[]; console.log=(...values)=>calls.push(values.join(' '));
   try { app.configureDebug({debug:false}); app.debugLog('hidden',{status:200}); assert.deepEqual(calls,[]); }
   finally { app.configureDebug({debug:true}); console.log=original; }
@@ -180,4 +182,35 @@ test('large debug XML is emitted in bounded numbered chunks with truncation',()=
   assert.equal(calls.length,4);
   assert.match(calls[0],/part=1\/4/); assert.match(calls[3],/part=4\/4/);
   assert.ok(calls.every(line=>line.length<1200)); assert.ok(calls.every(line=>/truncated=true/.test(line)));
+});
+
+test('SMS XML bodies are omitted by default and opt-in still uses central redaction',()=>{
+  const original=console.log,calls=[]; console.log=(...values)=>calls.push(values.join(' '));
+  try {
+    app.configureDebug({debug:true});
+    app.debugXml('request:1:message:response-xml','<RGW><message><content>private words</content><sender>+15551234567</sender></message></RGW>');
+    assert.match(calls.join('\n'),/SMS content logging disabled/); assert.doesNotMatch(calls.join('\n'),/private words/);
+    calls.length=0; app.configureDebug({debug:true,skipSmsContentLog:false});
+    app.debugXml('request:2:message:response-xml','<RGW><message><content>private words</content></message></RGW>');
+    assert.match(calls.join('\n'),/<redacted>/); assert.doesNotMatch(calls.join('\n'),/private words/);
+  } finally { app.configureDebug({debug:true}); console.log=original; }
+});
+
+test('firmware mismatch warnings have stable acknowledgement identity and retained details',()=>{
+  const fixture=model('router'); fixture.errors.profile='Firmware profile mismatch';
+  fixture.firmwareWarning={id:app.firmwareWarningId('detected','configured'),configured:'configured',detected:'detected'};
+  const html=app.buildHtml(fixture);
+  assert.match(html,/data-warning-id="firmware-[0-9a-f]+"/); assert.match(html,/data-warning-dismiss/); assert.match(html,/Firmware mismatch details/);
+  assert.equal(app.firmwareWarningId('detected','configured'),app.firmwareWarningId('detected','configured'));
+});
+
+test('one experimental command is validated and automatically dispatched with independent results',()=>{
+  assert.equal(app.validateWebViewCommand({id:'detect-1',action:'detectExperimental',params:{}}).action,'detectExperimental');
+  const js=app.clientScript(model()); assert.match(js,/bridge\('detectExperimental'/); assert.match(js,/setTimeout\(function\(\)\{detectExperimental\(\)\},0\)/);
+  assert.match(js,/Retry experimental detection/); assert.match(js,/item&&item\.supported===true/);
+});
+
+test('copy success and failure both provide visible accessible feedback',()=>{
+  const js=app.clientScript(model()); assert.match(js,/textContent='Copied'/); assert.match(js,/aria-label','SMS copied'/);
+  assert.match(js,/setActionStatus\('SMS copied to clipboard'\)/); assert.match(js,/Could not copy SMS/); assert.match(js,/Copy SMS manually/);
 });

@@ -11,6 +11,7 @@ const DEFAULT_CONFIG = {
   pollSeconds: 30,
   debug: true,
   debugSensitivePayloads: false,
+  skipSmsContentLog: true,
   translationEndpoint: "",
   translationTarget: "en",
   showExperimentalControls: true,

@@ -11,5 +11,6 @@
   "telnetPortCheckTimeoutMs": 1000,
   "telnetPortCheckRetries": 2,
   "debug": true,
-  "debugSensitivePayloads": false
+  "debugSensitivePayloads": false,
+  "skipSmsContentLog": true
 }
