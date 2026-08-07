@@ -187,7 +187,7 @@ async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
   const refreshGuard = createInFlightGuard();
   // History is deliberately sequential: several MF885 firmwares lose requests
   // when two message pages are fetched concurrently.
-  smsGuard.run(async () => {
+  if (model.sms.loading) smsGuard.run(async () => {
     try {
       model.sms = await dependencies.loadRemainingSms(auth, model.sms, async partial => {
         await applyWebView(web, "zmiApplySmsHistory", partial);
@@ -270,13 +270,14 @@ async function loadModel(auth) {
     if (compatibilityError) model.errors.status=compatibilityError;
   } catch (error) {
     model.errors.status = cleanError(error);
+    model.errors.statusRequest = true;
   }
   // Expensive diagnostics and capability probes are not part of first paint.
   try {
     if (initial[1].status === "rejected") throw initial[1].reason;
     model.sms = mergeSmsPage(emptySms(), parseSmsPage(initial[1].value, 1));
     model.sms.loading = true;
-  } catch (error) { model.errors.smsError = cleanError(error); model.errors.sms = model.errors.smsError; }
+  } catch (error) { model.sms.loading = false; model.errors.smsError = cleanError(error); model.errors.sms = model.errors.smsError; }
   model.ussd = readCapabilityCache("ussd") || { state: "unchecked", detail: "Not checked" };
   model.deviceAccess = readCapabilityCache("deviceAccess") || { state: "unchecked", detail: "Not checked", capabilities: [] };
   model.cellularControl = readCapabilityCache("cellularControl") || { state: "unchecked", detail: "Not checked" };
@@ -513,6 +514,10 @@ async function authenticatedRequestLocked(auth, makeRequest, operation, retry = 
         continue;
       }
       throw new Error(`Authorization failed for ${operation}`);
+    }
+    if (Number.isFinite(statusCode) && (statusCode < 200 || statusCode > 299)) {
+      const endpoint = String(req.url || "").replace(/^[a-z][a-z\d+.-]*:\/\/[^/]+/i, "").split(/[?#]/, 1)[0] || "/";
+      throw new Error(`${operation} request failed: HTTP ${statusCode} from ${endpoint}`);
     }
     if (result.exception) throw result.exception;
     return result.text;
@@ -1070,7 +1075,7 @@ function buildHtml(model) {
   const notice = normalizeNotice(model.notice);
   const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}${notice.diagnostics ? `<details><summary>Diagnostics</summary><textarea rows="7" readonly>${escapeHtml(notice.diagnostics)}</textarea><pre>${escapeHtml(notice.diagnostics)}</pre></details>` : ""}</div>` : "";
   const signalHtml = signalBarsHtml(network);
-  const statusWarning = model.errors && model.errors.status ? `<div class="warning status-compatibility" data-status-warning><strong>Status compatibility warning</strong><p>${escapeHtml(model.errors.status)}</p></div>` : "";
+  const statusWarning = model.errors && model.errors.status ? `<div class="warning status-compatibility" data-status-warning><strong>${model.errors.statusRequest ? "Status request error" : "Status compatibility warning"}</strong><p>${escapeHtml(model.errors.status)}</p></div>` : "";
   const topCards = `<section class="topgrid router-only">
     <article class="mini"><span>Signal</span><strong>${signalHtml}</strong><small>${escapeHtml(network.networkError || network.mode || "Unknown")}${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</small></article>
     <article class="mini"><span>Battery</span><strong>${batteryLabel}</strong><small>${escapeHtml(batteryInline)}</small></article>
