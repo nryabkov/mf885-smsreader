@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const updater = require("../loader.js");
 
 const A = "a".repeat(40);
@@ -59,6 +61,21 @@ test("manifest validates loader/application separation and compatibility", () =>
   assert.throws(() => updater.validateManifest({ ...manifest, files: ["scriptable.js", "../secret"] }), /unsafe/);
   assert.throws(() => updater.validateManifest({ ...manifest, loader: "scriptable.js" }), /separate/);
   assert.throws(() => updater.validateManifest({ ...manifest, minimumLoaderProtocol: 3 }), /protocol range/);
+});
+
+test("repository manifest includes the entry point and every locally imported module", () => {
+  const repositoryRoot = path.join(__dirname, "..");
+  const repositoryManifest = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "manifest.json"), "utf8"));
+  const scriptable = fs.readFileSync(path.join(repositoryRoot, "scriptable.js"), "utf8");
+  const importedModules = Array.from(
+    scriptable.matchAll(/importModule\(\s*[`'"][^`'"]*?(modules\/[^`'"]+\.js)[`'"]\s*\)/g),
+    match => match[1]
+  );
+
+  assert.ok(importedModules.length > 0, "scriptable.js should import at least one local module");
+  for (const requiredFile of [repositoryManifest.entry, ...importedModules]) {
+    assert.ok(repositoryManifest.files.includes(requiredFile), `${requiredFile} is missing from manifest.files`);
+  }
 });
 
 test("GitHub headers include API negotiation, user agent, no-cache, and optional token", () => {
