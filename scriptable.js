@@ -14,7 +14,7 @@ let engineerParameterModule = null;
 let cellularDiagnosticsModule = null;
 let ACTIVE_PROFILE = { id: "unknown", confirmed: false };
 
-const XML_REQUEST_PATH = "/cgi/xml_action.cgi";
+const XML_REQUEST_PATH = "/xml_action.cgi";
 const XML_DIGEST_URI = "/cgi/xml_action.cgi";
 let ACTIVE_XML_REQUEST_PATH = XML_REQUEST_PATH;
 

@@ -2,8 +2,9 @@
 
 ## API safety and firmware compatibility
 
-The application uses the ZMI XML API at `/cgi/xml_action.cgi`. Digest authentication
-uses that exact request path; the vendor login handshake remains separate. Ordinary
+The application sends ZMI XML API requests to the router's physical endpoint at
+`/xml_action.cgi`. Digest authentication deliberately uses the distinct firmware
+digest URI `/cgi/xml_action.cgi` in HA2 and the Authorization header; the vendor login handshake remains separate. Ordinary
 writes use a single POST followed by a control GET. A successful HTTP response alone
 is not treated as proof that a setting changed.
 
@@ -74,14 +75,15 @@ The repository keeps the updater, manifest, application, and feature modules sid
      "branch": "main",
      "routerAddress": "192.168.21.1",
      "storage": "local",
-     "xmlRequestPath": "/cgi/xml_action.cgi"
+     "xmlRequestPath": "/xml_action.cgi"
    }
    ```
 
-   The confirmed `2.5.96` compatibility profile uses `/cgi/xml_action.cgi` by
-   default. For firmware that exposes the same API physically at the shorter
-   endpoint, set `xmlRequestPath` to `/xml_action.cgi`; Digest authentication
-   continues to use the firmware URI `/cgi/xml_action.cgi`.
+   The confirmed `2.5.96` compatibility profile sends HTTP requests to
+   `/xml_action.cgi` by default. This physical request path is separate from the
+   Digest URI: HA2 and the Authorization header's `uri` field always use the
+   firmware value `/cgi/xml_action.cgi`. The `xmlRequestPath` setting changes only
+   the physical request URL for firmware variants that expose a different endpoint.
 
    If you change the configuration later, run the loader again to apply it. On each run, the loader asks GitHub's commits API for the configured branch HEAD, validates the full 40-character SHA, then fetches the manifest, loader, and every application file from raw GitHub URLs containing that exact SHA. A branch move between requests therefore cannot mix commits.
 4. The router password is stored in Keychain as `mf885_router_password_<router address>`. An optional GitHub token may be stored as `mf885_github_token`; it is useful when unauthenticated API rate limits are too low. Neither secret is written to configuration or logs. Use a temporary Scriptable script to set or replace these Keychain values.
