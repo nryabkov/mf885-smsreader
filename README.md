@@ -130,6 +130,8 @@ Dangerous router actions now use an inline WebView confirmation before any callb
 
 The Router tab includes an experimental **Cellular network** control block. **Reconnect cellular network** attempts known MF855/MF885 mobile-WAN disconnect/connect and registration commands, then verifies the result through status/network reads when available. The preferred protocol controls are restricted to a fixed whitelist: **Automatic**, **4G/LTE only**, **LTE preferred** (only where firmware accepts it), **3G only**, and **2G only**.
 
+The dashboard has one **Detect experimental features** button for USSD, device-access, and cellular controls. The same detection starts in the background after first paint. Probes run concurrently and their results are cached and applied independently, so one failure does not hide successful features. Controls consistently report **Not checked**, **Detecting…**, **Available**, **Unavailable**, or **Status unavailable**. An unavailable or indeterminate control remains disabled with its reason; if a probe fails, the button becomes **Retry experimental detection**.
+
 These controls are firmware-dependent and may be ignored or rejected on some builds. They use only safe GET probes during detection, but confirmed actions can temporarily drop mobile internet while the modem disconnects, reconnects, or changes radio access technology. If your firmware is not supported, please send the copyable diagnostics from the notice/details area with your report. Diagnostics include endpoint/file names, XML root/field names, `routerCall` object path/method pairs, compact responses/errors, and verification results, while redacting passwords, Digest nonces/responses, and sensitive headers.
 
 ### Power endpoint diagnostics
@@ -160,11 +162,13 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 ## Debug logging
 
-Safe diagnostic logging is enabled by default. In Scriptable, run the loader, then open the script's run log/console from the Scriptable editor (the console icon at the bottom of the editor) to copy lines beginning with `[ZMI DEBUG]`.
+Safe diagnostic logging is enabled by default. In Scriptable, run the loader, then open the script's run log/console from the Scriptable editor (the console icon at the bottom of the editor) to copy lines beginning with `[ZMI DEBUG]`. SMS response bodies and fields containing message text, subjects, contacts, senders, or recipients are omitted by default by `"skipSmsContentLog": true`; safe request metadata and sanitized XML structure summaries remain available.
 
 The log records authentication **stages** (never the Digest challenge), request IDs, operation names, HTTP methods, safe URLs, attempts and retries, timeout and timing information, HTTP status and selected non-sensitive response headers, response sizes, XML summaries, and failures. XML bodies are redacted before logging and large values are emitted as bounded, numbered parts with an explicit `truncated` marker.
 
 Passwords, GitHub tokens, Authorization and Digest values, cookies, phone numbers, SMS text and contacts, USSD codes, and credential-like fields are removed. Set `"debug": false` in `mf885-smsreader-config.json` to disable all diagnostic records.
+
+For a short, private troubleshooting session only, set `"skipSmsContentLog": false`, run the diagnostic, then restore it to `true`. **Disabling this setting may expose private SMS data** (including fields not recognized by the sanitizer). The central redaction layer remains active as defense in depth even while content logging is opted in, but it must not be treated as permission to share the resulting log.
 
 `debugSensitivePayloads` is an explicitly dangerous troubleshooting option and is `false` by default. Enabling it may expose otherwise private application payload fields to the Scriptable console; do so only temporarily, away from shared logs or screen recordings. Security-critical credentials, Digest material, cookies, SMS/contact fields, phone numbers, and USSD values remain redacted by the central logger.
 

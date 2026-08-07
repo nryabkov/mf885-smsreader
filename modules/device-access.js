@@ -45,7 +45,10 @@ async function detect(api) {
   return {
     supported: diagnostics.some(item => item.status === "responded") ? true : null,
     detail: "Safe GET diagnostics completed. Execution actions are experimental and require a separate confirmation.",
-    capabilities: capabilities(),
+    capabilities: capabilities().map(item => {
+      const definition=CAPABILITIES.find(candidate=>candidate.id===item.id);
+      return { ...item, supported:!!definition && definition.probes.some(file=>diagnostics.some(probe=>probe.file===file&&probe.status==="responded")) };
+    }),
     diagnostics
   };
 }
