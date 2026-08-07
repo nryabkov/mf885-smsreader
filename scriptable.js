@@ -7,12 +7,14 @@ const USERNAME = "admin";
 let PASSWORD = "zimifi";
 let ussdModule = null;
 let deviceAccessModule = null;
+let telnetControlModule = null;
 let cellularControlModule = null;
 let apiContractModule = null;
 let compatibilityModule = null;
 let engineerParameterModule = null;
 let cellularDiagnosticsModule = null;
 let ACTIVE_PROFILE = { id: "unknown", confirmed: false };
+let CONFIGURED_PROFILE = "";
 
 const XML_REQUEST_PATH = "/xml_action.cgi";
 const XML_DIGEST_URI = "/cgi/xml_action.cgi";
@@ -50,12 +52,14 @@ async function run(options = {}) {
   }
   ussdModule = importModule(`${options.moduleDirectory}/modules/ussd.js`);
   deviceAccessModule = importModule(`${options.moduleDirectory}/modules/device-access.js`);
+  telnetControlModule = importModule(`${options.moduleDirectory}/modules/telnet-control.js`);
   cellularControlModule = importModule(`${options.moduleDirectory}/modules/cellular-control.js`);
   apiContractModule = importModule(`${options.moduleDirectory}/modules/api-contract.js`);
   compatibilityModule = importModule(`${options.moduleDirectory}/modules/compatibility-profiles.js`);
   engineerParameterModule = importModule(`${options.moduleDirectory}/modules/engineer-parameter.js`);
   cellularDiagnosticsModule = importModule(`${options.moduleDirectory}/modules/cellular-diagnostics.js`);
-  ACTIVE_PROFILE = compatibilityModule.selectProfile(options.compatibilityProfile);
+  CONFIGURED_PROFILE = String(options.compatibilityProfile || "");
+  ACTIVE_PROFILE = compatibilityModule.selectProfile(CONFIGURED_PROFILE);
   ACTIVE_XML_REQUEST_PATH = options.xmlRequestPath || ACTIVE_PROFILE.xmlRequestPath || XML_REQUEST_PATH;
   await main();
 }
@@ -105,6 +109,11 @@ function statusCompatibilityError(xml, profile = ACTIVE_PROFILE) {
   const structure=xmlStructure(xml);
   if (structure.WanStatistics || structure.batteryinfo || structure.cellularFields.length) return "";
   return `Router responded successfully, but status1 format does not match compatibility profile ${profile.id}. Missing expected XML sections: WanStatistics, batteryinfo, cellular/network fields.`;
+}
+function firmwareVersion(xml) { return firstText(xml, ["version_num"]) || ""; }
+function profileVersionWarning(actual, configured, profile) {
+  if (!actual || !configured || actual === configured || actual === (profile && profile.firmware)) return "";
+  return `Firmware profile mismatch: configured ${configured}, but status1 reports ${actual}. Manual compatibilityProfile override remains active.`;
 }
 
 async function main() {
@@ -263,6 +272,11 @@ async function loadModel(auth) {
   try {
     if (initial[0].status === "rejected") throw initial[0].reason;
     status = initial[0].value;
+    const actualFirmware=firmwareVersion(status);
+    if (!CONFIGURED_PROFILE && actualFirmware) ACTIVE_PROFILE=compatibilityModule.selectProfile(actualFirmware);
+    model.actualFirmware=actualFirmware;
+    const versionWarning=profileVersionWarning(actualFirmware,CONFIGURED_PROFILE,ACTIVE_PROFILE);
+    if(versionWarning) model.errors.profile=versionWarning;
     model.traffic = sectionWithError(parseTraffic(status), "trafficError", "status1 has no WanStatistics data");
     model.battery = sectionWithError(parseBattery(status), "batteryError", "status1 has no batteryinfo data");
     model.network = sectionWithError(parseNetwork(status), "networkError", "status1 has no cellular network data");
@@ -279,7 +293,7 @@ async function loadModel(auth) {
     model.sms.loading = true;
   } catch (error) { model.sms.loading = false; model.errors.smsError = cleanError(error); model.errors.sms = model.errors.smsError; }
   model.ussd = readCapabilityCache("ussd") || { state: "unchecked", detail: "Not checked" };
-  model.deviceAccess = readCapabilityCache("deviceAccess") || { state: "unchecked", detail: "Not checked", capabilities: [] };
+  model.deviceAccess = readCapabilityCache("deviceAccess") || { state: "unchecked", detail: "Run Detect first", capabilities: deviceAccessModule && deviceAccessModule.capabilities ? deviceAccessModule.capabilities() : [] };
   model.cellularControl = readCapabilityCache("cellularControl") || { state: "unchecked", detail: "Not checked" };
   debugLog("loadModel:complete", { smsCount:model.sms.messages.length, traffic:!!model.traffic.hasData, battery:!!model.battery.hasData, network:!!model.network.hasData, errors:model.errors });
   return model;
@@ -839,10 +853,12 @@ function parseNetwork(xml, profile = ACTIVE_PROFILE) {
   const rawRssi=firstText(cellular,["rssi"]); const operator=firstText(source,["network_name","ISP_name","home_operator","roaming_operator"]);
   const rawMode=raw.sys_submode||raw.sys_mode||raw.ConnType||raw.proto;
   const mapped=rawMode!==null&&((mappings.sys_submode||{})[rawMode]||(mappings.sys_mode||{})[rawMode]||(mappings.ConnType||{})[rawMode]||(mappings.proto||{})[rawMode]);
-  const mode=mapped|| (rawMode!==null?`Unknown (raw: ${rawMode})`:"Unknown");
+  const inferred=networkProtocol(rawMode, Number(raw.sys_mode), Number(raw.sys_submode));
+  const mode=mapped|| (inferred.protocol!=="Unknown"?inferred.protocol:rawMode!==null?`Unknown (raw: ${rawMode})`:"Unknown");
+  const signal=signalInfo(rawRssi, null, null);
   return { hasData:Object.values(raw).some(v=>v!==null)||!!operator||rawRssi!=="", raw, fields, operator, mode, protocol:mode, rawMode,
     registered:fields.NW_register_status.confirmed?fields.NW_register_status.label:null, roaming:fields.roaming.confirmed?fields.roaming.label:null,
-    rssi:{raw:rawRssi||null,label:null,confirmed:false}, signalRaw:rawRssi||null, bars:null, dbm:null, percent:null, signalText:rawRssi?`Vendor raw: ${rawRssi}`:"Unavailable",
+    rssi:{raw:rawRssi||null,label:null,confirmed:false}, signalRaw:rawRssi||null, bars:signal.bars, dbm:signal.dbm, percent:signal.percent, signalText:signalText(signal.bars),
     imei:firstText(source,["IMEI","imei"])||null, simStatus:enumRaw(firstText(source,["SIM_status","sim_status"]),mappings.SIM_status), pinStatus:enumRaw(firstText(source,["PIN_status","pin_status"]),mappings.PIN_status),
     pinAttempts:firstText(source,["PIN_attempts","pin_attempts"])||null, pukAttempts:firstText(source,["PUK_attempts","puk_attempts"])||null,
     pdp:{context:firstText(source,["pdp_context","PDP_context"])||null,automatic:firstText(source,["automatic_pdp_list","auto_pdp_list"])||null} };
@@ -932,8 +948,16 @@ async function detectDeviceAccess(auth) {
   return deviceAccessModule.detect(deviceAccessApi(auth));
 }
 async function executeDeviceAccess(auth, capability, action) {
+  if (capability === "tryEnableTelnet" || action === "tryEnableTelnet") return executeTelnet(auth, true, true);
   return deviceAccessModule.execute(deviceAccessApi(auth), capability, action);
 }
+async function executeTelnet(auth, enable, confirmed) {
+  const result=await telnetControlModule.control(telnetApi(auth),ACTIVE_PROFILE,enable,confirmed);
+  const firmware=ACTIVE_PROFILE.firmware||ACTIVE_PROFILE.id||"unknown";
+  if(result.outcome==="unsupported") return {ok:false,title:"Telnet",message:`Unavailable: no confirmed mapping for firmware ${firmware}`,outcome:result.outcome};
+  return {ok:result.outcome==="confirmed",title:"Telnet",message:`Telnet result: ${result.outcome}`,outcome:result.outcome};
+}
+function telnetApi(auth) { return { host:ROUTER_HOST, escapeXml, xmlRequest:(method,file,body)=>xmlRequest(auth,method,file,body), writeThenVerify:spec=>writeThenVerify(auth,spec), portCheck:async(host,port,timeout)=>{ if(typeof Socket==="undefined") return false; const socket=new Socket(); try { await socket.connect(host,port,timeout); return true; } catch (_) { return false; } finally { try { socket.close(); } catch (_) {} } } }; }
 function deviceAccessApi(auth) {
   return {
     xmlRequest: (method, file, body, retry, timeout) =>
@@ -995,7 +1019,7 @@ function createInFlightGuard() {
   return { get active(){return !!active;}, run(task){ if(active)return active; active=Promise.resolve().then(task).finally(()=>{active=null;}); return active; } };
 }
 const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","ussd","detectCapability","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
-const DANGEROUS_ACTIONS = new Set(["cellularReconnect","cellularMode","resetTraffic","reboot","powerOff"]);
+const DANGEROUS_ACTIONS = new Set(["cellularReconnect","cellularMode","deviceAccess","resetTraffic","reboot","powerOff"]);
 function validateWebViewCommand(input) {
   if (!input || typeof input!=="object" || typeof input.id!=="string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(input.id)) throw new Error("Invalid command id");
   if (typeof input.action!=="string" || !WEB_ACTIONS.has(input.action)) throw new Error("Action is not allowed");
@@ -1049,7 +1073,7 @@ function createDashboardDispatcher(auth, model, web, guards) {
     sendSms:async p=>{const r=parseSendResult(await sendSms(auth,p.to.trim(),p.text));await refreshSms();return r;},
     deleteSms:async p=>{const r=await deleteSms(auth,p.id);await refreshSms();return r;},
     ussd:async p=>executeUssd(auth,readCapabilityCache("ussd")||await detectUssdCapability(auth),p.code),
-    deviceAccess:async p=>executeDeviceAccess(auth,readCapabilityCache("deviceAccess")||await detectDeviceAccess(auth),p.deviceAction),
+    deviceAccess:async p=>{const detected=readCapabilityCache("deviceAccess");if(!detected)throw new Error("Run Detect first");return executeDeviceAccess(auth,p.deviceAction,p.deviceAction);},
     cellularReconnect:async()=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth);const r=await cellularControlModule.executeReconnect(cellularControlApi(auth),c,ACTIVE_PROFILE);await refresh();return r;},
     cellularMode:async p=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth),m=cellularControlModule.modeById(p.mode,ACTIVE_PROFILE);if(!m)throw new Error("Unknown cellular network mode");const r=await cellularControlModule.executeSetMode(cellularControlApi(auth),c,m.id,ACTIVE_PROFILE);await refresh();return r;},
     resetTraffic:async()=>{const spec=ACTIVE_PROFILE.statisticsReset;if(!spec||!spec.confirmed)throw new Error("Traffic reset is unavailable");const before=wanCounterSnapshot(await xmlRequest(auth,"GET","statistics"));const body=`<RGW><statistics><WanStatistics><set_action>${escapeXml(spec.set_action)}</set_action><clear_cur_stat_flag>${escapeXml(spec.clear_cur_stat_flag)}</clear_cur_stat_flag></WanStatistics></statistics></RGW>`;const r=await writeThenVerify(auth,{model:"statistics",xml:body,verificationModel:"statistics",verify:x=>statisticsResetMatches(before,wanCounterSnapshot(x))});await refresh();return r;},
@@ -1075,7 +1099,8 @@ function buildHtml(model) {
   const notice = normalizeNotice(model.notice);
   const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}${notice.diagnostics ? `<details><summary>Diagnostics</summary><textarea rows="7" readonly>${escapeHtml(notice.diagnostics)}</textarea><pre>${escapeHtml(notice.diagnostics)}</pre></details>` : ""}</div>` : "";
   const signalHtml = signalBarsHtml(network);
-  const statusWarning = model.errors && model.errors.status ? `<div class="warning status-compatibility" data-status-warning><strong>${model.errors.statusRequest ? "Status request error" : "Status compatibility warning"}</strong><p>${escapeHtml(model.errors.status)}</p></div>` : "";
+  const warnings=[model.errors&&model.errors.profile,model.errors&&model.errors.status].filter(Boolean);
+  const statusWarning = warnings.length ? `<div class="warning status-compatibility" data-status-warning><strong>${model.errors.statusRequest ? "Status request error" : "Status compatibility warning"}</strong><p>${warnings.map(escapeHtml).join("<br>")}</p></div>` : "";
   const topCards = `<section class="topgrid router-only">
     <article class="mini"><span>Signal</span><strong>${signalHtml}</strong><small>${escapeHtml(network.networkError || network.mode || "Unknown")}${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</small></article>
     <article class="mini"><span>Battery</span><strong>${batteryLabel}</strong><small>${escapeHtml(batteryInline)}</small></article>
@@ -1092,7 +1117,8 @@ function buildHtml(model) {
   const diagText = name => { const item=diagnosticValues[name]||{}; return item.value === null || item.value === undefined ? "—" : String(item.value); };
   const stageRows = [["sim","SIM"],["registration","Registration and roaming"],["pdp","PDP activation"],["ip","IP assignment"],["dns","DNS availability"]].map(([key,label]) => { const item=diagnosticStages[key]||{}; const detail=key==="registration"&&item.roaming&&item.roaming.value?`${item.detail||""} · ${item.roaming.value}`:item.detail||"Unavailable"; const raw=item.raw!==null&&item.raw!==undefined?` (raw: ${item.raw})`:""; return `<li class="diag-stage ${escapeHtml(item.state||"unknown")}" data-diag-stage="${key}"><strong>${label}</strong>: <span>${escapeHtml(detail+raw)}</span></li>`; }).join("");
   const diagnosticBlock = `<section class="cellular-diagnostics"><h3>Connection diagnostics</h3><ol>${stageRows}</ol><div class="diag-grid"><p>Configured APN: <strong data-diag="configuredApn">${escapeHtml(diagText("configuredApn"))}</strong></p><p>Active APN: <strong class="active-apn" data-diag="activeApn">${escapeHtml(diagText("activeApn"))}</strong></p><p>PDP type: <strong data-diag="pdpType">${escapeHtml(diagText("pdpType"))}</strong></p><p>IPv4: <strong data-diag="ipv4">${escapeHtml(diagText("ipv4"))}</strong></p><p>IPv6: <strong data-diag="ipv6">${escapeHtml(diagText("ipv6"))}</strong></p><p>Gateways: <strong><span data-diag="gateway4">${escapeHtml(diagText("gateway4"))}</span> · <span data-diag="gateway6">${escapeHtml(diagText("gateway6"))}</span></strong></p><p>DNS: <strong><span data-diag="dns1">${escapeHtml(diagText("dns1"))}</span> · <span data-diag="dns2">${escapeHtml(diagText("dns2"))}</span></strong></p><p>LTE: band <strong data-diag="band">${escapeHtml(diagText("band"))}</strong> · PCI <strong data-diag="pci">${escapeHtml(diagText("pci"))}</strong> · EARFCN <strong data-diag="earfcn">${escapeHtml(diagText("earfcn"))}</strong></p><p>Radio: RSRP <strong data-diag="rsrp">${escapeHtml(diagText("rsrp"))}</strong> · RSRQ <strong data-diag="rsrq">${escapeHtml(diagText("rsrq"))}</strong> · SINR <strong data-diag="sinr">${escapeHtml(diagText("sinr"))}</strong></p></div></section>`;
-  const deviceActions = (model.deviceAccess.capabilities || []).map(action => `<button class="danger buttonlike" type="button" data-device-action="${escapeHtml(action.id)}">${escapeHtml(action.title)}</button>`).join(" ");
+  const deviceUnchecked=model.deviceAccess.state==="unchecked";
+  const deviceActions = (model.deviceAccess.capabilities || []).map(action => `<button class="danger buttonlike" type="button" data-device-action="${escapeHtml(action.id)}"${deviceUnchecked?' disabled title="Run Detect first"':''}>${escapeHtml(action.title)}</button>`).join(" ");
   const deviceConfirm = "";
   const cellular = model.cellularControl || {};
   const defaultCellularModes = [{ id: "auto", title: "Automatic" }, { id: "lteOnly", title: "4G/LTE only" }, { id: "ltePreferred", title: "LTE preferred" }, { id: "wcdmaOnly", title: "3G only" }, { id: "gsmOnly", title: "2G only" }];
@@ -1142,7 +1168,7 @@ window.zmiApplyActionResult=function(payload){var p=payload&&pending[payload.id]
 function renderPolledSms(payload){var messages=payload.messages||payload.smsMessages;if(!Array.isArray(messages))return false;var section=document.getElementById('sms');if(!section)return false;section.querySelectorAll('.sms,.empty,[data-history-warning]').forEach(function(x){x.remove()});if(messages.length===0){var empty=document.createElement('article');empty.className='card empty';var title=document.createElement('h2');title.textContent='No SMS found';var description=document.createElement('p');description.textContent='No inbox messages are available. They may not have arrived yet, or message history could not be loaded.';empty.appendChild(title);empty.appendChild(description);section.appendChild(empty)}messages.slice(0,200).forEach(function(item,index){var card=document.createElement('article');card.className='card sms';card.setAttribute('data-msg-id',item.id||'');card.setAttribute('data-msg-text',item.content||'');card.setAttribute('data-msg-sender',item.phone||'');card.setAttribute('data-msg-date',item.date||'');card.innerHTML='<header><div><h3></h3><small></small></div><time></time></header><p class="body"></p><div class="translation" data-translation><span></span></div><footer><button data-copy>Copy</button><button class="danger" data-delete-action>Delete</button></footer>';card.querySelector('h3').textContent=item.phone||'Unknown sender';card.querySelector('small').textContent='SMS #'+(item.row||index+1);card.querySelector('time').textContent=item.date||'Unknown time';card.querySelector('.body').textContent=item.content||'';section.appendChild(card)});return true}
 window.zmiApplySmsHistory=function(payload){payload=payload||{};renderPolledSms(payload);model.sms.fingerprint=payload.fingerprint||model.sms.fingerprint;var hero=document.querySelector('.hero strong');if(hero)hero.textContent='SMS: '+((payload.messages||[]).length);var note=document.createElement('div');note.setAttribute('data-history-warning','');note.className=payload.warning?'warning':'notice';note.textContent=payload.loading?'Loading message history…':payload.warning?'⚠️ '+payload.warning:'Message history loaded';var section=document.getElementById('sms');if(section)section.insertBefore(note,section.firstChild)};
 window.zmiApplyStatus=function(payload){payload=payload||{};remaining=model.poll;drawTimer();var spans=document.querySelectorAll('.statusline span');if(spans[0]&&payload.networkMode)spans[0].textContent='📶 '+payload.networkMode;if(spans[1]&&payload.batteryInline)spans[1].textContent=payload.batteryInline;if(spans[2]&&payload.trafficTotal)spans[2].textContent='⇅ '+payload.trafficTotal;if(payload.smsMessages)window.zmiApplySmsHistory({messages:payload.smsMessages,fingerprint:payload.smsFingerprint,totalMessages:payload.smsTotalMessages});stopProgress()};
-window.zmiApplyCapability=function(payload){var section=document.querySelector('[data-'+(payload.kind==='deviceAccess'?'device-access':payload.kind==='cellularControl'?'cellular-control':'ussd')+'-section]');if(section){var h=section.querySelector('h3'),p=section.querySelector('p');if(h)h.textContent=(payload.kind==='ussd'?'USSD':payload.kind==='deviceAccess'?'Device access':'Cellular control')+': '+(payload.value&&payload.value.supported?'Available':'Unavailable');if(p)p.textContent=payload.value&&payload.value.detail||''}};
+window.zmiApplyCapability=function(payload){var section=document.querySelector('[data-'+(payload.kind==='deviceAccess'?'device-access':payload.kind==='cellularControl'?'cellular-control':'ussd')+'-section]');if(section){var h=section.querySelector('h3'),p=section.querySelector('p');if(h)h.textContent=(payload.kind==='ussd'?'USSD':payload.kind==='deviceAccess'?'Device access':'Cellular control')+': '+(payload.value&&payload.value.supported?'Available':'Unavailable');if(p)p.textContent=payload.value&&payload.value.detail||'';if(payload.kind==='deviceAccess')section.querySelectorAll('[data-device-action]').forEach(function(b){b.disabled=false;b.removeAttribute('title')})}};
 window.zmiApply=window.zmiApplyStatus;
 window.zmiTick=function(){if(!paused)refreshNow()};
 function drawTimer(){var el=document.getElementById('countdown'),btn=document.getElementById('pauseBtn');if(el)el.textContent=paused?'Polling paused':'Next refresh in '+Math.max(0,remaining)+'s';if(btn)btn.textContent=paused?'Resume':'Pause'}
@@ -1160,9 +1186,10 @@ function powerActionCopy(action){return action==='reboot'?{title:'Restart router
 function makeConfirm(card,copy,action,params,attribute){var box=card.querySelector('['+attribute+']');if(!box){box=document.createElement('div');box.className='warning';box.setAttribute(attribute,'');card.appendChild(box)}box.hidden=false;box.innerHTML='';var p=document.createElement('p');p.textContent=copy.title+' '+copy.detail;var yes=document.createElement('button');yes.className='danger';yes.textContent='Confirm';yes.onclick=function(){params.confirmed=true;bridge(action,params,yes).then(function(r){setActionStatus((r&&r.message)||'Command submitted');if(action==='reboot'||action==='powerOff'){paused=true;safeStorageSet('zmiPaused','1');drawTimer()}}).catch(function(e){showActionError('Command failed',describeError(e),'')})};var no=document.createElement('button');no.textContent='Cancel';no.onclick=function(){box.hidden=true};box.appendChild(p);box.appendChild(yes);box.appendChild(no)}
 function showInlineConfirm(button){var action=button.getAttribute('data-power-action');makeConfirm(button.closest('.card'),powerActionCopy(action),action,{},'data-power-confirm')}
 function showCellularConfirm(el){var mode=el.getAttribute('data-cellular-mode-select')!==null?el.value:'',action=mode?'cellularMode':'cellularReconnect',copy=cellularActionCopy(mode?'mode':'reconnect',mode);makeConfirm(el.closest('.card'),copy,action,mode?{mode:mode}:{},'data-cellular-confirm')}
+function showDeviceConfirm(button){makeConfirm(button.closest('.card'),{title:'Run this device-access action?',detail:'The action can change router services.'},'deviceAccess',{deviceAction:button.getAttribute('data-device-action')},'data-device-confirm')}
 function confirmSmsDelete(card,item){makeConfirm(card,{title:'Delete this SMS?',detail:String(item.content||'').slice(0,80)},'deleteSms',{id:String(item.id||'')},'data-delete-confirm')}
 function detectCapability(kind,button){bridge('detectCapability',{kind:kind},button).catch(function(e){showActionError('Detection failed',describeError(e),'')})}
-function initDashboard(){paused=safeStorageGet('zmiPaused')==='1';tab(selectedTab());var draft=safeStorageGet('zmiSmsDraft'),form=document.getElementById('smsComposer');if(form&&draft)form.elements.text.value=draft;if(form)form.elements.text.addEventListener('input',function(){safeStorageSet('zmiSmsDraft',this.value)});window.addEventListener('scroll',function(){var active=document.querySelector('.tab.active');if(active)safeStorageSet('zmiScrollY:'+active.id,String(window.scrollY||0))});timer=setInterval(tick,1000);drawTimer();document.addEventListener('change',function(e){if(e.target.matches&&e.target.matches('[data-cellular-mode-select]'))showCellularConfirm(e.target)});document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-delete-action],[data-power-action],[data-cellular-action],[data-device-action],[data-detect]');if(!b)return;if(b.hasAttribute('data-delete-action')){var c=b.closest('.sms');confirmSmsDelete(c,{id:c.getAttribute('data-msg-id'),content:c.getAttribute('data-msg-text')})}else if(b.hasAttribute('data-power-action'))showInlineConfirm(b);else if(b.hasAttribute('data-cellular-action'))showCellularConfirm(b);else if(b.hasAttribute('data-device-action'))bridge('deviceAccess',{deviceAction:b.getAttribute('data-device-action')},b);else detectCapability(b.getAttribute('data-detect'),b)})}
+function initDashboard(){paused=safeStorageGet('zmiPaused')==='1';tab(selectedTab());var draft=safeStorageGet('zmiSmsDraft'),form=document.getElementById('smsComposer');if(form&&draft)form.elements.text.value=draft;if(form)form.elements.text.addEventListener('input',function(){safeStorageSet('zmiSmsDraft',this.value)});window.addEventListener('scroll',function(){var active=document.querySelector('.tab.active');if(active)safeStorageSet('zmiScrollY:'+active.id,String(window.scrollY||0))});timer=setInterval(tick,1000);drawTimer();document.addEventListener('change',function(e){if(e.target.matches&&e.target.matches('[data-cellular-mode-select]'))showCellularConfirm(e.target)});document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-delete-action],[data-power-action],[data-cellular-action],[data-device-action],[data-detect]');if(!b)return;if(b.hasAttribute('data-delete-action')){var c=b.closest('.sms');confirmSmsDelete(c,{id:c.getAttribute('data-msg-id'),content:c.getAttribute('data-msg-text')})}else if(b.hasAttribute('data-power-action'))showInlineConfirm(b);else if(b.hasAttribute('data-cellular-action'))showCellularConfirm(b);else if(b.hasAttribute('data-device-action'))showDeviceConfirm(b);else detectCapability(b.getAttribute('data-detect'),b)})}
 function markDashboardReady(){document.documentElement.dataset.zmiReady='true';initDashboard()}
 document.addEventListener('DOMContentLoaded',markDashboardReady);
 async function copySms(button){var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body'),value=body?body.innerText:'';if(!navigator.clipboard||!navigator.clipboard.writeText){showActionError('Copy SMS manually','Clipboard is unavailable in this WebView.',value);return}button.disabled=true;try{await navigator.clipboard.writeText(value)}catch(e){showActionError('Could not copy SMS',describeError(e),value)}finally{button.disabled=false}}

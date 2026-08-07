@@ -134,6 +134,22 @@ test('status compatibility warning precedes Router cards',()=>{
   assert.match(html,/Status compatibility warning/);
 });
 
+test('status1 network code 17 and RSSI 25 render known protocol and about -63 dBm',()=>{
+  const parsed=app.parseNetwork('<RGW><wan><cellular><sys_mode>4</sys_mode><sys_submode>17</sys_submode><rssi>25</rssi></cellular></wan></RGW>',{wan:{mappings:{}}});
+  assert.match(parsed.mode,/HSPA\+/);
+  assert.equal(parsed.dbm,-63);
+  assert.equal(parsed.signalRaw,'25');
+  assert.ok(parsed.bars>0 && parsed.percent>0);
+});
+
+test('configured and reported firmware mismatch is prominently rendered',()=>{
+  const fixture=model('router');
+  fixture.errors.profile='Firmware profile mismatch: configured 2.5.96, but status1 reports 2.5.94_release_MF855_NZ_CP_2.129.003. Manual compatibilityProfile override remains active.';
+  const html=app.buildHtml(fixture);
+  assert.match(html,/Status compatibility warning/);
+  assert.match(html,/Firmware profile mismatch/);
+});
+
 test('debug defaults are safe and explicit false silences the central logger',()=>{
   const config=require('../mf885-smsreader-config.json');
   const loader=require('node:fs').readFileSync(require.resolve('../loader.js'),'utf8');

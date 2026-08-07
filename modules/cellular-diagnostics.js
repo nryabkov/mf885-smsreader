@@ -1,7 +1,7 @@
 // Normalise the read-only cellular information exposed by different ZMI XML trees.
 // Enum labels are used only when the active compatibility profile confirms them.
 const FIELD_ALIASES = {
-  configuredApn: ["apn", "APN", "profile_apn", "configured_apn"],
+  configuredApn: ["configured_apn", "lte_apn", "profile_apn", "apn", "APN"],
   activeApn: ["active_apn", "current_apn", "used_apn", "wan_apn"],
   pdpType: ["pdp_type", "PDP_type", "ip_type", "PDPType"],
   sim: ["SIM_status", "sim_status", "sim_state", "sim_ready"],
@@ -10,12 +10,12 @@ const FIELD_ALIASES = {
   pdpState: ["connect_disconnect", "pdp_state", "pdp_status", "connection_status"],
   pdpError: ["pdp_error", "PDP_error", "last_error", "error_code"],
   pdpCause: ["pdp_cause", "PDP_cause", "cause", "cause_code"],
-  ipv4: ["ipv4", "ip_address", "wan_ip", "IP_address"],
+  ipv4: ["ipv4", "ip", "ip_address", "wan_ip", "IP_address"],
   ipv6: ["ipv6", "ipv6_address", "wan_ipv6", "IPv6_address"],
-  gateway4: ["gateway", "ipv4_gateway", "wan_gateway", "gateway_ip"],
+  gateway4: ["gateway", "v4gateway", "ipv4_gateway", "wan_gateway", "gateway_ip"],
   gateway6: ["ipv6_gateway", "gateway_ipv6"],
-  dns1: ["dns1", "primary_dns", "pri_dns", "DNS1"],
-  dns2: ["dns2", "secondary_dns", "sec_dns", "DNS2"],
+  dns1: ["dns1", "v4dns1", "primary_dns", "pri_dns", "DNS1"],
+  dns2: ["dns2", "v4dns2", "secondary_dns", "sec_dns", "DNS2"],
   band: ["band", "lte_band", "LTE_band", "frequency_band"],
   pci: ["pci", "PCI", "physical_cell_id"],
   earfcn: ["earfcn", "EARFCN", "dl_earfcn"],

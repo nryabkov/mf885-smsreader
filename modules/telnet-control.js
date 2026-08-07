@@ -1,10 +1,10 @@
 async function control(api, profile, enable, confirmed) {
   const spec = profile && profile.telnet;
   if (!confirmed) return { outcome: "rejected", reason: "confirmation-required" };
-  if (!spec || !spec.confirmed || !spec.model || !spec.field || !spec.values || !spec.port) return { outcome: "unsupported" };
+  if (!spec || !spec.confirmed || !spec.model || !spec.root || !spec.field || !spec.values || !spec.port || !spec.readable || typeof spec.readState !== "function") return { outcome: "unsupported" };
   const requested = enable ? spec.values.enable : spec.values.disable;
   if (requested === undefined) return { outcome: "unsupported" };
-  if (spec.readable) await api.xmlRequest("GET", spec.model);
+  await api.xmlRequest("GET", spec.model);
   const xml = `<RGW><${spec.root}><${spec.field}>${api.escapeXml(requested)}</${spec.field}></${spec.root}></RGW>`;
   const result = await api.writeThenVerify({model:spec.model,xml,verificationModel:spec.model,post:(m,x)=>api.xmlRequest("POST",m,x),get:m=>api.xmlRequest("GET",m),verify:body=>spec.readState(body)===requested});
   if (result.outcome !== "confirmed") return result;
