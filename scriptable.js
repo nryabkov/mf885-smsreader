@@ -52,7 +52,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, XML_API_PATH, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand };
+module.exports = { run, dashboardFlow, inspectDashboardDocument, XML_API_PATH, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand };
 
 async function main() {
   try {
@@ -75,42 +75,64 @@ function successNotice(text, diagnostics = "") { return { text, type: "success",
 function warningNotice(text, diagnostics = "") { return { text, type: "warning", diagnostics }; }
 function errorNotice(text, diagnostics = "") { return { text, type: "error", diagnostics }; }
 
-async function dashboardFlow(auth, notice = "", tab = "sms") {
-  const model = await loadModel(auth);
+async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
+  const dependencies = {
+    loadModel, buildHtml, WebView: () => new WebView(), showMessage,
+    createDispatcher: createDashboardDispatcher, loadRemainingSms,
+    sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+    ...overrides
+  };
+  const model = await dependencies.loadModel(auth);
   model.notice = normalizeNotice(notice);
   model.tab = tab;
   let html;
   try {
-    html = buildHtml(model);
+    html = dependencies.buildHtml(model);
     validateDashboardHtml(html);
   } catch (error) {
-    await showMessage("ZMI dashboard", `HTML build stage failed: ${cleanError(error)}`, "⚠️");
+    await dependencies.showMessage("ZMI dashboard", `HTML build stage failed: ${cleanError(error)}`, "⚠️");
     return;
   }
-  const web = new WebView();
+  const web = dependencies.WebView();
   try {
     await web.loadHTML(html);
-    const ready = await web.evaluateJavaScript("document.documentElement.dataset.zmiReady === 'true'");
-    if (!ready) throw new Error("document readiness marker was not set");
   } catch (error) {
-    await showMessage("ZMI dashboard", `WebView loadHTML stage failed: ${cleanError(error)}`, "⚠️");
+    await dependencies.showMessage("ZMI dashboard", `WebView loadHTML stage failed: ${cleanError(error)}`, "⚠️");
     return;
   }
   let presented;
   try {
     presented = web.present();
   } catch (error) {
-    await showMessage("ZMI dashboard", `WebView present stage failed: ${cleanError(error)}`, "⚠️");
+    await dependencies.showMessage("ZMI dashboard", `WebView present stage failed: ${cleanError(error)}`, "⚠️");
     return;
   }
-  const presentationResult = Promise.resolve(presented).then(() => ({ closed: true }), error => ({ closed: true, error }));
+  let presentationClosed = false;
+  const presentationResult = Promise.resolve(presented).then(() => { presentationClosed = true; return { closed: true }; }, error => { presentationClosed = true; return { closed: true, error }; });
+  // Let Scriptable enter its native presentation before touching the rendered
+  // document. In particular, do not install a completion callback while
+  // present() itself is being started.
+  await dependencies.sleep(0);
+  let documentState;
+  try {
+    documentState = await inspectDashboardDocument(web);
+    if (!dashboardDocumentIsUsable(documentState)) throw new Error("rendered dashboard is empty or not ready");
+    await registerWebViewCommandChannel(web);
+  } catch (error) {
+    if (typeof web.dismiss === "function") {
+      try { web.dismiss(); } catch (_) {}
+    }
+    const diagnostics = JSON.stringify(documentState || { evaluationError: cleanError(error) }, null, 2);
+    await dependencies.showMessage("ZMI dashboard", `WebView document check failed: ${cleanError(error)}\n\n${diagnostics}`, "⚠️");
+    return;
+  }
   const smsGuard = createInFlightGuard();
   const refreshGuard = createInFlightGuard();
   // History is deliberately sequential: several MF885 firmwares lose requests
   // when two message pages are fetched concurrently.
   smsGuard.run(async () => {
     try {
-      model.sms = await loadRemainingSms(auth, model.sms, async partial => {
+      model.sms = await dependencies.loadRemainingSms(auth, model.sms, async partial => {
         await applyWebView(web, "zmiApplySmsHistory", partial);
       });
       await applyWebView(web, "zmiApplySmsHistory", model.sms);
@@ -119,12 +141,12 @@ async function dashboardFlow(auth, notice = "", tab = "sms") {
       await applyWebView(web, "zmiApplySmsHistory", model.sms);
     }
   });
-  const dispatcher = createDashboardDispatcher(auth, model, web, { smsGuard, refreshGuard });
+  const dispatcher = dependencies.createDispatcher(auth, model, web, { smsGuard, refreshGuard });
   while (true) {
     try {
-      const event = await Promise.race([nextWebViewCommand(web).then(message => ({ message })), presentationResult]);
+      const event = await Promise.race([nextWebViewCommand(web, dependencies.sleep, () => presentationClosed).then(message => ({ message })), presentationResult]);
       if (event.closed) {
-        if (event.error) await showMessage("ZMI dashboard", `WebView present stage failed: ${cleanError(event.error)}`, "⚠️");
+        if (event.error) await dependencies.showMessage("ZMI dashboard", `WebView present stage failed: ${cleanError(event.error)}`, "⚠️");
         break;
       }
       if (event.message) await dispatcher(event.message);
@@ -912,8 +934,27 @@ function createWebViewDispatcher(handlers, reply) {
   };
 }
 async function applyWebView(web, method, payload) { await web.evaluateJavaScript(`window.${method} && window.${method}(${JSON.stringify(payload)})`,false); }
-async function nextWebViewCommand(web) {
-  return web.evaluateJavaScript(`(function(){var done=completion;function receive(e){window.removeEventListener('ZMICommand',receive);done(e.detail)}window.addEventListener('ZMICommand',receive)})()`,true);
+async function inspectDashboardDocument(web) {
+  return web.evaluateJavaScript(`(function(){
+    var main=document.querySelector('main'),body=document.body,rect=body&&body.getBoundingClientRect();
+    return {readyState:document.readyState,hasMain:!!main,mainText:main?main.textContent.trim():'',body:{scrollWidth:body?body.scrollWidth:0,scrollHeight:body?body.scrollHeight:0,width:rect?rect.width:0,height:rect?rect.height:0},zmiReady:document.documentElement.dataset.zmiReady||''};
+  })()`, false);
+}
+function dashboardDocumentIsUsable(state) {
+  return !!state && (state.readyState === "interactive" || state.readyState === "complete") && state.hasMain === true && typeof state.mainText === "string" && state.mainText.length > 0 && state.body && Number(state.body.width) > 0 && Number(state.body.height) > 0 && state.zmiReady === "true";
+}
+async function registerWebViewCommandChannel(web) {
+  await web.evaluateJavaScript(`(function(){if(window.__zmiCommandQueue)return true;window.__zmiCommandQueue=[];window.addEventListener('ZMICommand',function(e){window.__zmiCommandQueue.push(e.detail)});return true})()`, false);
+}
+async function nextWebViewCommand(web, sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)), stopped = () => false) {
+  // Scriptable completion callbacks can contend with present(). Polling keeps
+  // every evaluation finite and only starts after the visible-document check.
+  while (true) {
+    if (stopped()) return null;
+    const message = await web.evaluateJavaScript("window.__zmiCommandQueue && window.__zmiCommandQueue.length ? window.__zmiCommandQueue.shift() : null", false);
+    if (message) return message;
+    await sleep(150);
+  }
 }
 function createDashboardDispatcher(auth, model, web, guards) {
   const refresh=()=>guards.refreshGuard.run(async()=>{const fresh=await loadPollingSnapshot(auth,model.sms);model.sms=fresh.sms;await applyWebView(web,"zmiApplyStatus",webPollPayload(fresh));return webPollPayload(fresh);});
