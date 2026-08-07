@@ -8,6 +8,52 @@ function model(tab='sms') { return {tab,loadedAt:Date.now(),sms:{messages:[{id:'
 test('initial HTML is immediately useful and marks history as loading',()=>{const html=app.buildHtml(model());assert.match(html,/hello/);assert.match(html,/Loading message history…/);assert.match(html,/Not checked/);assert.match(html,/data-detect="ussd"/);});
 test('SMS and router models render a non-empty main with the requested active tab',()=>{for(const tab of ['sms','router']){const html=app.buildHtml(model(tab));const main=html.match(/<main>([\s\S]*?)<\/main>/i);assert.ok(main&&main[1].trim(),`${tab} main must not be empty`);assert.match(html,new RegExp(`<section id="${tab}" class="tab active"`));}});
 test('dashboard has a readiness marker and native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/dataset\.zmiReady\s*=\s*'true'/);assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
+
+function dashboardLifecycle(documentState) {
+  const calls=[];
+  let closePresentation;
+  const closed=new Promise(resolve=>{closePresentation=resolve});
+  const web={
+    loadHTML:async()=>{calls.push('loadHTML')},
+    present:()=>{calls.push('present');return closed},
+    evaluateJavaScript:async script=>{
+      if(script.includes("document.querySelector('main')")){calls.push('documentCheck');return documentState}
+      if(script.includes('window.__zmiCommandQueue=[]')){calls.push('registerChannel');return true}
+      if(script.includes('window.__zmiCommandQueue &&'))return null;
+      calls.push('webUpdate');
+      return null;
+    },
+    dismiss:()=>calls.push('dismiss')
+  };
+  const alerts=[];
+  const flow=app.dashboardFlow({},'', 'sms',{
+    loadModel:async()=>model(),buildHtml:app.buildHtml,WebView:()=>web,
+    showMessage:async(title,message)=>alerts.push({title,message}),
+    loadRemainingSms:async(_auth,sms)=>sms,
+    createDispatcher:()=>async()=>{},sleep:()=>new Promise(resolve=>setImmediate(resolve))
+  });
+  return {calls,alerts,flow,closePresentation};
+}
+
+test('dashboardFlow presents and checks the rendered document before registering command polling',async()=>{
+  const fixture=dashboardLifecycle({readyState:'complete',hasMain:true,mainText:'Dashboard',body:{scrollWidth:390,scrollHeight:844,width:390,height:844},zmiReady:'true'});
+  while(!fixture.calls.includes('registerChannel'))await new Promise(resolve=>setImmediate(resolve));
+  fixture.closePresentation();
+  await fixture.flow;
+  assert.deepEqual(fixture.calls.slice(0,4),['loadHTML','present','documentCheck','registerChannel']);
+  assert.deepEqual(fixture.alerts,[]);
+});
+
+test('dashboardFlow dismisses an empty rendered document and shows document diagnostics',async()=>{
+  const state={readyState:'complete',hasMain:true,mainText:'',body:{scrollWidth:390,scrollHeight:0,width:390,height:0},zmiReady:''};
+  const fixture=dashboardLifecycle(state);
+  await fixture.flow;
+  assert.deepEqual(fixture.calls,['loadHTML','present','documentCheck','dismiss']);
+  assert.equal(fixture.alerts.length,1);
+  assert.match(fixture.alerts[0].message,/WebView document check failed/);
+  assert.match(fixture.alerts[0].message,/"mainText": ""/);
+  assert.match(fixture.alerts[0].message,/"zmiReady": ""/);
+});
 test('client applies complete and partial SMS history without document reload',()=>{const js=app.clientScript(model());assert.match(js,/window\.zmiApplySmsHistory=function/);assert.match(js,/payload\.warning/);assert.match(js,/Message history is incomplete|⚠️/);assert.doesNotMatch(js,/location\.(?:href|assign|replace)|location\s*=/);});
 test('document has no Scriptable relaunch links',()=>{const text=app.buildHtml(model())+app.clientScript(model());assert.doesNotMatch(text,/scriptable:\/\/\/run|This action will reopen|runUrl|navigationInProgress/);});
 test('client exposes targeted status, capability and action updates',()=>{const js=app.clientScript(model());for(const name of ['zmiApplyStatus','zmiApplySmsHistory','zmiApplyCapability','zmiApplyActionResult'])assert.match(js,new RegExp('window\\.'+name));assert.match(js,/CustomEvent\('ZMICommand'/);});
