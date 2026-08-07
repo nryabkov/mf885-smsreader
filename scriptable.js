@@ -52,20 +52,12 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, XML_API_PATH, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload };
+module.exports = { run, XML_API_PATH, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkModeLabel, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand };
 
 async function main() {
   try {
     const auth = await getAuthChallenge();
     await login(auth);
-    if (ACTION === "send") return await sendFlow(auth);
-    if (ACTION === "delete") return await deleteFlow(auth);
-    if (ACTION === "ussd") return await ussdFlow(auth);
-    if (ACTION === "deviceAccess") return await deviceAccessFlow(auth);
-    if (ACTION === "cellularReconnect") return await cellularReconnectFlow(auth);
-    if (ACTION === "cellularMode") return await cellularModeFlow(auth);
-    if (ACTION === "resetTraffic") return await resetTrafficFlow(auth);
-    if (ACTION === "reboot" || ACTION === "powerOff") return await powerFlow(auth, ACTION);
     return await dashboardFlow(auth, null, INITIAL_TAB);
   } catch (error) {
     console.error(String(error));
@@ -89,29 +81,34 @@ async function dashboardFlow(auth, notice = "", tab = "sms") {
   model.tab = tab;
   const web = new WebView();
   await web.loadHTML(buildHtml(model));
-  let pollTimer = null;
-  let pollInFlight = false;
-  async function pollWebView() {
-    if (pollInFlight) return;
-    pollInFlight = true;
+  const presented = web.present();
+  const smsGuard = createInFlightGuard();
+  const refreshGuard = createInFlightGuard();
+  // History is deliberately sequential: several MF885 firmwares lose requests
+  // when two message pages are fetched concurrently.
+  smsGuard.run(async () => {
     try {
-      await web.evaluateJavaScript("window.zmiTick && window.zmiTick()", false);
-      const fresh = await loadPollingSnapshot(auth, model.sms);
-      fresh.loadedAt = Date.now();
-      await web.evaluateJavaScript(`window.zmiApply && window.zmiApply(${JSON.stringify(webPollPayload(fresh))})`, false);
+      model.sms = await loadRemainingSms(auth, model.sms, async partial => {
+        await applyWebView(web, "zmiApplySmsHistory", partial);
+      });
+      await applyWebView(web, "zmiApplySmsHistory", model.sms);
     } catch (error) {
-      try {
-        await web.evaluateJavaScript(`window.zmiApply && window.zmiApply(${JSON.stringify({ error: cleanError(error), loadedAt: Date.now() })})`, false);
-      } catch (_) {}
-    } finally {
-      pollInFlight = false;
-      if (pollTimer) pollTimer.invalidate();
-      pollTimer = Timer.schedule(POLL_SECONDS * 1000, false, pollWebView);
+      model.sms.warning = cleanError(error);
+      await applyWebView(web, "zmiApplySmsHistory", model.sms);
+    }
+  });
+  const dispatcher = createDashboardDispatcher(auth, model, web, { smsGuard, refreshGuard });
+  let open = true;
+  presented.then(() => { open = false; }, () => { open = false; });
+  while (open) {
+    try {
+      const message = await nextWebViewCommand(web);
+      if (message) await dispatcher(message);
+    } catch (error) {
+      if (open) console.warn(`WebView channel: ${cleanError(error)}`);
     }
   }
-  pollTimer = Timer.schedule(POLL_SECONDS * 1000, false, pollWebView);
-  await web.present();
-  if (pollTimer) pollTimer.invalidate();
+  await presented;
 }
 
 async function loadPollingSnapshot(auth, currentSms) {
@@ -153,23 +150,25 @@ async function loadModel(auth) {
     errors: {}, notice: "", tab: "sms", loadedAt: Date.now()
   };
   let status = null;
+  const initial = await Promise.allSettled([getStatus(auth), getSmsPage(auth, 1)]);
   try {
-    status = await getStatus(auth);
+    if (initial[0].status === "rejected") throw initial[0].reason;
+    status = initial[0].value;
     model.traffic = sectionWithError(parseTraffic(status), "trafficError", "status1 has no WanStatistics data");
     model.battery = sectionWithError(parseBattery(status), "batteryError", "status1 has no batteryinfo data");
     model.network = sectionWithError(parseNetwork(status), "networkError", "status1 has no cellular network data");
   } catch (error) {
     model.errors.status = cleanError(error);
   }
-  model.cellularDiagnostics = await loadCellularDiagnostics(auth, status);
-  try { model.sms = await loadAllSms(auth); }
-  catch (error) { model.errors.smsError = cleanError(error); model.errors.sms = model.errors.smsError; }
-  try { model.ussd = await detectUssdCapability(auth); }
-  catch (error) { model.errors.ussdError = cleanError(error); model.errors.ussd = model.errors.ussdError; }
-  try { model.deviceAccess = await detectDeviceAccess(auth); }
-  catch (error) { model.errors.deviceAccess = cleanError(error); }
-  try { model.cellularControl = await detectCellularControl(auth); }
-  catch (error) { model.errors.cellularControl = cleanError(error); }
+  // Expensive diagnostics and capability probes are not part of first paint.
+  try {
+    if (initial[1].status === "rejected") throw initial[1].reason;
+    model.sms = mergeSmsPage(emptySms(), parseSmsPage(initial[1].value, 1));
+    model.sms.loading = true;
+  } catch (error) { model.errors.smsError = cleanError(error); model.errors.sms = model.errors.smsError; }
+  model.ussd = readCapabilityCache("ussd") || { state: "unchecked", detail: "Not checked" };
+  model.deviceAccess = readCapabilityCache("deviceAccess") || { state: "unchecked", detail: "Not checked", capabilities: [] };
+  model.cellularControl = readCapabilityCache("cellularControl") || { state: "unchecked", detail: "Not checked" };
   return model;
 }
 
@@ -218,7 +217,7 @@ async function deviceAccessFlow(auth) {
   const confirm = String(QUERY.confirm || "") === "1";
   const action = actions.find(item => item.id === actionId);
   if (!actionId || !action) return dashboardFlow(auth, warningNotice("Choose an experimental action in the router card."), "router");
-  if (!confirm) return dashboardFlow(auth, warningNotice(`Confirm the experimental action: ${action.title}. This action will reopen the script.`), "router");
+  if (!confirm) return dashboardFlow(auth, warningNotice(`Confirm the experimental action: ${action.title}.`), "router");
 
   const result = await executeDeviceAccess(auth, action.id, action.id);
   const detail = DEBUG && result.diagnostics
@@ -515,6 +514,41 @@ function routerAccepted(xml) {
 
 // SMS pagination and parsing
 function emptySms() { return { messages: [], loadedPages: 0, totalPages: null, totalMessages: null, hasMore: false, fingerprint: "", warning: "" }; }
+function mergeSmsPage(result, parsed) {
+  result = result || emptySms();
+  if (!parsed || !parsed.messages || !parsed.messages.length) return result;
+  if (result.totalPages === null) result.totalPages = parsed.totalPages;
+  if (result.totalMessages === null) result.totalMessages = parsed.totalMessages;
+  const seen = new Set(result.messages.map(smsKey));
+  for (const message of parsed.messages) if (!seen.has(smsKey(message))) {
+    seen.add(smsKey(message)); result.messages.push(message);
+  }
+  result.loadedPages = Math.max(result.loadedPages || 0, parsed.page || 0);
+  return result;
+}
+async function loadRemainingSms(auth, initial, onProgress) {
+  const result = initial || emptySms();
+  const first = result._first || { page:1, messages:result.messages.slice(), totalPages:result.totalPages, totalMessages:result.totalMessages };
+  const seenPages = new Set();
+  if (first.messages.length) seenPages.add(pageMessageFingerprint(first.messages));
+  let last = first;
+  for (let page = Math.max(2, (result.loadedPages || 1) + 1); page <= SMS_MAX_PAGES; page++) {
+    if (result.totalPages !== null && page > result.totalPages) break;
+    let parsed;
+    try { parsed = parseSmsPage(await getSmsPage(auth, page), page); }
+    catch (error) { result.warning = `Message history is incomplete: ${cleanError(error)}`; break; }
+    if (!parsed.messages.length) break;
+    const fp = pageMessageFingerprint(parsed.messages);
+    if (seenPages.has(fp)) { result.warning = "The router repeated a page; loading stopped."; break; }
+    seenPages.add(fp); mergeSmsPage(result, parsed); last = parsed;
+    if (onProgress) await onProgress(Object.assign({}, result, { messages:result.messages.slice(), loading:true }));
+    if (result.totalPages === null && parsed.messages.length < SMS_PAGE_SIZE) break;
+    if (page === SMS_MAX_PAGES) { result.warning = `The ${SMS_MAX_PAGES}-page safety limit was reached.`; result.hasMore = true; }
+  }
+  result.loading = false;
+  result.fingerprint = smsEdgeFingerprint(first, last, result.totalPages, result.totalMessages);
+  return result;
+}
 async function loadAllSms(auth) {
   const result = emptySms();
   const first = parseSmsPage(await getSmsPage(auth, 1), 1);
@@ -806,6 +840,69 @@ function cellularControlApi(auth) {
 
 function sleep(ms) { return new Promise(resolve => { const timer = Timer.schedule(ms, false, () => { timer.invalidate(); resolve(); }); }); }
 
+const CAPABILITY_CACHE_SCHEMA = 1;
+const CAPABILITY_NEGATIVE_TTL = 24 * 60 * 60 * 1000;
+function capabilityCacheValid(entry, host = ROUTER_HOST, now = Date.now()) {
+  if (!entry || entry.schema !== CAPABILITY_CACHE_SCHEMA || entry.host !== host || !entry.checkedAt) return false;
+  return entry.positive === true || now - entry.checkedAt < CAPABILITY_NEGATIVE_TTL;
+}
+function capabilityCacheKey(kind) { return `zmi-capability-${CAPABILITY_CACHE_SCHEMA}-${ROUTER_HOST}-${kind}`; }
+function readCapabilityCache(kind) {
+  try { const key=capabilityCacheKey(kind); if(typeof Keychain!=="undefined"&&Keychain.contains(key)){const entry=JSON.parse(Keychain.get(key));return capabilityCacheValid(entry)?entry.value:null;} } catch (_) {}
+  return null;
+}
+function writeCapabilityCache(kind, value) {
+  try { if(typeof Keychain!=="undefined") Keychain.set(capabilityCacheKey(kind),JSON.stringify({schema:CAPABILITY_CACHE_SCHEMA,host:ROUTER_HOST,checkedAt:Date.now(),positive:value&&value.supported===true,value})); } catch (_) {}
+}
+function createInFlightGuard() {
+  let active = null;
+  return { get active(){return !!active;}, run(task){ if(active)return active; active=Promise.resolve().then(task).finally(()=>{active=null;}); return active; } };
+}
+const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","ussd","detectCapability","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
+const DANGEROUS_ACTIONS = new Set(["cellularReconnect","cellularMode","resetTraffic","reboot","powerOff"]);
+function validateWebViewCommand(input) {
+  if (!input || typeof input!=="object" || typeof input.id!=="string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(input.id)) throw new Error("Invalid command id");
+  if (typeof input.action!=="string" || !WEB_ACTIONS.has(input.action)) throw new Error("Action is not allowed");
+  const p=input.params===undefined?{}:input.params;
+  if (!p || typeof p!=="object" || Array.isArray(p)) throw new Error("Invalid command parameters");
+  const text=(name,max,required=false)=>{if(p[name]===undefined&&!required)return;if(typeof p[name]!=="string"||p[name].length>(max||128)||(required&&!p[name].trim()))throw new Error(`Invalid ${name}`);};
+  if(input.action==="sendSms"){text("to",64,true);text("text",1000,true);}
+  if(input.action==="deleteSms")text("id",128,true);
+  if(input.action==="ussd")text("code",128,true);
+  if(input.action==="detectCapability"&&!['ussd','deviceAccess','cellularControl'].includes(p.kind))throw new Error("Invalid capability kind");
+  if(input.action==="deviceAccess")text("deviceAction",64,true);
+  if(input.action==="cellularMode"&&!['auto','lteOnly','ltePreferred','wcdmaOnly','gsmOnly'].includes(p.mode))throw new Error("Invalid cellular mode");
+  if(DANGEROUS_ACTIONS.has(input.action)&&p.confirmed!==true)throw new Error("Explicit confirmation is required");
+  return {id:input.id,action:input.action,params:p};
+}
+function createWebViewDispatcher(handlers, reply) {
+  return async input => {
+    let command;
+    try { command=validateWebViewCommand(input); const handler=handlers[command.action]; if(typeof handler!=="function")throw new Error("Action is unavailable"); const result=await handler(command.params); const response={id:command.id,ok:true,result:result===undefined?null:result}; if(reply)await reply(response); return response; }
+    catch(error){const response={id:command&&command.id||input&&typeof input.id==="string"?input.id:"",ok:false,error:cleanError(error)};if(reply)await reply(response);return response;}
+  };
+}
+async function applyWebView(web, method, payload) { await web.evaluateJavaScript(`window.${method} && window.${method}(${JSON.stringify(payload)})`,false); }
+async function nextWebViewCommand(web) {
+  return web.evaluateJavaScript(`(function(){var done=completion;function receive(e){window.removeEventListener('ZMICommand',receive);done(e.detail)}window.addEventListener('ZMICommand',receive)})()`,true);
+}
+function createDashboardDispatcher(auth, model, web, guards) {
+  const refresh=()=>guards.refreshGuard.run(async()=>{const fresh=await loadPollingSnapshot(auth,model.sms);model.sms=fresh.sms;await applyWebView(web,"zmiApplyStatus",webPollPayload(fresh));return webPollPayload(fresh);});
+  const refreshSms=()=>guards.smsGuard.run(async()=>{model.sms=await loadAllSms(auth);await applyWebView(web,"zmiApplySmsHistory",model.sms);return model.sms;});
+  const detect=async p=>{const value=p.kind==="ussd"?await detectUssdCapability(auth):p.kind==="deviceAccess"?await detectDeviceAccess(auth):await detectCellularControl(auth);writeCapabilityCache(p.kind,value);model[p.kind]=value;await applyWebView(web,"zmiApplyCapability",{kind:p.kind,value});return value;};
+  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,
+    sendSms:async p=>{const r=parseSendResult(await sendSms(auth,p.to.trim(),p.text));await refreshSms();return r;},
+    deleteSms:async p=>{const r=await deleteSms(auth,p.id);await refreshSms();return r;},
+    ussd:async p=>executeUssd(auth,readCapabilityCache("ussd")||await detectUssdCapability(auth),p.code),
+    deviceAccess:async p=>executeDeviceAccess(auth,readCapabilityCache("deviceAccess")||await detectDeviceAccess(auth),p.deviceAction),
+    cellularReconnect:async()=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth);const r=await cellularControlModule.executeReconnect(cellularControlApi(auth),c,ACTIVE_PROFILE);await refresh();return r;},
+    cellularMode:async p=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth),m=cellularControlModule.modeById(p.mode,ACTIVE_PROFILE);if(!m)throw new Error("Unknown cellular network mode");const r=await cellularControlModule.executeSetMode(cellularControlApi(auth),c,m.id,ACTIVE_PROFILE);await refresh();return r;},
+    resetTraffic:async()=>{const spec=ACTIVE_PROFILE.statisticsReset;if(!spec||!spec.confirmed)throw new Error("Traffic reset is unavailable");const before=wanCounterSnapshot(await xmlRequest(auth,"GET","statistics"));const body=`<RGW><statistics><WanStatistics><set_action>${escapeXml(spec.set_action)}</set_action><clear_cur_stat_flag>${escapeXml(spec.clear_cur_stat_flag)}</clear_cur_stat_flag></WanStatistics></statistics></RGW>`;const r=await writeThenVerify(auth,{model:"statistics",xml:body,verificationModel:"statistics",verify:x=>statisticsResetMatches(before,wanCounterSnapshot(x))});await refresh();return r;},
+    reboot:()=>executePowerCommand(auth,"reboot"),powerOff:()=>executePowerCommand(auth,"powerOff")};
+  return createWebViewDispatcher(handlers,response=>applyWebView(web,"zmiApplyActionResult",response));
+}
+async function executePowerCommand(auth,kind){const operation=kind==="reboot"?"reset":"poweroff",spec=ACTIVE_PROFILE.destructive&&ACTIVE_PROFILE.destructive[operation];if(!spec)throw new Error("Power command is unavailable");try{return await writeThenVerify(auth,{model:spec.file,xml:`<RGW><${spec.tree}></${spec.tree}></RGW>`,destructive:true});}catch(error){return{outcome:"submitted",warning:`Connection lost as expected: ${cleanError(error)}`};}}
+
 // WebView rendering
 function buildHtml(model) {
   const battery = model.battery || {}; const network = model.network || {}; const traffic = model.traffic || {};
@@ -831,7 +928,7 @@ function buildHtml(model) {
   const smsCards = smsCount ? visibleMessages.map((item, index) => {
     const key = escapeHtml(String(item.id || smsKey(item) || index));
     const translateButton = TRANSLATE_ENDPOINT ? `<button onclick="translateSms(this)">Translate</button>` : "";
-    return `<article class="card sms" data-msg-id="${key}" data-msg-text="${escapeHtml(item.content)}" data-msg-sender="${escapeHtml(item.phone)}" data-msg-date="${escapeHtml(item.date)}"><header><div><h3>${escapeHtml(item.phone || "Unknown sender")}</h3><small>SMS #${escapeHtml(item.row || index + 1)}</small></div><time>${escapeHtml(item.date || "Unknown time")}</time></header><p class="body">${escapeHtml(item.content || "")}</p><div class="translation" data-translation><span></span></div><footer><button onclick="copySms(this)">Copy</button>${translateButton}<a class="danger" data-action="delete" href="${runUrl("delete", "sms", { id: item.id })}">Delete</a></footer></article>`;
+    return `<article class="card sms" data-msg-id="${key}" data-msg-text="${escapeHtml(item.content)}" data-msg-sender="${escapeHtml(item.phone)}" data-msg-date="${escapeHtml(item.date)}"><header><div><h3>${escapeHtml(item.phone || "Unknown sender")}</h3><small>SMS #${escapeHtml(item.row || index + 1)}</small></div><time>${escapeHtml(item.date || "Unknown time")}</time></header><p class="body">${escapeHtml(item.content || "")}</p><div class="translation" data-translation><span></span></div><footer><button onclick="copySms(this)">Copy</button>${translateButton}<button class="danger" data-delete-action type="button">Delete</button></footer></article>`;
   }).join("") : `<article class="card empty"><h2>No SMS found</h2><p>${escapeHtml(model.errors.sms || "There are no inbox messages.")}</p></article>`;
   const smsLimitWarning = hiddenSmsCount ? `<div class="warning">⚠️ Showing the latest ${visibleMessages.length} SMS out of ${smsCount} to keep the WebView responsive.</div>` : "";
   const codes = [network.lac ? `LAC/TAC ${escapeHtml(network.lac)}` : "", network.cellId ? `Cell ${escapeHtml(network.cellId)}` : "", network.pci ? `PCI ${escapeHtml(network.pci)}` : ""].filter(Boolean).join(" · ");
@@ -839,95 +936,83 @@ function buildHtml(model) {
   const diagText = name => { const item=diagnosticValues[name]||{}; return item.value === null || item.value === undefined ? "—" : String(item.value); };
   const stageRows = [["sim","SIM"],["registration","Registration and roaming"],["pdp","PDP activation"],["ip","IP assignment"],["dns","DNS availability"]].map(([key,label]) => { const item=diagnosticStages[key]||{}; const detail=key==="registration"&&item.roaming&&item.roaming.value?`${item.detail||""} · ${item.roaming.value}`:item.detail||"Unavailable"; const raw=item.raw!==null&&item.raw!==undefined?` (raw: ${item.raw})`:""; return `<li class="diag-stage ${escapeHtml(item.state||"unknown")}" data-diag-stage="${key}"><strong>${label}</strong>: <span>${escapeHtml(detail+raw)}</span></li>`; }).join("");
   const diagnosticBlock = `<section class="cellular-diagnostics"><h3>Connection diagnostics</h3><ol>${stageRows}</ol><div class="diag-grid"><p>Configured APN: <strong data-diag="configuredApn">${escapeHtml(diagText("configuredApn"))}</strong></p><p>Active APN: <strong class="active-apn" data-diag="activeApn">${escapeHtml(diagText("activeApn"))}</strong></p><p>PDP type: <strong data-diag="pdpType">${escapeHtml(diagText("pdpType"))}</strong></p><p>IPv4: <strong data-diag="ipv4">${escapeHtml(diagText("ipv4"))}</strong></p><p>IPv6: <strong data-diag="ipv6">${escapeHtml(diagText("ipv6"))}</strong></p><p>Gateways: <strong><span data-diag="gateway4">${escapeHtml(diagText("gateway4"))}</span> · <span data-diag="gateway6">${escapeHtml(diagText("gateway6"))}</span></strong></p><p>DNS: <strong><span data-diag="dns1">${escapeHtml(diagText("dns1"))}</span> · <span data-diag="dns2">${escapeHtml(diagText("dns2"))}</span></strong></p><p>LTE: band <strong data-diag="band">${escapeHtml(diagText("band"))}</strong> · PCI <strong data-diag="pci">${escapeHtml(diagText("pci"))}</strong> · EARFCN <strong data-diag="earfcn">${escapeHtml(diagText("earfcn"))}</strong></p><p>Radio: RSRP <strong data-diag="rsrp">${escapeHtml(diagText("rsrp"))}</strong> · RSRQ <strong data-diag="rsrq">${escapeHtml(diagText("rsrq"))}</strong> · SINR <strong data-diag="sinr">${escapeHtml(diagText("sinr"))}</strong></p></div></section>`;
-  const deviceActions = (model.deviceAccess.capabilities || []).map(action => `<a class="danger buttonlike" href="${runUrl("deviceAccess", "router", { deviceAction: action.id })}">${escapeHtml(action.title)}</a>`).join(" ");
-  const pendingDeviceAction = ACTION === "deviceAccess" ? (model.deviceAccess.capabilities || []).find(action => action.id === String(QUERY.deviceAction || "")) : null;
-  const deviceConfirm = pendingDeviceAction && String(QUERY.confirm || "") !== "1"
-    ? `<div class="warning"><strong>Confirm experimental action: ${escapeHtml(pendingDeviceAction.title)}</strong><p>ADB, Telnet, and shell commands are experimental firmware/debug actions and may be unsupported or ignored. This action will reopen the script. ${escapeHtml(pendingDeviceAction.description || "The command may change router state.")}</p><a class="danger buttonlike" href="${runUrl("deviceAccess", "router", { deviceAction: pendingDeviceAction.id, confirm: "1" })}">Confirm</a> <a class="buttonlike" href="${runUrl("dashboard", "router")}">Cancel</a></div>` : "";
+  const deviceActions = (model.deviceAccess.capabilities || []).map(action => `<button class="danger buttonlike" type="button" data-device-action="${escapeHtml(action.id)}">${escapeHtml(action.title)}</button>`).join(" ");
+  const deviceConfirm = "";
   const cellular = model.cellularControl || {};
   const defaultCellularModes = [{ id: "auto", title: "Automatic" }, { id: "lteOnly", title: "4G/LTE only" }, { id: "ltePreferred", title: "LTE preferred" }, { id: "wcdmaOnly", title: "3G only" }, { id: "gsmOnly", title: "2G only" }];
   const activePreferredMode = preferredModeId(network.preferredMode || network.mode || "");
   const cellularModeOptions = (cellular.modes || (cellularControlModule && cellularControlModule.modes ? cellularControlModule.modes(ACTIVE_PROFILE) : defaultCellularModes)).map(mode => `<option value="${escapeHtml(mode.id)}"${mode.id === activePreferredMode ? " selected" : ""}>${escapeHtml(mode.title)}</option>`).join("");
   const controlsDisabled = cellular.readOnly === true || cellular.supported === false;
   const cellularModeSelect = controlsDisabled || !cellularModeOptions ? `<p>Cellular mode control unavailable: no confirmed firmware mapping.</p>` : `<label class="selectline">Current preferred protocol <select data-cellular-mode-select>${cellularModeOptions}</select></label>`;
-  const cellularReconnect = controlsDisabled ? `<button class="danger buttonlike" type="button" disabled>Reconnect unavailable</button>` : `<button class="danger buttonlike" type="button" data-cellular-action="reconnect" data-cellular-url="${runUrl("cellularReconnect", "router")}">Reconnect cellular network</button>`;
+  const cellularReconnect = controlsDisabled ? `<button class="danger buttonlike" type="button" disabled>Reconnect unavailable</button>` : `<button class="danger buttonlike" type="button" data-cellular-action="reconnect" >Reconnect cellular network</button>`;
   const resetTrafficConfirm = "";
   const powerConfirmCard = `<div class="warning" data-power-confirm hidden></div>`;
-  const baseRun = `scriptable:///run?scriptName=${encodeURIComponent(Script.name())}`;
   const activeTab = model.tab === "router" ? "router" : "sms";
   const smsActive = activeTab === "sms" ? " active" : "";
   const routerActive = activeTab === "router" ? " active" : "";
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>ZMI Router</title><style>${css()}</style></head>
   <body><div id="progressbar" class="progressbar" aria-hidden="true"><i></i></div><main><header class="hero compact"><div><h1>MF855 / MF885</h1><strong>SMS: ${smsCount}</strong></div><p class="statusline"><span>📶 ${escapeHtml(network.mode || "Unknown")}</span><span>${escapeHtml(batteryInline)}</span><span>⇅ ${totalTraffic}</span><span>⟳ ${escapeHtml(updated.slice(0,5))}</span></p></header>
   <nav class="seg"><button data-tab-button="sms" class="${smsActive.trim()}" onclick="tab('sms')">SMS</button><button data-tab-button="router" class="${routerActive.trim()}" onclick="tab('router')">Router</button></nav>
-  <section class="refresh"><span id="countdown">Next refresh: ${escapeHtml(nextUpdate)}</span><div class="actions"><a id="refreshLink" class="buttonlike" href="${runUrl("dashboard", model.tab)}" onclick="refreshNow(event)">Refresh</a><button id="pauseBtn" onclick="togglePause()">Pause</button></div></section>
+  <section class="refresh"><span id="countdown">Next refresh: ${escapeHtml(nextUpdate)}</span><div class="actions"><button id="refreshLink" class="buttonlike" type="button" onclick="refreshNow(event)">Refresh</button><button id="pauseBtn" onclick="togglePause()">Pause</button></div></section>
   <section id="actionStatus" class="action-status warning" hidden><header><strong data-status-title></strong><button type="button" onclick="hideActionStatus()">Close</button></header><p data-status-detail></p><textarea data-status-copy rows="5" readonly></textarea><pre data-status-pre></pre></section>
   <section id="webviewDiagnostics" class="action-status warning" hidden><header><strong>WebView interface error</strong><button type="button" onclick="hideWebviewDiagnostics()">Close</button></header><p>The WebView interface encountered an error. Open the details below or refresh the script.</p><pre data-webview-diagnostics></pre></section>
   ${noticeHtml}
     <section id="sms" class="tab${smsActive}"><div class="inline-toolbar"><button onclick="toggleSmsComposer()">📝 Compose SMS</button></div>
     <form id="smsComposer" class="composer card" onsubmit="submitSmsInline(event)" hidden><input name="to" placeholder="Recipient" autocomplete="tel"><textarea name="text" placeholder="SMS text" rows="3" maxlength="1000"></textarea><div><button class="primary" type="submit">Send SMS</button><button type="button" onclick="toggleSmsComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form>
-    ${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
+    ${model.sms.loading ? `<div class="notice" data-history-warning>Loading message history…</div>` : ""}${smsCards}${smsLimitWarning}${model.sms.warning ? `<div class="warning">⚠️ ${escapeHtml(model.sms.warning)}</div>` : ""}</section>
     <section id="router" class="tab${routerActive}">${topCards}<article class="card network"><small>Cellular network</small><h2>${signalHtml}</h2><div class="quality">${escapeHtml(network.mode || "Unknown")}</div><p>Current network: <strong>${escapeHtml(network.mode || "Unknown")}</strong></p><p>Current preferred protocol: <strong>${escapeHtml(network.preferredMode || "Unknown")}</strong></p><p>${escapeHtml(network.networkError || network.operator || "Unknown operator")}</p><p>${network.dbm === null || network.dbm === undefined ? "dBm: —" : `dBm: ${escapeHtml(network.dbm)}`}</p>${codes ? `<p class="codes">${codes}</p>` : `<p class="codes">Cell codes unavailable</p>`}${DEBUG && network.rawMode ? `<p class="codes">Raw network code: ${escapeHtml(network.rawMode)}</p>` : ""}${diagnosticBlock}<div class="warning"><strong>Experimental cellular controls</strong><p>Firmware endpoints differ across MF855/MF885 builds. Reconnect and protocol changes can temporarily interrupt mobile internet; unsupported firmware should be reported with diagnostics.</p>${cellularReconnect}<h3>Preferred protocol</h3>${cellularModeSelect}</div></article>
     <article class="card battery"><small>Battery</small><h2>${escapeHtml(batteryInline)}</h2><p>${escapeHtml(battery.batteryError || battery.status || "Unknown")}</p>${battery.percentValid ? `<div class="bar"><i style="width:${battery.percent}%"></i></div>` : `<p>Battery percentage unavailable</p>`}</article>
     <article class="card traffic"><small>Traffic</small><h2>${totalTraffic}</h2><p>Downloaded: ${formatBytes(traffic.download)}</p><p>Uploaded: ${formatBytes(traffic.upload)}</p><p>Session: ↓ ${formatBytes(traffic.sessionDownload)} · ↑ ${formatBytes(traffic.sessionUpload)}${traffic.sessionSeconds !== null && traffic.sessionSeconds !== undefined ? ` · ${escapeHtml(formatDuration(traffic.sessionSeconds))}` : ""}</p>${traffic.trafficError ? `<p class="warning">${escapeHtml(traffic.trafficError)}</p>` : ""}<button class="danger buttonlike" type="button" data-power-action="resetTraffic">Reset traffic</button>${resetTrafficConfirm}</article>
-    <article class="card experimental" id="routerExperimental"><small>Experimental router controls</small><h2>USSD and device access</h2><section data-ussd-section><h3>USSD: ${model.ussd.supported ? "Available" : "Not confirmed"}</h3><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button type="button" onclick="toggleUssdComposer(true)">Dial USSD</button><form id="ussdComposer" class="composer" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Code, for example *100#"><div><button class="primary" type="submit">Send USSD</button><button type="button" onclick="toggleUssdComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form></section><section data-device-access-section><h3>Device access: ${model.deviceAccess.supported ? "Diagnostics available" : "Detection inconclusive"}</h3><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar">${deviceActions || "<span>No actions available</span>"}</div>${deviceConfirm}</section></article>
+    <article class="card experimental" id="routerExperimental"><small>Experimental router controls</small><h2>USSD and device access</h2><section data-ussd-section><h3>USSD: ${model.ussd.state === "unchecked" ? "Not checked" : model.ussd.supported ? "Available" : "Unavailable"}</h3><p>${escapeHtml(model.errors.ussd || model.ussd.detail || "")}</p><button type="button" data-detect="ussd">Detect</button> <button type="button" onclick="toggleUssdComposer(true)">Dial USSD</button><form id="ussdComposer" class="composer" onsubmit="submitUssdInline(event)" hidden><input name="code" placeholder="Code, for example *100#"><div><button class="primary" type="submit">Send USSD</button><button type="button" onclick="toggleUssdComposer(false)">Cancel</button></div><p class="formStatus" data-status></p></form></section><section data-device-access-section><h3>Device access: ${model.deviceAccess.state === "unchecked" ? "Not checked" : model.deviceAccess.supported ? "Diagnostics available" : "Unavailable"}</h3><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar"><button type="button" data-detect="deviceAccess">Detect</button>${deviceActions}</div>${deviceConfirm}</section></article>
     <article class="card"><small>Power</small><h2>System commands</h2><button class="buttonlike" type="button" data-power-action="reboot">Restart</button> <button class="danger buttonlike" type="button" data-power-action="powerOff">Power off</button>${powerConfirmCard}</article>${model.errors.status ? `<div class="warning">Status: ${escapeHtml(model.errors.status)}</div>` : ""}</section></main>
-  <script>${clientScript(model, baseRun)}</script></body></html>`;
+  <script>${clientScript(model)}</script></body></html>`;
 }
 
-function clientScript(model, baseRun) {
-  return `var model={tab:${JSON.stringify(model.tab)},poll:${POLL_SECONDS},baseRun:${JSON.stringify(baseRun)},translateEndpoint:${JSON.stringify(TRANSLATE_ENDPOINT)},sms:{fingerprint:${JSON.stringify(model.sms && model.sms.fingerprint || "")},totalPages:${JSON.stringify(model.sms && model.sms.totalPages)},totalMessages:${JSON.stringify(model.sms && model.sms.totalMessages)}}};
-var remaining=model.poll,paused=false,timer=null,navigationInProgress=false;
-function selectedTab(){try{return localStorage.zmiTab||model.tab}catch(e){return model.tab}}
-function safeStorageGet(key){try{return localStorage.getItem(key)}catch(e){return ''}}
-function safeStorageSet(key,value){try{localStorage.setItem(key,value)}catch(e){}}
-function runUrl(action,tab,params){var q=new URLSearchParams();q.set('action',action||'dashboard');q.set('tab',tab||selectedTab());if(params){Object.keys(params).forEach(function(k){q.set(k,params[k])})}return model.baseRun+'&'+q.toString()}
-function actionStatus(){return document.getElementById('actionStatus')}
-function hideActionStatus(){var el=actionStatus();if(el)el.hidden=true}
-function hideWebviewDiagnostics(){var el=document.getElementById('webviewDiagnostics');if(el)el.hidden=true}
-function showWebviewDiagnostics(message,source,lineno,colno,error){var el=document.getElementById('webviewDiagnostics');if(!el)return;var pre=el.querySelector('[data-webview-diagnostics]');if(pre)pre.textContent=['message: '+String(message||''),'source: '+String(source||''),'location: '+String(lineno||0)+':'+String(colno||0),describeError(error)].filter(Boolean).join('\\n');el.hidden=false}
-function selectFallbackText(ta){if(!ta||ta.hidden)return;setTimeout(function(){try{ta.focus();ta.select();if(ta.setSelectionRange)ta.setSelectionRange(0,ta.value.length)}catch(e){}},50)}
-function fillActionStatus(title,detail,copyText,isError){var el=actionStatus();if(!el)return;var t=el.querySelector('[data-status-title]'),d=el.querySelector('[data-status-detail]'),ta=el.querySelector('[data-status-copy]'),pre=el.querySelector('[data-status-pre]');if(t)t.textContent=title||'Status';if(d)d.textContent=detail||'';if(ta){ta.value=copyText||'';ta.hidden=!copyText;if(copyText)selectFallbackText(ta)}if(pre){pre.textContent=copyText||detail||'';pre.hidden=!!copyText}el.classList.toggle('warning',!!isError);el.hidden=false}
-function describeError(e){var parts=[];try{if(e&&e.name)parts.push('name: '+e.name);if(e&&e.message)parts.push('message: '+e.message);parts.push('string: '+String(e));if(e&&typeof e==='object'){Object.keys(e).forEach(function(k){if(k==='name'||k==='message')return;try{parts.push(k+': '+JSON.stringify(e[k]))}catch(_){parts.push(k+': '+String(e[k]))}});if(e.stack)parts.push('stack: '+e.stack)}}catch(inner){parts.push('describeError failed: '+String(inner))}return parts.join('\\n')}
-function showActionError(title,detail,copyText){fillActionStatus(title,detail,copyText,true)}
-function setActionStatus(message){fillActionStatus('Action status',message,'',false)}
-window.onerror=function(message,source,lineno,colno,error){showActionError('WebView JavaScript error',[message,source,lineno+':'+colno,describeError(error)].filter(Boolean).join('\\n'),'');showWebviewDiagnostics(message,source,lineno,colno,error);return false};
-window.onunhandledrejection=function(event){var reason=event&&event.reason?event.reason:event;showActionError('WebView JavaScript error',describeError(reason),'');showWebviewDiagnostics('Unhandled promise rejection','',0,0,reason);};
-function tab(id){document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x.id===id)});document.querySelectorAll('[data-tab-button]').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-tab-button')===id)});try{localStorage.zmiTab=id}catch(e){}var link=document.getElementById('refreshLink');if(link)link.href=runUrl('dashboard',id)}
-function fmt(s){s=Math.max(0,s|0);return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
-function drawTimer(){var c=document.getElementById('countdown'),p=document.getElementById('pauseBtn');if(c)c.textContent=paused?'Paused':'Next refresh: '+fmt(remaining);if(p)p.textContent=paused?'Resume':'Pause'}
-function navigateTo(url,label){if(navigationInProgress)return false;navigationInProgress=true;paused=true;if(timer)clearInterval(timer);document.querySelectorAll('button,a').forEach(function(x){x.disabled=true;x.setAttribute('aria-disabled','true')});setActionStatus('This action will reopen the script. Scriptable is rerunning the dashboard; if the screen closes, open the script again. '+(label||''));setTimeout(function(){window.location.href=url},250);return true}
-function saveSmsFingerprint(){try{localStorage.zmiSmsFingerprint=model.sms.fingerprint||'';localStorage.zmiSmsTotalPages=model.sms.totalPages==null?'':String(model.sms.totalPages);localStorage.zmiSmsTotalMessages=model.sms.totalMessages==null?'':String(model.sms.totalMessages)}catch(e){}}
-function tick(){if(!paused){remaining-=1;if(remaining<=0){remaining=model.poll;window.zmiTick()}}drawTimer()}
-window.zmiTick=function(){startProgress()}
-function renderPolledSms(payload){if(!Array.isArray(payload.smsMessages))return true;var section=document.getElementById('sms');if(!section)return false;section.querySelectorAll('.sms,.empty').forEach(function(x){x.remove()});payload.smsMessages.forEach(function(item,index){var card=document.createElement('article');card.className='card sms';card.setAttribute('data-msg-id',item.id||'');card.setAttribute('data-msg-text',item.content||'');var header=document.createElement('header'),title=document.createElement('h3'),time=document.createElement('time'),body=document.createElement('p'),footer=document.createElement('footer'),del=document.createElement('button');title.textContent=item.phone||'Unknown sender';time.textContent=item.date||'Unknown time';body.className='body';body.textContent=item.content||'';del.className='danger';del.textContent='Delete';del.onclick=function(){confirmSmsDelete(card,item)};header.appendChild(title);header.appendChild(time);footer.appendChild(del);card.appendChild(header);card.appendChild(body);card.appendChild(footer);section.appendChild(card)});return true}
-function confirmSmsDelete(card,item){var old=card.querySelector('[data-delete-confirm]');if(old){old.hidden=false;return}var box=document.createElement('div');box.className='warning';box.setAttribute('data-delete-confirm','');var preview=String(item.content||'').slice(0,80);var p=document.createElement('p');p.textContent='Delete this SMS from '+(item.phone||'Unknown sender')+', received '+(item.date||'at an unknown time')+'? Preview: '+preview;var yes=document.createElement('a');yes.className='danger buttonlike';yes.textContent='Confirm deletion';yes.href=runUrl('delete','sms',{id:item.id,confirm:'1'});yes.setAttribute('data-final-confirm','1');var no=document.createElement('button');no.textContent='Cancel';no.onclick=function(){box.hidden=true};box.appendChild(p);box.appendChild(yes);box.appendChild(document.createTextNode(' '));box.appendChild(no);card.appendChild(box)}
-window.zmiApply=function(payload){payload=payload||{};remaining=model.poll;drawTimer();if(payload.error){stopProgress();showActionError('Refresh failed',payload.error,'');return}var hero=document.querySelector('.hero strong');if(hero&&payload.smsCount!==undefined)hero.textContent='SMS: '+payload.smsCount;var spans=document.querySelectorAll('.statusline span');if(spans[0]&&payload.networkMode)spans[0].textContent='📶 '+payload.networkMode;if(spans[1]&&payload.batteryInline)spans[1].textContent=payload.batteryInline;if(spans[2]&&payload.trafficTotal)spans[2].textContent='⇅ '+payload.trafficTotal;if(spans[3]&&payload.loadedAt)spans[3].textContent='⟳ '+new Date(payload.loadedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});if(payload.cellularDiagnostics){var d=payload.cellularDiagnostics,v=d.values||{},st=d.stages||{};document.querySelectorAll('[data-diag]').forEach(function(el){var x=v[el.getAttribute('data-diag')];el.textContent=x&&x.value!=null?x.value:'—'});document.querySelectorAll('[data-diag-stage]').forEach(function(el){var key=el.getAttribute('data-diag-stage'),x=st[key]||{},detail=x.detail||'Unavailable';if(key==='registration'&&x.roaming&&x.roaming.value)detail+=' · '+x.roaming.value;if(x.raw!=null)detail+=' (raw: '+x.raw+')';el.className='diag-stage '+(x.state||'unknown');var span=el.querySelector('span');if(span)span.textContent=detail})}if(payload.smsFingerprint!==model.sms.fingerprint&&renderPolledSms(payload)){model.sms.fingerprint=payload.smsFingerprint||'';model.sms.totalMessages=payload.smsTotalMessages;saveSmsFingerprint()}stopProgress()}
-function startProgress(label){var bar=document.getElementById('progressbar');if(bar)bar.classList.add('active');if(label)label.textContent='Working…'}
+function clientScript(model) {
+  return `var model={tab:${JSON.stringify(model.tab)},poll:${POLL_SECONDS},translateEndpoint:${JSON.stringify(TRANSLATE_ENDPOINT)},sms:{fingerprint:${JSON.stringify(model.sms&&model.sms.fingerprint||"")},totalPages:${JSON.stringify(model.sms&&model.sms.totalPages)},totalMessages:${JSON.stringify(model.sms&&model.sms.totalMessages)}}};
+var remaining=model.poll,paused=false,timer=null,pending={},sequence=0;
+function safeStorageGet(k){try{return localStorage.getItem?localStorage.getItem(k):localStorage[k]}catch(e){return null}}
+function safeStorageSet(k,v){try{if(localStorage.setItem)localStorage.setItem(k,v);else localStorage[k]=v}catch(e){}}
+function selectedTab(){return safeStorageGet('zmiTab')||model.tab}
+function tab(name){name=name==='router'?'router':'sms';document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x.id===name)});document.querySelectorAll('[data-tab-button]').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-tab-button')===name)});safeStorageSet('zmiTab',name)}
+function describeError(e){return String(e&&e.message||e||'Unknown error')}
+function setActionStatus(text){fillActionStatus('Dashboard',text||'','',false)}
+function fillActionStatus(title,detail,raw,isError){var box=document.getElementById('actionStatus');if(!box)return;box.hidden=false;box.classList.toggle('error',!!isError);var t=box.querySelector('[data-status-title]'),d=box.querySelector('[data-status-detail]'),pre=box.querySelector('[data-status-pre]');if(t)t.textContent=title||'';if(d)d.textContent=detail||'';if(pre){pre.textContent=raw||'';pre.hidden=!raw}}
+function showActionError(title,detail,raw){fillActionStatus(title,detail,raw,true)}
+function hideActionStatus(){var x=document.getElementById('actionStatus');if(x)x.hidden=true}
+function hideWebviewDiagnostics(){var x=document.getElementById('webviewDiagnostics');if(x)x.hidden=true}
+function bridge(action,params,button){var id=Date.now().toString(36)+'-'+(++sequence);if(button)button.disabled=true;return new Promise(function(resolve,reject){pending[id]={resolve:resolve,reject:reject,button:button};window.dispatchEvent(new CustomEvent('ZMICommand',{detail:{id:id,action:action,params:params||{}}}))})}
+window.zmiApplyActionResult=function(payload){var p=payload&&pending[payload.id];if(p){delete pending[payload.id];if(p.button)p.button.disabled=false;if(payload.ok)p.resolve(payload.result);else p.reject(new Error(payload.error||'Command failed'))}if(!payload.ok){stopProgress();showActionError('Command failed',payload.error||'Unknown error','')}};
+function renderPolledSms(payload){var messages=payload.messages||payload.smsMessages;if(!Array.isArray(messages))return false;var section=document.getElementById('sms');if(!section)return false;section.querySelectorAll('.sms,.empty,[data-history-warning]').forEach(function(x){x.remove()});messages.slice(0,200).forEach(function(item,index){var card=document.createElement('article');card.className='card sms';card.setAttribute('data-msg-id',item.id||'');card.setAttribute('data-msg-text',item.content||'');card.setAttribute('data-msg-sender',item.phone||'');card.setAttribute('data-msg-date',item.date||'');card.innerHTML='<header><div><h3></h3><small></small></div><time></time></header><p class="body"></p><div class="translation" data-translation><span></span></div><footer><button data-copy>Copy</button><button class="danger" data-delete-action>Delete</button></footer>';card.querySelector('h3').textContent=item.phone||'Unknown sender';card.querySelector('small').textContent='SMS #'+(item.row||index+1);card.querySelector('time').textContent=item.date||'Unknown time';card.querySelector('.body').textContent=item.content||'';section.appendChild(card)});return true}
+window.zmiApplySmsHistory=function(payload){payload=payload||{};renderPolledSms(payload);model.sms.fingerprint=payload.fingerprint||model.sms.fingerprint;var hero=document.querySelector('.hero strong');if(hero)hero.textContent='SMS: '+((payload.messages||[]).length);var note=document.createElement('div');note.setAttribute('data-history-warning','');note.className=payload.warning?'warning':'notice';note.textContent=payload.loading?'Loading message history…':payload.warning?'⚠️ '+payload.warning:'Message history loaded';var section=document.getElementById('sms');if(section)section.insertBefore(note,section.firstChild)};
+window.zmiApplyStatus=function(payload){payload=payload||{};remaining=model.poll;drawTimer();var spans=document.querySelectorAll('.statusline span');if(spans[0]&&payload.networkMode)spans[0].textContent='📶 '+payload.networkMode;if(spans[1]&&payload.batteryInline)spans[1].textContent=payload.batteryInline;if(spans[2]&&payload.trafficTotal)spans[2].textContent='⇅ '+payload.trafficTotal;if(payload.smsMessages)window.zmiApplySmsHistory({messages:payload.smsMessages,fingerprint:payload.smsFingerprint,totalMessages:payload.smsTotalMessages});stopProgress()};
+window.zmiApplyCapability=function(payload){var section=document.querySelector('[data-'+(payload.kind==='deviceAccess'?'device-access':payload.kind==='cellularControl'?'cellular-control':'ussd')+'-section]');if(section){var h=section.querySelector('h3'),p=section.querySelector('p');if(h)h.textContent=(payload.kind==='ussd'?'USSD':payload.kind==='deviceAccess'?'Device access':'Cellular control')+': '+(payload.value&&payload.value.supported?'Available':'Unavailable');if(p)p.textContent=payload.value&&payload.value.detail||''}};
+window.zmiApply=window.zmiApplyStatus;
+window.zmiTick=function(){if(!paused)refreshNow()};
+function drawTimer(){var el=document.getElementById('countdown'),btn=document.getElementById('pauseBtn');if(el)el.textContent=paused?'Polling paused':'Next refresh in '+Math.max(0,remaining)+'s';if(btn)btn.textContent=paused?'Resume':'Pause'}
+function tick(){if(!paused&&--remaining<=0){remaining=model.poll;window.zmiTick()}drawTimer()}
+function startProgress(label){var bar=document.getElementById('progressbar');if(bar)bar.classList.add('active');if(label)label.disabled=true}
 function stopProgress(){var bar=document.getElementById('progressbar');if(bar)bar.classList.remove('active')}
-function refreshNow(e){if(e)e.preventDefault();var link=document.getElementById('refreshLink');startProgress(link);navigateTo(runUrl('dashboard',selectedTab()),'Refresh requested.')}
-function togglePause(){paused=!paused;try{localStorage.zmiPaused=paused?'1':'0'}catch(e){}drawTimer()}
+function refreshNow(e){if(e)e.preventDefault();var b=document.getElementById('refreshLink');startProgress(b);bridge('refresh',{},b).catch(function(e){showActionError('Refresh failed',describeError(e),'')}).finally(stopProgress)}
+function togglePause(){paused=!paused;safeStorageSet('zmiPaused',paused?'1':'0');remaining=model.poll;drawTimer();if(!paused)bridge('resumePolling',{}).catch(function(){})}
 function toggleSmsComposer(force){var el=document.getElementById('smsComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
 function toggleUssdComposer(force){var el=document.getElementById('ussdComposer');if(el)el.hidden=force===undefined?!el.hidden:!force}
-function submitSmsInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),to=f.elements.to.value.trim(),text=f.elements.text.value.trim();if(!to||!text){s.textContent=!to?'Enter a recipient number':'Enter SMS text';return}if(text.length>1000){s.textContent='SMS text is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('send','sms',{to:to,text:text}),'Sending SMS.')}
-function submitUssdInline(e){e.preventDefault();if(navigationInProgress)return;var f=e.target,s=f.querySelector('[data-status]'),code=f.elements.code.value.trim();if(!code){s.textContent='Enter a USSD code';return}if(code.length>128){s.textContent='USSD code is too long';return}s.textContent='Sending…';startProgress();navigateTo(runUrl('ussd','router',{code:code}),'Sending USSD.')}
-function cellularActionCopy(kind,label){if(kind==='reconnect')return{title:'Reconnect cellular network?',detail:'Experimental action: mobile internet may be temporarily unavailable while the router disconnects and reconnects.'};return{title:'Set cellular mode?',detail:'Experimental mode change to '+(label||'selected mode')+'. Mobile internet may be temporarily unavailable and firmware support varies.'}}
-function showCellularConfirm(el){if(!el||navigationInProgress)return;var mode=el.getAttribute('data-cellular-mode')||(el.getAttribute('data-cellular-mode-select')!==null?el.value:''),kind=el.getAttribute('data-cellular-action'),label=el.options&&el.selectedIndex>=0?el.options[el.selectedIndex].text:el.textContent||mode,url=mode?runUrl('cellularMode','router',{mode:mode,confirm:'1'}):runUrl('cellularReconnect','router',{confirm:'1'});var card=el.closest('.card')||el.parentNode;var box=card&&card.querySelector('[data-cellular-confirm]');if(!box){box=document.createElement('div');box.className='warning';box.setAttribute('data-cellular-confirm','');card.appendChild(box)}var copy=cellularActionCopy(kind,label);box.hidden=false;box.innerHTML='';var strong=document.createElement('strong');strong.textContent=copy.title;var p=document.createElement('p');p.textContent=copy.detail;var final=document.createElement('a');final.className='danger buttonlike';final.href=url;final.textContent='Confirm';final.setAttribute('data-final-confirm','1');box.appendChild(strong);box.appendChild(p);box.appendChild(final);box.appendChild(document.createTextNode(' '));var cancel=document.createElement('button');cancel.type='button';cancel.className='buttonlike';cancel.textContent='Cancel';cancel.onclick=function(){box.hidden=true};box.appendChild(cancel);fillActionStatus(copy.title,copy.detail+' Final confirmation will reopen the script.','',true)}
-function powerActionCopy(action){if(action==='reboot')return{title:'Restart router?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u043f\\u0435\\u0440\\u0435\\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u0438\\u0442\\u044c? Wi‑Fi and mobile internet will be temporarily unavailable.'};if(action==='powerOff')return{title:'Power off router?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u0432\\u044b\\u043a\\u043b\\u044e\\u0447\\u0438\\u0442\\u044c? The physical power button is required to turn the router on again.'};return{title:'Reset total traffic?',detail:'\\u0422\\u043e\\u0447\\u043d\\u043e \\u0441\\u0431\\u0440\\u043e\\u0441\\u0438\\u0442\\u044c \\u0441\\u0447\\u0451\\u0442\\u0447\\u0438\\u043a \\u0442\\u0440\\u0430\\u0444\\u0438\\u043a\\u0430? Only the total mobile WAN counters will be reset.'}}
-function showInlineConfirm(button){var action=button&&button.getAttribute('data-power-action');if(!action||navigationInProgress)return;var card=button.closest('.card')||button.parentNode;var box=card&&card.querySelector('[data-power-confirm]');if(!box){box=document.createElement('div');box.className='warning';box.setAttribute('data-power-confirm','');card.appendChild(box)}var copy=powerActionCopy(action);box.hidden=false;box.innerHTML='';var strong=document.createElement('strong');strong.textContent=copy.title;var p=document.createElement('p');p.textContent=copy.detail;var final=document.createElement('a');final.className='danger buttonlike';final.href=runUrl(action,'router',{confirm:'1'});final.textContent='Confirm';final.setAttribute('data-final-confirm','1');var cancel=document.createElement('button');cancel.type='button';cancel.className='buttonlike';cancel.textContent='Cancel';cancel.onclick=function(){box.hidden=true};box.appendChild(strong);box.appendChild(p);box.appendChild(final);box.appendChild(document.createTextNode(' '));box.appendChild(cancel);fillActionStatus(copy.title,copy.detail+' Final confirmation will reopen the script.','',true)}
-function initDashboard(){try{paused=localStorage.zmiPaused==='1'}catch(e){paused=false}saveSmsFingerprint();tab(selectedTab());drawTimer();timer=setInterval(tick,1000);document.addEventListener('change',function(e){var select=e.target&&e.target.closest?e.target.closest('[data-cellular-mode-select]'):null;if(select)showCellularConfirm(select)});document.addEventListener('click',function(e){var cellularButton=e.target&&e.target.closest?e.target.closest('[data-cellular-action],[data-cellular-mode]'):null;if(cellularButton){e.preventDefault();showCellularConfirm(cellularButton);return}var powerButton=e.target&&e.target.closest?e.target.closest('[data-power-action]'):null;if(powerButton){e.preventDefault();showInlineConfirm(powerButton);return}var a=e.target&&e.target.closest?e.target.closest('a[href^="scriptable:///run"]'):null;if(!a)return;e.preventDefault();if(a.dataset.action==='delete'){var c=a.closest('.sms');confirmSmsDelete(c,{id:c.getAttribute('data-msg-id'),phone:c.getAttribute('data-msg-sender'),date:c.getAttribute('data-msg-date'),content:c.getAttribute('data-msg-text')});return}if(navigationInProgress)return;startProgress(a);var final=a.getAttribute('data-final-confirm')==='1';navigateTo(a.href,final?'Final confirmation. This action will reopen the script.':'This action will reopen the script.')})}
+function submitSmsInline(e){e.preventDefault();var f=e.target,to=f.elements.to.value.trim(),text=f.elements.text.value.trim(),b=f.querySelector('[type=submit]');if(!to||!text||text.length>1000)return;bridge('sendSms',{to:to,text:text},b).then(function(){f.elements.text.value='';safeStorageSet('zmiSmsDraft','');setActionStatus('SMS sent')}).catch(function(x){showActionError('SMS send failed',describeError(x),'')})}
+function submitUssdInline(e){e.preventDefault();var f=e.target,code=f.elements.code.value.trim(),b=f.querySelector('[type=submit]');if(code&&code.length<=128)bridge('ussd',{code:code},b).then(function(r){setActionStatus((r&&r.message)||'USSD complete')}).catch(function(x){showActionError('USSD failed',describeError(x),'')})}
+function cellularActionCopy(kind,label){return kind==='reconnect'?{title:'Reconnect cellular network?',detail:'Mobile internet will be temporarily unavailable.'}:{title:'Set cellular mode?',detail:'Change mode to '+label+'?'}}
+function powerActionCopy(action){return action==='reboot'?{title:'Restart router?',detail:'Wi-Fi will be temporarily unavailable.'}:action==='powerOff'?{title:'Power off router?',detail:'The physical power button is required to turn it on.'}:{title:'Reset total traffic?',detail:'Reset WAN traffic counters?'}}
+function makeConfirm(card,copy,action,params,attribute){var box=card.querySelector('['+attribute+']');if(!box){box=document.createElement('div');box.className='warning';box.setAttribute(attribute,'');card.appendChild(box)}box.hidden=false;box.innerHTML='';var p=document.createElement('p');p.textContent=copy.title+' '+copy.detail;var yes=document.createElement('button');yes.className='danger';yes.textContent='Confirm';yes.onclick=function(){params.confirmed=true;bridge(action,params,yes).then(function(r){setActionStatus((r&&r.message)||'Command submitted');if(action==='reboot'||action==='powerOff'){paused=true;safeStorageSet('zmiPaused','1');drawTimer()}}).catch(function(e){showActionError('Command failed',describeError(e),'')})};var no=document.createElement('button');no.textContent='Cancel';no.onclick=function(){box.hidden=true};box.appendChild(p);box.appendChild(yes);box.appendChild(no)}
+function showInlineConfirm(button){var action=button.getAttribute('data-power-action');makeConfirm(button.closest('.card'),powerActionCopy(action),action,{},'data-power-confirm')}
+function showCellularConfirm(el){var mode=el.getAttribute('data-cellular-mode-select')!==null?el.value:'',action=mode?'cellularMode':'cellularReconnect',copy=cellularActionCopy(mode?'mode':'reconnect',mode);makeConfirm(el.closest('.card'),copy,action,mode?{mode:mode}:{},'data-cellular-confirm')}
+function confirmSmsDelete(card,item){makeConfirm(card,{title:'Delete this SMS?',detail:String(item.content||'').slice(0,80)},'deleteSms',{id:String(item.id||'')},'data-delete-confirm')}
+function detectCapability(kind,button){bridge('detectCapability',{kind:kind},button).catch(function(e){showActionError('Detection failed',describeError(e),'')})}
+function initDashboard(){paused=safeStorageGet('zmiPaused')==='1';tab(selectedTab());var draft=safeStorageGet('zmiSmsDraft'),form=document.getElementById('smsComposer');if(form&&draft)form.elements.text.value=draft;if(form)form.elements.text.addEventListener('input',function(){safeStorageSet('zmiSmsDraft',this.value)});var sy=safeStorageGet('zmiScrollY');if(sy)setTimeout(function(){window.scrollTo(0,Number(sy)||0)},0);window.addEventListener('scroll',function(){safeStorageSet('zmiScrollY',String(window.scrollY||0))});timer=setInterval(tick,1000);drawTimer();document.addEventListener('change',function(e){if(e.target.matches&&e.target.matches('[data-cellular-mode-select]'))showCellularConfirm(e.target)});document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-delete-action],[data-power-action],[data-cellular-action],[data-device-action],[data-detect]');if(!b)return;if(b.hasAttribute('data-delete-action')){var c=b.closest('.sms');confirmSmsDelete(c,{id:c.getAttribute('data-msg-id'),content:c.getAttribute('data-msg-text')})}else if(b.hasAttribute('data-power-action'))showInlineConfirm(b);else if(b.hasAttribute('data-cellular-action'))showCellularConfirm(b);else if(b.hasAttribute('data-device-action'))bridge('deviceAccess',{deviceAction:b.getAttribute('data-device-action')},b);else detectCapability(b.getAttribute('data-detect'),b)})}
 document.addEventListener('DOMContentLoaded',initDashboard);
-async function copySms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body');var value=body?body.innerText:'';var old=button.textContent;if(!navigator.clipboard||!navigator.clipboard.writeText){button.textContent='Manual copy';showActionError('Copy SMS manually','Clipboard is unavailable in this WebView. Select the text below and copy it manually.',value);setTimeout(function(){button.textContent=old},1500);return}button.disabled=true;try{await navigator.clipboard.writeText(value);button.textContent='Copied';setActionStatus('SMS copied to the clipboard.')}catch(e){button.textContent='Error';showActionError('Could not copy SMS',describeError(e),value)}finally{setTimeout(function(){button.textContent=old;button.disabled=false},1500)}}
-async function translateSms(button){if(button.disabled)return;var card=button&&button.closest('.sms'),box=card&&card.querySelector('[data-translation] span'),text=card?card.getAttribute('data-msg-text')||'':'';if(!box)return;if(!model.translateEndpoint){box.textContent='Translation is not configured';return}var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text;if(!text){box.textContent='No text to translate';return}var cached=safeStorageGet(key);if(cached){box.textContent=cached;return}var old=button.textContent;button.disabled=true;button.textContent='…';try{var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})});var raw=await res.text();if(!res.ok)throw new Error('HTTP '+res.status+' '+res.statusText+'\\n'+raw);var data;try{data=JSON.parse(raw)}catch(jsonError){throw new Error('HTTP '+res.status+', JSON parse error: '+describeError(jsonError)+'\\nResponse: '+raw)}var tr=data.translatedText||data.translation||'';if(!tr)throw new Error('HTTP '+res.status+', empty translation response: '+raw);safeStorageSet(key,tr);box.textContent=tr}catch(e){box.textContent='Translation is unavailable — details are shown below.';showActionError('Could not prepare translation',describeError(e),text)}finally{button.textContent=old;button.disabled=false}}
+async function copySms(button){var card=button&&button.closest('.sms'),body=card&&card.querySelector('.body'),value=body?body.innerText:'';if(!navigator.clipboard||!navigator.clipboard.writeText){showActionError('Copy SMS manually','Clipboard is unavailable in this WebView.',value);return}button.disabled=true;try{await navigator.clipboard.writeText(value)}catch(e){showActionError('Could not copy SMS',describeError(e),value)}finally{button.disabled=false}}
+async function translateSms(button){var card=button&&button.closest('.sms'),box=card&&card.querySelector('[data-translation] span'),text=card?card.getAttribute('data-msg-text')||'':'';if(!box||!model.translateEndpoint)return;var key='zmiTr:'+card.getAttribute('data-msg-id')+':'+text,cached=safeStorageGet(key);if(cached){box.textContent=cached;return}button.disabled=true;try{var res=await fetch(model.translateEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'en',format:'text'})}),raw=await res.text(),data=JSON.parse(raw),tr=data.translatedText||data.translation||'';if(!res.ok||!tr)throw new Error('HTTP '+res.status+'\\nResponse: '+raw);safeStorageSet(key,tr);box.textContent=tr}catch(e){showActionError('Could not prepare translation',describeError(e),text)}finally{button.disabled=false}}
 `;
 }
 function css() { return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#172033;--text:#f8fafc;--muted:#a8b3c7;--line:#253044;--cyan:#67e8f9;--blue:#60a5fa;--purple:#a78bfa;--bad:#fb7185;--good:#34d399}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#101827 0%,var(--bg) 45%,#070b13 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:env(safe-area-inset-top) 10px 30px}main{max-width:720px;margin:auto}.hero{padding:12px 4px 6px}.hero.compact{display:block}.hero h1{font-size:26px;line-height:1;margin:0 0 4px}.hero strong{color:var(--cyan)}.statusline{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0;color:var(--muted);font-size:14px}.statusline span{border:1px solid var(--line);border-radius:999px;padding:5px 8px;background:#0d1424}.hero>small,.card small,.mini span{color:var(--cyan);font-weight:800;letter-spacing:.1em;font-size:10px;text-transform:uppercase}.card p,.mini small{color:var(--muted)}.topgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}.mini,.card,.notice,.warning{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.mini{min-height:86px;position:relative}.mini:after{display:none}.mini strong{display:block;font-size:21px;margin:8px 0 3px}.seg{display:flex;background:#080d18;border:1px solid var(--line);border-radius:14px;padding:4px;margin:8px 0}.seg button{flex:1}.seg button.active,.primary{background:#dff8ff;color:#03111d;border-color:transparent;font-weight:800}button,a,.buttonlike{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:8px 11px;background:#182235;color:var(--text);text-decoration:none;font:inherit}button:active,a:active{transform:scale(.98)}.danger{color:var(--bad)}.refresh{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:8px 0 10px;color:var(--muted);font-size:14px}.actions,.inline-toolbar{display:flex;gap:8px;flex-wrap:wrap}.inline-toolbar{margin:8px 0}.tab{display:none}.tab.active{display:block}.card{margin:8px 0}.card h2{font-size:24px;margin:6px 0}.composer input,.composer textarea,.selectline select{width:100%;margin:0 0 8px;padding:10px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);font:inherit}.formStatus{margin:8px 0 0;color:#fbbf24}.selectline{display:block;color:var(--muted);margin:8px 0}.selectline select{display:block;margin-top:6px;padding:10px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);font:inherit}.sms{padding:11px;margin:8px 0}.sms header{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;border-bottom:1px solid #253044aa;padding-bottom:7px}.sms h3{margin:0 0 2px;font-size:15px}.sms time,.sms footer{color:var(--muted);font-size:12px}.sms footer{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid #253044aa;padding-top:8px}.sms footer button,.sms footer a{padding:6px 9px;border-radius:10px}.sms .body{white-space:pre-wrap;word-break:break-word;font-size:17px;line-height:1.45;color:#f8fafc;margin:10px 0}.translation{color:var(--muted);font-size:14px}.translation span:empty{display:none}.cellular-diagnostics ol{padding-left:22px}.diag-stage{margin:7px 0}.diag-stage.ok{color:var(--good)}.diag-stage.pending{color:#fbbf24}.diag-stage.failed{color:var(--bad)}.diag-stage.unknown{color:var(--muted)}.diag-grid{border-top:1px solid var(--line);margin-top:10px}.active-apn{color:var(--cyan)}.quality{display:inline-block;padding:6px 10px;border-radius:999px;background:#34d39922;color:var(--good)}.codes{font-family:ui-monospace,Menlo,monospace}.bar{height:10px;background:#ffffff14;border-radius:999px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--purple),var(--blue),var(--cyan));border-radius:inherit}.progressbar{position:fixed;left:0;right:0;top:0;height:3px;z-index:1000;background:transparent;overflow:hidden}.progressbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--blue));box-shadow:0 0 16px var(--cyan)}.progressbar.active i{animation:progressStart 1.2s ease-in-out infinite}@keyframes progressStart{0%{width:0;transform:translateX(0)}55%{width:72%;transform:translateX(12%)}100%{width:40%;transform:translateX(160%)}}.notice{color:var(--good);margin:8px 0}.notice.warning{color:#fbbf24;border-color:#fbbf2466;background:linear-gradient(180deg,#3b2f14,#1f1a0f)}.notice.error{color:var(--bad);border-color:#fb718566;background:linear-gradient(180deg,#3b1720,#1f0f14)}.warning{color:#fbbf24}.signal-bars{display:inline-flex;gap:3px;align-items:flex-end;height:22px;vertical-align:middle}.signal-bars i{display:block;width:5px;border-radius:3px;background:#ffffff30}.signal-bars i:nth-child(1){height:6px}.signal-bars i:nth-child(2){height:9px}.signal-bars i:nth-child(3){height:12px}.signal-bars i:nth-child(4){height:16px}.signal-bars i:nth-child(5){height:20px}.signal-bars i.on{background:var(--cyan)}.action-status{margin:8px 0;border:1px solid #fbbf2466;border-radius:18px;background:linear-gradient(180deg,#3b2f14,#1f1a0f);box-shadow:0 8px 22px #0004;padding:12px;overflow:hidden}.action-status header{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px}.action-status p{white-space:pre-wrap;color:#fde68a;margin:8px 0}.action-status textarea,.action-status pre{width:100%;max-width:100%;min-height:96px;margin:8px 0 0;padding:10px;border-radius:12px;border:1px solid #fbbf2466;background:#0b1220;color:#f8fafc;font:13px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;overflow:auto;user-select:text;-webkit-user-select:text}.action-status textarea[hidden],.action-status pre[hidden]{display:none}.empty{text-align:center}@media(max-width:520px){.topgrid{grid-template-columns:1fr}.refresh{align-items:flex-start}.actions{justify-content:flex-end}}`; }
-function runUrl(action, tab, parameters = {}) {
-  const query = Object.assign({ action, tab: tab || "sms" }, parameters);
-  return "scriptable:///run?scriptName=" + encodeURIComponent(Script.name()) +
-    "&" + Object.keys(query).map(key =>
-      `${encodeURIComponent(key)}=${encodeURIComponent(query[key] == null ? "" : query[key])}`
-    ).join("&");
-}
 async function showMessage(title, message, icon) { const web = new WebView(); await web.loadHTML(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css()}</style></head><body><main><article class="card empty"><h1>${icon} ${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></article></main></body></html>`); await web.present(); }
 
 // Generic XML and text helpers
