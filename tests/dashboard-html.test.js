@@ -146,6 +146,23 @@ test('firmware RAT fixtures distinguish LTE, 3G, unknown codes and conflicts',()
   assert.equal(conflict.mode,'Conflicting network data'); assert.equal(conflict.networkConflict,true);
 });
 
+test('MF855 NZ 2.5.94 confirmed connected 17/17 fixture is LTE',()=>{
+  const profile=require('../modules/compatibility-profiles.js').selectProfile('2.5.94_release_MF855_NZ_CP_2.129.003');
+  const xml='<RGW><status><version_num>2.5.94_release_MF855_NZ_CP_2.129.003</version_num><wan><cellular><connect_disconnect>1</connect_disconnect><sys_mode>17</sys_mode><sys_submode>17</sys_submode><network_type>106512140</network_type></cellular></wan></status></RGW>';
+  const result=app.parseNetwork(xml,profile);
+  assert.equal(result.mode,'4G · LTE');
+  assert.equal(result.generation,'4G');
+  assert.equal(result.networkSource,'firmware combination rule');
+  assert.match(result.rawMode,/sys_mode=17, sys_submode=17/);
+});
+
+test('17/17 without connected-WAN evidence is unknown rather than guessed 3G',()=>{
+  const profile=require('../modules/compatibility-profiles.js').selectProfile('2.5.94_release_MF855_NZ_CP_2.129.003');
+  const result=app.parseNetwork('<RGW><wan><cellular><sys_mode>17</sys_mode><sys_submode>17</sys_submode></cellular></wan></RGW>',profile);
+  assert.match(result.mode,/Unknown/);
+  assert.equal(result.generation,'Unknown');
+});
+
 test('firmware mismatch stays out of UI while a real status request error remains visible',()=>{
   const fixture=model('router'); fixture.errors.profile='Firmware profile mismatch'; fixture.firmwareWarning={id:'firmware-x',configured:'x',detected:'y'};
   let html=app.buildHtml(fixture); assert.doesNotMatch(html,/Firmware profile mismatch|data-warning-id|data-warning-dismiss/);
@@ -177,6 +194,11 @@ test('debug redaction removes secrets and retains useful structural fields',()=>
   const log=calls.join('\n');
   for(const secret of ['zimifi','github-secret','deadbeef','sid=secret','+12345678901','private SMS','*100#'])assert.doesNotMatch(log,new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
   for(const safe of ['request:12:response','operation=status1','method=GET','attempt=1','status=200','durationMs=184','bytes=2371','WanStatistics','batteryinfo','cellularFields'])assert.match(log,new RegExp(safe));
+});
+
+test('XML debug redacts device, subscriber, Wi-Fi, address and APN identifiers',()=>{
+  const value=app.redactDebugValue('<current_device_mac>aa:bb:cc:dd:ee:ff</current_device_mac><IMEI>123456789012345</IMEI><ICCID>8901000000000000000</ICCID><IMSI>250000000000000</IMSI><ssid>Private WiFi</ssid><wifi_key>secret-key</wifi_key><ip_address>10.0.0.2</ip_address><apn>private.apn</apn>');
+  for(const secret of ['aa:bb:cc:dd:ee:ff','123456789012345','8901000000000000000','250000000000000','Private WiFi','secret-key','10.0.0.2','private.apn'])assert.doesNotMatch(value,new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
 });
 
 test('large debug XML is emitted in bounded numbered chunks with truncation',()=>{

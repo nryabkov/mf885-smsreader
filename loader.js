@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = {
   showExperimentalControls: true,
   locale: "en",
   compatibilityProfile: "2.5.96",
+  compatibilityProfileOverride: "",
   xmlRequestPath: "/xml_action.cgi",
   telnetPortCheckTimeoutMs: 1000,
   telnetPortCheckRetries: 2
