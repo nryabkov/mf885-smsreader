@@ -54,6 +54,44 @@ test('dashboardFlow dismisses an empty rendered document and shows document diag
   assert.match(fixture.alerts[0].message,/"mainText": ""/);
   assert.match(fixture.alerts[0].message,/"zmiReady": ""/);
 });
+test('dashboardFlow uses the native Scriptable Timer when no sleep override is provided',async()=>{
+  const originalTimer=global.Timer;
+  const originalSetTimeout=global.setTimeout;
+  const scheduled=[];
+  let closePresentation;
+  const closed=new Promise(resolve=>{closePresentation=resolve});
+  global.Timer={schedule:(milliseconds,repeats,callback)=>{
+    scheduled.push({milliseconds,repeats});
+    if(scheduled.length===2)closePresentation();
+    queueMicrotask(callback);
+  }};
+  global.setTimeout=()=>{throw new Error('native dashboard sleep must not use setTimeout')};
+  const web={
+    loadHTML:async()=>{},present:()=>closed,
+    evaluateJavaScript:async script=>script.includes("document.querySelector('main')")
+      ? {readyState:'complete',hasMain:true,mainText:'Dashboard',body:{scrollWidth:390,scrollHeight:844,width:390,height:844},zmiReady:'true'}
+      : script.includes('window.__zmiCommandQueue=[]') ? true : null
+  };
+  try {
+    await app.dashboardFlow({},'', 'sms',{
+      loadModel:async()=>model(),buildHtml:app.buildHtml,WebView:()=>web,
+      showMessage:async()=>{},loadRemainingSms:async(_auth,sms)=>sms,
+      createDispatcher:()=>async()=>{}
+    });
+  } finally {
+    global.Timer=originalTimer;
+    global.setTimeout=originalSetTimeout;
+  }
+  assert.deepEqual(scheduled,[{milliseconds:0,repeats:false},{milliseconds:150,repeats:false}]);
+});
+test('native dashboard sleep paths do not contain setTimeout Promise wrappers',()=>{
+  const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');
+  const dashboard=source.match(/async function dashboardFlow[\s\S]*?\n}/);
+  const nextCommand=source.match(/async function nextWebViewCommand[\s\S]*?\n}/);
+  assert.ok(dashboard);
+  assert.ok(nextCommand);
+  for(const nativeFunction of [dashboard[0],nextCommand[0]])assert.doesNotMatch(nativeFunction,/new Promise\s*\(\s*resolve\s*=>\s*setTimeout/);
+});
 test('client applies complete and partial SMS history without document reload',()=>{const js=app.clientScript(model());assert.match(js,/window\.zmiApplySmsHistory=function/);assert.match(js,/payload\.warning/);assert.match(js,/Message history is incomplete|⚠️/);assert.doesNotMatch(js,/location\.(?:href|assign|replace)|location\s*=/);});
 test('document has no Scriptable relaunch links',()=>{const text=app.buildHtml(model())+app.clientScript(model());assert.doesNotMatch(text,/scriptable:\/\/\/run|This action will reopen|runUrl|navigationInProgress/);});
 test('client exposes targeted status, capability and action updates',()=>{const js=app.clientScript(model());for(const name of ['zmiApplyStatus','zmiApplySmsHistory','zmiApplyCapability','zmiApplyActionResult'])assert.match(js,new RegExp('window\\.'+name));assert.match(js,/CustomEvent\('ZMICommand'/);});
