@@ -44,15 +44,33 @@ test('dashboardFlow presents and checks the rendered document before registering
   assert.deepEqual(fixture.alerts,[]);
 });
 
-test('dashboardFlow dismisses an empty rendered document and shows document diagnostics',async()=>{
+test('dashboardFlow dismisses an empty rendered document and logs safe document diagnostics',async()=>{
   const state={readyState:'complete',hasMain:true,mainText:'',body:{scrollWidth:390,scrollHeight:0,width:390,height:0},zmiReady:''};
   const fixture=dashboardLifecycle(state);
-  await fixture.flow;
+  const warnings=[];
+  const originalWarn=console.warn;
+  console.warn=message=>warnings.push(String(message));
+  try { await fixture.flow; } finally { console.warn=originalWarn; }
   assert.deepEqual(fixture.calls,['loadHTML','present','documentCheck','dismiss']);
-  assert.equal(fixture.alerts.length,1);
-  assert.match(fixture.alerts[0].message,/WebView document check failed/);
-  assert.match(fixture.alerts[0].message,/"mainText": ""/);
-  assert.match(fixture.alerts[0].message,/"zmiReady": ""/);
+  assert.deepEqual(fixture.alerts,[]);
+  assert.equal(warnings.length,1);
+  assert.match(warnings[0],/WebView document check failed/);
+  assert.match(warnings[0],/"readyState":"complete"/);
+  assert.match(warnings[0],/"zmiReady":""/);
+  assert.doesNotMatch(warnings[0],/mainText/);
+});
+test('dashboardFlow never exposes SMS or OTP text from document diagnostics',async()=>{
+  const secret='Your OTP is 928441';
+  const state={readyState:'complete',hasMain:true,mainText:secret,body:{scrollWidth:390,scrollHeight:0,width:390,height:0},zmiReady:''};
+  const fixture=dashboardLifecycle(state);
+  const warnings=[];
+  const originalWarn=console.warn;
+  console.warn=message=>warnings.push(String(message));
+  try { await fixture.flow; } finally { console.warn=originalWarn; }
+  assert.deepEqual(fixture.alerts,[]);
+  assert.equal(warnings.length,1);
+  assert.doesNotMatch(warnings[0],/mainText|928441|Your OTP/);
+  assert.doesNotMatch(JSON.stringify(fixture.alerts),/928441|Your OTP/);
 });
 test('dashboardFlow uses the native Scriptable Timer when no sleep override is provided',async()=>{
   const originalTimer=global.Timer;
