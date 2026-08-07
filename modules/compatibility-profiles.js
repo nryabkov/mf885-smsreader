@@ -4,6 +4,7 @@ const PROFILES = Object.freeze({
     id: "zmi-mf855-mf885-2.5.96",
     firmware: "2.5.96",
     confirmed: true,
+    xmlRequestPath: "/cgi/xml_action.cgi",
     diagnosticEndpoints: Object.freeze(["status1", "wan", "Engineer_parameter"]),
     wan: Object.freeze({
       // These read mappings were captured from 2.5.96. No write operation is

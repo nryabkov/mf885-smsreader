@@ -73,9 +73,15 @@ The repository keeps the updater, manifest, application, and feature modules sid
      "repositoryName": "mf885-smsreader",
      "branch": "main",
      "routerAddress": "192.168.21.1",
-     "storage": "local"
+     "storage": "local",
+     "xmlRequestPath": "/cgi/xml_action.cgi"
    }
    ```
+
+   The confirmed `2.5.96` compatibility profile uses `/cgi/xml_action.cgi` by
+   default. For firmware that exposes the same API physically at the shorter
+   endpoint, set `xmlRequestPath` to `/xml_action.cgi`; Digest authentication
+   continues to use the firmware URI `/cgi/xml_action.cgi`.
 
    If you change the configuration later, run the loader again to apply it. On each run, the loader asks GitHub's commits API for the configured branch HEAD, validates the full 40-character SHA, then fetches the manifest, loader, and every application file from raw GitHub URLs containing that exact SHA. A branch move between requests therefore cannot mix commits.
 4. The router password is stored in Keychain as `mf885_router_password_<router address>`. An optional GitHub token may be stored as `mf885_github_token`; it is useful when unauthenticated API rate limits are too low. Neither secret is written to configuration or logs. Use a temporary Scriptable script to set or replace these Keychain values.
