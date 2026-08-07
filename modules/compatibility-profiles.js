@@ -9,7 +9,18 @@ const PROFILES = Object.freeze({
     // Only the existence of these read endpoints/fields has been observed on
     // this build.  Enum meanings (including SIM_status=0) remain intentionally
     // absent until they are independently confirmed.
-    wan: Object.freeze({ mappings: Object.freeze({}), modes: Object.freeze([]), operations: Object.freeze({}) }),
+    wan: Object.freeze({
+      mappings: Object.freeze({
+        ConnType: Object.freeze({ LTE: "4G · LTE", WCDMA: "3G · WCDMA", GSM: "2G · GSM" }),
+        proto: Object.freeze({ LTE: "4G · LTE", WCDMA: "3G · WCDMA", GSM: "2G · GSM" })
+      }),
+      // This is a combination observed together with a connected WAN and the
+      // stock UI showing 4G. Neither numeric value is a portable enum.
+      currentRatRules: Object.freeze([
+        Object.freeze({ fields: Object.freeze({ sys_mode: "17", sys_submode: "17" }), connected: true, label: "4G · LTE", source: "firmware combination rule" })
+      ]),
+      modes: Object.freeze([]), operations: Object.freeze({})
+    }),
     destructive: Object.freeze({})
   }),
   "2.5.96": Object.freeze({

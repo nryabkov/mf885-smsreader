@@ -179,3 +179,15 @@ For an incompatible `status1` response, look for `status1:xml-summary` (especial
 The Router tab is ordered as **Overview**, **Mobile network**, **Connection diagnostics**, **Cellular controls**, **USSD**, **Device access**, and **System**. The overview is intentionally compact; polling updates it and the detailed network fields from the same snapshot. Diagnostics load after first paint, show endpoint-specific failures, and retain the last successful values as stale when a later poll fails.
 
 Current RAT and preferred/configured mode are separate. Numeric RAT values are decoded only by a mapping confirmed for the active firmware profile; unknown values display their safe raw field/code and conflicting fields are reported without guessing. Debug logging records firmware-profile mismatches and safe RAT sources/codes. Logs redact IMEI/ICCID, telephone numbers, credentials, cookies, tokens, Digest material, SMS, and USSD payloads. For troubleshooting, enable debug logging, reproduce while the stock router network screen is visible, and share only anonymized XML summaries—never raw authentication or subscriber identifiers.
+
+Firmware selection is automatic from `version_num`. The legacy `compatibilityProfile`
+default is retained only for configuration migration and does not pin the dashboard to
+that firmware. To deliberately pin a profile, set `compatibilityProfileOverride` to
+the exact firmware identifier; leave it empty for normal automatic selection.
+
+Every command button exposes an accessible lifecycle: immediate action-specific
+pending text and spinner, `aria-busy`, disabled duplicate-submit protection, and a
+short success/error result before its original label returns. Restart, power-off,
+and reconnect report **Submitted** while the dashboard waits for router read-back
+instead of claiming an unverified success. Tabs, Pause, compose panels, and
+confirmation panels also publish their selected, pressed, or expanded ARIA state.
