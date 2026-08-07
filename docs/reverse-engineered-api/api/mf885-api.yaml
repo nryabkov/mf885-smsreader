@@ -1,0 +1,436 @@
+# Unofficial reverse-engineered API specification for ZMI MF855/MF885-family routers.
+#
+# This file is intentionally conservative. A schema found in firmware does not imply
+# that a callable backend exists. Add write mappings only after confirming the exact
+# request and a safe read-back verification strategy on a named firmware build.
+
+spec_version: 1
+name: ZMI MF855/MF885 local XML API
+status: reverse-engineered
+base_url_default: http://192.168.21.1
+xml_api_path: /cgi/xml_action.cgi
+
+confidence_levels:
+  - live-tested
+  - firmware-confirmed
+  - frontend-confirmed
+  - schema-only
+  - speculative
+
+provenance_values:
+  - live-device
+  - project-client
+  - web-ui-js
+  - xml-schema
+  - native-handler
+  - binary-strings
+
+transport:
+  model_read:
+    method: GET
+    path: /cgi/xml_action.cgi
+    query:
+      method: get
+      module: duster
+      file: "<model>"
+  model_write:
+    method: POST
+    path: /cgi/xml_action.cgi
+    query:
+      method: set
+      module: duster
+      file: "<model>"
+    content_type: application/xml
+  model_command_read:
+    method: GET
+    path: /cgi/xml_action.cgi
+    query:
+      method: get
+      file: "<model>"
+      command: "<command>"
+  action:
+    method: GET
+    path: /cgi/xml_action.cgi
+    query:
+      Action: "<action>"
+
+authentication:
+  type: http-digest-with-vendor-login-handshake
+  challenge_path: /login.cgi
+  algorithm: MD5
+  qop_default: auth
+  notes:
+    - Login query response uses HA2 for GET:/cgi/protected.cgi.
+    - Authorization header uses uri=/cgi/xml_action.cgi and HA2 for that path.
+    - Login consumes nonce count 00000001; the next XML request starts at 00000002.
+    - Plain HTTP means request/response bodies are not encrypted.
+  documentation: ../AUTHENTICATION.md
+
+firmware_profiles:
+  "2.5.96":
+    id: zmi-mf855-mf885-2.5.96
+    confidence: firmware-confirmed
+    provenance:
+      - xml-schema
+      - web-ui-js
+      - native-handler
+      - project-client
+    diagnostic_models:
+      - status1
+      - wan
+      - Engineer_parameter
+    policy:
+      # The application deliberately does not infer writes from field names.
+      unknown_writes_are_read_only: true
+      verify_normal_writes_by_readback: true
+
+models:
+  status1:
+    description: Large primary status snapshot covering system, battery, WAN, traffic and identifiers.
+    access: read
+    risk: sensitive
+    confidence: firmware-confirmed
+    provenance: [xml-schema, web-ui-js, project-client]
+    transport: model_read
+    known_fields:
+      - RGW/sysinfo/hardware_version
+      - RGW/sysinfo/device_name
+      - RGW/sysinfo/version_num
+      - RGW/sysinfo/version_date
+      - RGW/sysinfo/model_name
+      - RGW/batteryinfo/Battery_percent
+      - RGW/batteryinfo/Battery_status
+      - RGW/batteryinfo/Charger_status
+      - RGW/wan/NW_register_status
+      - RGW/wan/ip
+      - RGW/wan/ConnType
+      - RGW/wan/proto
+    notes:
+      - Values may be empty, NA, stale during transitions, or firmware-specific numeric enums.
+      - Responses can contain identifiers or configuration material; redact before sharing.
+
+  wan:
+    description: Cellular WAN state and firmware-specific configuration fields.
+    access: read-write-when-profile-confirmed
+    risk: medium
+    confidence: firmware-confirmed
+    provenance: [xml-schema, project-client]
+    transport: model_read
+    known_leaf_names:
+      - connect_disconnect
+      - connect_mode
+      - NW_mode
+      - prefer_mode
+      - prefer_lte_type
+      - pdp_enable
+      - connect_action
+      - disconnect_action
+      - pdp_action
+      - manual_network
+      - network_select
+      - apn
+      - pdp_type
+      - username
+      - auth_type
+    known_2_5_96_enum_mappings:
+      sim:
+        "0": Initializing
+        "1": Ready
+      registration:
+        "0": Not registered
+        "1": Registered (home)
+        "2": Searching
+        "5": Registered (roaming)
+      roaming:
+        "0": Home network
+        "1": Roaming
+      pdp_state:
+        "0": Disconnected
+        "1": Connected
+        "2": Connecting
+      pdp_type:
+        "0": IPv4
+        "1": IPv6
+        "2": IPv4/IPv6
+        IP: IPv4
+        IPV6: IPv6
+        IPV4V6: IPv4/IPv6
+    notes:
+      - Do not reuse these enum mappings for another firmware without evidence.
+      - No cellular WAN write operation is advertised by the current 2.5.96 compatibility profile unless explicitly confirmed.
+      - "Live observation on MF885: toggling Auto APN off then on recovered a PDP session stuck in connecting; root cause unknown."
+
+  Engineer_parameter:
+    description: GSM/UMTS/LTE engineering telemetry.
+    access: read
+    risk: low-to-sensitive
+    confidence: firmware-confirmed
+    provenance: [xml-schema, web-ui-js, project-client]
+    transport: model_read
+    known_fields:
+      - RGW/Engi/Dev/vendor
+      - RGW/Engi/Dev/model
+      - RGW/Engi/Dev/fw_ver
+      - RGW/Engi/GSM/rxSigLevel
+      - RGW/Engi/GSM/mcc
+      - RGW/Engi/GSM/mnc
+      - RGW/Engi/GSM/lac
+      - RGW/Engi/GSM/ci
+      - RGW/Engi/GSM/arfcn
+    notes:
+      - Analysed 2.5.96 schema exposes more than 100 leaf fields.
+      - LTE fields are used to surface band, EARFCN, PCI, cell ID, TAC, RSRP, RSRQ, SINR/CQI where present.
+
+  message:
+    description: SMS list, read-state, delete, send, storage/settings and capacity operations.
+    access: read-write-command
+    risk: sensitive
+    confidence: live-tested
+    provenance: [live-device, project-client, web-ui-js, xml-schema]
+    transport: model_write
+    command_selector_fields:
+      - RGW/message/flag/message_flag
+      - RGW/message/flag/sms_cmd
+    known_commands:
+      GET_RCV_SMS_LOCAL:
+        purpose: Read an inbox page.
+        request_fields:
+          - RGW/message/get_message/page_number
+      SEND_SMS:
+        purpose: Send an SMS.
+        request_fields:
+          - RGW/message/send_save_message/contacts
+          - RGW/message/send_save_message/content
+          - RGW/message/send_save_message/encode_type
+          - RGW/message/send_save_message/sms_time
+    encoding:
+      sms_content: UTF-16BE hexadecimal on the analysed UI/API path
+    notes:
+      - Some firmware uses total_number as a page count rather than a message count.
+      - Guard against repeated or empty pages and deduplicate messages.
+
+  statistics:
+    description: Traffic/statistics command model; reset details vary by firmware.
+    access: read-write-command
+    risk: destructive-when-resetting
+    confidence: live-tested
+    provenance: [live-device, project-client, web-ui-js, xml-schema]
+    transport: model_read
+    notes:
+      - Multiple statistics-reset variants exist across firmware; verify by reading counters after a reset request.
+
+  WanStatistics:
+    description: WAN byte counters commonly embedded in status/statistics responses.
+    access: read
+    risk: low
+    confidence: live-tested
+    provenance: [live-device, project-client, xml-schema]
+    fields:
+      tx_byte_all:
+        type: unsigned-integer
+        unit: bytes
+        meaning: total mobile-WAN upload bytes
+      rx_byte_all:
+        type: unsigned-integer
+        unit: bytes
+        meaning: total mobile-WAN download bytes
+    notes:
+      - Do not add LAN/WLAN, per-device, session or billing-period counters to these totals.
+
+  admin:
+    description: Router management and administrator settings.
+    access: read-write
+    risk: critical-secrets
+    confidence: firmware-confirmed
+    provenance: [xml-schema, web-ui-js]
+    transport: model_read
+    known_fields:
+      - RGW/management/router_user_list
+      - RGW/management/router_username
+      - RGW/management/router_password
+      - RGW/management/httpd_port
+      - RGW/management/web_wlan_enable
+      - RGW/management/web_wan_enable
+      - RGW/management/session_timeout
+    notes:
+      - Never log or publish an unredacted response.
+
+  config_save:
+    description: Configuration-export data model.
+    access: read-export
+    risk: critical-secrets
+    confidence: firmware-confirmed
+    provenance: [xml-schema, web-ui-js]
+    transport: model_read
+    may_contain:
+      - administrator credentials
+      - Wi-Fi keys
+      - APN credentials
+      - DDNS credentials
+      - LAN/DHCP settings
+      - firewall/NAT/routes
+      - device lists
+      - Telnet-related persistent state
+    notes:
+      - Treat all configuration backups as secrets.
+
+  reset:
+    description: Restart/reboot command path.
+    access: write-command
+    risk: destructive
+    confidence: firmware-confirmed
+    provenance: [native-handler, project-client]
+    transport: model_write
+    known_tree: RGW/reboot
+    notes:
+      - Connection loss before an HTTP reply can be expected; do not blindly retry.
+
+  poweroff:
+    description: Power-off command path used by the confirmed 2.5.96 compatibility profile.
+    access: write-command
+    risk: destructive
+    confidence: firmware-confirmed
+    provenance: [project-client]
+    transport: model_write
+    known_tree: RGW/shutdown
+    notes:
+      - Other guessed variants such as trueshutdown are intentionally not documented as supported.
+
+  upgrade_firmware:
+    description: Firmware update/backup state model.
+    access: read
+    risk: high
+    confidence: firmware-confirmed
+    provenance: [xml-schema, web-ui-js, native-handler]
+    transport: model_read
+    known_fields:
+      - backup_status
+      - backup_progress
+      - backup_fail_cause
+
+  debugmodeon:
+    description: Hidden engineering/debug mode contract.
+    access: command-like
+    risk: security-sensitive
+    confidence: firmware-confirmed
+    provenance: [xml-schema, native-handler, binary-strings]
+    transport: model_write
+    xml_contract: RGW/debugon/openmode
+    native_effect:
+      analysed_firmware: "2.5.96"
+      internal_mode: 8
+      exact_external_interfaces: unknown
+    notes:
+      - Static evidence ties the path to modem/AT/USB handling.
+      - Exact USB descriptor/interface changes require live before/after enumeration.
+
+  control_telnet:
+    description: Telnet-enable configuration contract; listening service is not proven for 2.5.96.
+    access: write-only-when-profile-confirmed
+    risk: security-sensitive
+    confidence: schema-only
+    provenance: [xml-schema, project-client]
+    transport: model_write
+    xml_contract: RGW/control_telnet/enable_telnet
+    notes:
+      - Static analysis did not identify a clear telnetd, BusyBox, Dropbear or /bin/sh implementation.
+      - A client should require confirmed enable/disable values plus API read-back and port verification.
+
+  diagnostic:
+    description: Diagnostic XML contract found in firmware, but no active native handler was identified in 2.5.96.
+    access: none-confirmed
+    risk: unknown
+    confidence: schema-only
+    provenance: [xml-schema, native-handler]
+    xml_contract:
+      - diagnostic/command
+      - diagnostic/arg
+      - diagnostic/output
+    notes:
+      - Model-registration handler slots were observed as zero in the analysed 2.5.96 build.
+      - Do not describe this model as arbitrary command execution.
+
+actions:
+  GetInfo:
+    method: GET
+    path: /cgi/xml_action.cgi
+    query:
+      Action: GetInfo
+      Id: "<id>"
+    access: read
+    risk: low-to-sensitive
+    confidence: firmware-confirmed
+    provenance: [web-ui-js, native-handler]
+    notes:
+      - Some IDs/routes appear in the pre-session allowlist; downstream checks can still apply.
+
+  BackupFwStart:
+    method: GET
+    path: /cgi/xml_action.cgi
+    query:
+      Action: BackupFwStart
+    access: command
+    risk: high-load
+    confidence: firmware-confirmed
+    provenance: [web-ui-js, native-handler]
+    purpose: Start firmware-backup preparation.
+
+  BackupFw:
+    method: GET
+    path: /cgi/xml_action.cgi
+    query:
+      Action: BackupFw
+    access: sensitive-download
+    risk: critical
+    confidence: firmware-confirmed
+    provenance: [web-ui-js, native-handler]
+    purpose: Download the prepared firmware backup.
+    notes:
+      - This action string appears in a pre-session allowlist in analysed 2.5.96 firmware.
+      - The allowlist bypasses the generic session gate only; it does not prove unconditional unauthenticated success.
+
+  UploadFirmware:
+    method: POST
+    path: /cgi/xml_action.cgi
+    multipart: true
+    query:
+      Action: Upload
+      file: upgrade
+      command: ""
+    access: destructive-upload
+    risk: critical
+    confidence: frontend-confirmed
+    provenance: [web-ui-js]
+
+  RestoreConfig:
+    method: POST
+    path: /cgi/xml_action.cgi
+    multipart: true
+    query:
+      Action: Upload
+      file: backfile
+      config_backup: ""
+    access: destructive-upload
+    risk: critical
+    confidence: frontend-confirmed
+    provenance: [web-ui-js]
+
+pre_session_allowlist_observed_2_5_96:
+  # These entries were observed before the normal session gate in static analysis.
+  # They are not equivalent to "guaranteed unauthenticated endpoint".
+  - Action=GetInfo
+  - file=locale
+  - file=debugmodeon
+  - file=sdenable
+  - file=alert0
+  - file=alert2
+  - file=alert3
+  - Action=BackupFw
+
+client_rules:
+  - Re-authenticate on 401 instead of blindly replaying state-changing requests.
+  - For normal writes, POST then GET and verify the actual state.
+  - Do not automatically retry restart/shutdown after connection loss.
+  - Keep unknown firmware enum values raw.
+  - Never probe unknown destructive write values.
+  - Redact credentials, Digest material and device identifiers from diagnostics.
