@@ -11,13 +11,15 @@ test('dashboard has a readiness marker and native Alert fallback for WebView fai
 
 function dashboardLifecycle(documentState) {
   const calls=[];
+  const documentStates=Array.isArray(documentState)?documentState:[documentState];
+  let documentCheck=0;
   let closePresentation;
   const closed=new Promise(resolve=>{closePresentation=resolve});
   const web={
     loadHTML:async()=>{calls.push('loadHTML')},
     present:()=>{calls.push('present');return closed},
     evaluateJavaScript:async script=>{
-      if(script.includes("document.querySelector('main')")){calls.push('documentCheck');return documentState}
+      if(script.includes("document.querySelector('main')")){calls.push('documentCheck');return documentStates[Math.min(documentCheck++,documentStates.length-1)]}
       if(script.includes('window.__zmiCommandQueue=[]')){calls.push('registerChannel');return true}
       if(script.includes('window.__zmiCommandQueue &&'))return null;
       calls.push('webUpdate');
@@ -44,6 +46,32 @@ test('dashboardFlow presents and checks the rendered document before registering
   assert.deepEqual(fixture.alerts,[]);
 });
 
+test('client marks an already complete document ready without registering DOMContentLoaded',()=>{
+  const listeners=[];
+  const document={readyState:'complete',documentElement:{dataset:{}},addEventListener:(...args)=>listeners.push(args)};
+  let initializations=0;
+  const context={document,initDashboard:()=>{initializations++}};
+  const readiness=app.clientScript(model()).match(/var dashboardReady=false;[\s\S]*?(?=async function copySms)/);
+  assert.ok(readiness);
+  require('node:vm').runInNewContext(readiness[0],context);
+  assert.equal(document.documentElement.dataset.zmiReady,'true');
+  assert.equal(listeners.some(([name])=>name==='DOMContentLoaded'),false);
+  assert.equal(initializations,1);
+  context.markDashboardReady();
+  assert.equal(initializations,1,'a repeated readiness call must not initialize another timer or event handlers');
+});
+
+test('dashboardFlow retries document inspection until the client readiness marker appears',async()=>{
+  const pending={readyState:'complete',hasMain:true,mainText:'Dashboard',body:{scrollWidth:390,scrollHeight:844,width:390,height:844},zmiReady:''};
+  const ready={...pending,zmiReady:'true'};
+  const fixture=dashboardLifecycle([pending,pending,ready]);
+  while(!fixture.calls.includes('registerChannel'))await new Promise(resolve=>setImmediate(resolve));
+  fixture.closePresentation();
+  await fixture.flow;
+  assert.deepEqual(fixture.calls.slice(0,6),['loadHTML','present','documentCheck','documentCheck','documentCheck','registerChannel']);
+  assert.deepEqual(fixture.alerts,[]);
+});
+
 test('dashboardFlow dismisses an empty rendered document and logs safe document diagnostics',async()=>{
   const state={readyState:'complete',hasMain:true,mainText:'',body:{scrollWidth:390,scrollHeight:0,width:390,height:0},zmiReady:''};
   const fixture=dashboardLifecycle(state);
@@ -51,7 +79,7 @@ test('dashboardFlow dismisses an empty rendered document and logs safe document 
   const originalWarn=console.warn;
   console.warn=message=>warnings.push(String(message));
   try { await fixture.flow; } finally { console.warn=originalWarn; }
-  assert.deepEqual(fixture.calls,['loadHTML','present','documentCheck','dismiss']);
+  assert.deepEqual(fixture.calls,['loadHTML','present','documentCheck','documentCheck','documentCheck','documentCheck','dismiss']);
   assert.deepEqual(fixture.alerts,[]);
   assert.equal(warnings.length,1);
   assert.match(warnings[0],/WebView document check failed/);
