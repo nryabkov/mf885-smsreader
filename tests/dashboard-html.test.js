@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const vm = require('node:vm');
 global.Script = { name: () => 'MF885 Test' };
 const app = require('../scriptable.js');
 
@@ -43,18 +44,47 @@ test('dashboardFlow registers command polling after presenting without inspectin
   assert.deepEqual(fixture.alerts,[]);
 });
 
-test('client initializes an already complete document without registering DOMContentLoaded',()=>{
+function clientDom(readyState) {
   const listeners=[];
-  const document={readyState:'complete',documentElement:{dataset:{}},addEventListener:(...args)=>listeners.push(args)};
-  let initializations=0;
-  const context={document,initDashboard:()=>{initializations++}};
-  const readiness=app.clientScript(model()).match(/var dashboardReady=false;[\s\S]*?(?=async function copySms)/);
-  assert.ok(readiness);
-  require('node:vm').runInNewContext(readiness[0],context);
-  assert.equal(listeners.some(([name])=>name==='DOMContentLoaded'),false);
-  assert.equal(initializations,1);
-  context.markDashboardReady();
-  assert.equal(initializations,1,'a repeated readiness call must not initialize another timer or event handlers');
+  const stored=new Map();
+  const element=(id,active)=>({id,hidden:!active,attributes:{},classList:{active, toggle(name,on){if(name==='active')this.active=on}},getAttribute(name){return this.attributes[name]},setAttribute(name,value){this.attributes[name]=value}});
+  const sms=element('sms',true),router=element('router',false),smsButton=element('',true),routerButton=element('',false);
+  smsButton.attributes['data-tab-button']='sms'; routerButton.attributes['data-tab-button']='router';
+  const tabs=[sms,router],buttons=[smsButton,routerButton];
+  const document={readyState,documentElement:{dataset:{}},addEventListener:(...args)=>listeners.push(args),getElementById:()=>null,querySelector(selector){if(selector==='.tab.active')return tabs.find(x=>x.classList.active)||null;return null},querySelectorAll(selector){return selector==='.tab'?tabs:selector==='[data-tab-button]'?buttons:[]}};
+  const window={scrollY:0,scrollTo(){},addEventListener(){},dispatchEvent(){}};
+  const context={document,window,localStorage:{getItem:key=>stored.has(key)?stored.get(key):null,setItem:(key,value)=>stored.set(key,String(value))},setTimeout:callback=>callback(),setInterval:()=>1,clearInterval(){},CustomEvent:function(){},navigator:{},fetch(){}};
+  window.window=window;
+  return {context,listeners,stored,sms,router,smsButton,routerButton};
+}
+
+test('complete generated client script compiles and tabs initialize throughout the DOM lifecycle',()=>{
+  const source=app.clientScript(model());
+  const script=new vm.Script(source);
+  for(const readyState of ['loading','complete']){
+    const fixture=clientDom(readyState);
+    script.runInNewContext(fixture.context);
+    const readyListener=fixture.listeners.find(([name])=>name==='DOMContentLoaded');
+    if(readyState==='loading'){
+      assert.ok(readyListener,'loading documents must wait for DOMContentLoaded');
+      readyListener[1]();
+    } else assert.equal(readyListener,undefined,'complete documents initialize immediately');
+    fixture.context.tab('router');
+    assert.equal(fixture.sms.classList.active,false);
+    assert.equal(fixture.sms.hidden,true);
+    assert.equal(fixture.router.classList.active,true);
+    assert.equal(fixture.router.hidden,false);
+    assert.equal(fixture.smsButton.attributes['aria-selected'],'false');
+    assert.equal(fixture.routerButton.attributes['aria-selected'],'true');
+    assert.equal(fixture.stored.get('zmiTab'),'router');
+  }
+});
+
+test('the complete script embedded in buildHtml compiles',()=>{
+  const html=app.buildHtml(model());
+  const embedded=html.match(/<script>([\s\S]*)<\/script>/i);
+  assert.ok(embedded,'buildHtml must contain a complete client script');
+  assert.doesNotThrow(()=>new vm.Script(embedded[1]));
 });
 
 test('dashboardFlow leaves the presented WebView open when command channel registration fails',async()=>{
