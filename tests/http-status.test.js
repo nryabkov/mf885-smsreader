@@ -88,9 +88,7 @@ test("dashboard does not load additional SMS pages after the initial message req
   };
   const web = {
     loadHTML: async () => {}, present: () => closed,
-    evaluateJavaScript: async source => source.includes("document.querySelector('main')")
-      ? { readyState: "complete", hasMain: true, mainText: "Dashboard", body: { scrollWidth: 390, scrollHeight: 844, width: 390, height: 844 }, zmiReady: "true" }
-      : source.includes("window.__zmiCommandQueue=[]") ? true : null
+    evaluateJavaScript: async source => source.includes("window.__zmiCommandQueue=[]") ? true : null
   };
   const flow = app.dashboardFlow(auth(), "", "sms", {
     loadModel: async () => failedModel, buildHtml: app.buildHtml, WebView: () => web, showMessage: async () => {},
