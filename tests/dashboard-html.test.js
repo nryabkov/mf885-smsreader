@@ -7,20 +7,17 @@ function model(tab='sms') { return {tab,loadedAt:Date.now(),sms:{messages:[{id:'
 
 test('initial HTML is immediately useful and marks history as loading',()=>{const html=app.buildHtml(model());assert.match(html,/hello/);assert.match(html,/Loading message history…/);assert.match(html,/Not checked/);assert.match(html,/data-detect-experimental/);assert.match(html,/Detect experimental features/);assert.doesNotMatch(html,/data-detect="ussd"/);});
 test('SMS and router models render a non-empty main with the requested active tab',()=>{for(const tab of ['sms','router']){const html=app.buildHtml(model(tab));const main=html.match(/<main>([\s\S]*?)<\/main>/i);assert.ok(main&&main[1].trim(),`${tab} main must not be empty`);assert.match(html,new RegExp(`<section id="${tab}" class="tab active"`));}});
-test('dashboard has a readiness marker and native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/dataset\.zmiReady\s*=\s*'true'/);assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
+test('dashboard has native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
 
-function dashboardLifecycle(documentState) {
+function dashboardLifecycle({channelError}={}) {
   const calls=[];
-  const documentStates=Array.isArray(documentState)?documentState:[documentState];
-  let documentCheck=0;
   let closePresentation;
   const closed=new Promise(resolve=>{closePresentation=resolve});
   const web={
     loadHTML:async()=>{calls.push('loadHTML')},
     present:()=>{calls.push('present');return closed},
     evaluateJavaScript:async script=>{
-      if(script.includes("document.querySelector('main')")){calls.push('documentCheck');return documentStates[Math.min(documentCheck++,documentStates.length-1)]}
-      if(script.includes('window.__zmiCommandQueue=[]')){calls.push('registerChannel');return true}
+      if(script.includes('window.__zmiCommandQueue=[]')){calls.push('registerChannel');if(channelError)throw channelError;return true}
       if(script.includes('window.__zmiCommandQueue &&'))return null;
       calls.push('webUpdate');
       return null;
@@ -37,16 +34,16 @@ function dashboardLifecycle(documentState) {
   return {calls,alerts,flow,closePresentation};
 }
 
-test('dashboardFlow presents and checks the rendered document before registering command polling',async()=>{
-  const fixture=dashboardLifecycle({readyState:'complete',hasMain:true,mainText:'Dashboard',body:{scrollWidth:390,scrollHeight:844,width:390,height:844},zmiReady:'true'});
+test('dashboardFlow registers command polling after presenting without inspecting the DOM',async()=>{
+  const fixture=dashboardLifecycle();
   while(!fixture.calls.includes('registerChannel'))await new Promise(resolve=>setImmediate(resolve));
   fixture.closePresentation();
   await fixture.flow;
-  assert.deepEqual(fixture.calls.slice(0,4),['loadHTML','present','documentCheck','registerChannel']);
+  assert.deepEqual(fixture.calls.slice(0,3),['loadHTML','present','registerChannel']);
   assert.deepEqual(fixture.alerts,[]);
 });
 
-test('client marks an already complete document ready without registering DOMContentLoaded',()=>{
+test('client initializes an already complete document without registering DOMContentLoaded',()=>{
   const listeners=[];
   const document={readyState:'complete',documentElement:{dataset:{}},addEventListener:(...args)=>listeners.push(args)};
   let initializations=0;
@@ -54,51 +51,23 @@ test('client marks an already complete document ready without registering DOMCon
   const readiness=app.clientScript(model()).match(/var dashboardReady=false;[\s\S]*?(?=async function copySms)/);
   assert.ok(readiness);
   require('node:vm').runInNewContext(readiness[0],context);
-  assert.equal(document.documentElement.dataset.zmiReady,'true');
   assert.equal(listeners.some(([name])=>name==='DOMContentLoaded'),false);
   assert.equal(initializations,1);
   context.markDashboardReady();
   assert.equal(initializations,1,'a repeated readiness call must not initialize another timer or event handlers');
 });
 
-test('dashboardFlow retries document inspection until the client readiness marker appears',async()=>{
-  const pending={readyState:'complete',hasMain:true,mainText:'Dashboard',body:{scrollWidth:390,scrollHeight:844,width:390,height:844},zmiReady:''};
-  const ready={...pending,zmiReady:'true'};
-  const fixture=dashboardLifecycle([pending,pending,ready]);
-  while(!fixture.calls.includes('registerChannel'))await new Promise(resolve=>setImmediate(resolve));
-  fixture.closePresentation();
-  await fixture.flow;
-  assert.deepEqual(fixture.calls.slice(0,6),['loadHTML','present','documentCheck','documentCheck','documentCheck','registerChannel']);
-  assert.deepEqual(fixture.alerts,[]);
-});
-
-test('dashboardFlow dismisses an empty rendered document and logs safe document diagnostics',async()=>{
-  const state={readyState:'complete',hasMain:true,mainText:'',body:{scrollWidth:390,scrollHeight:0,width:390,height:0},zmiReady:''};
-  const fixture=dashboardLifecycle(state);
+test('dashboardFlow leaves the presented WebView open when command channel registration fails',async()=>{
+  const fixture=dashboardLifecycle({channelError:new Error('registration unavailable')});
   const warnings=[];
   const originalWarn=console.warn;
   console.warn=message=>warnings.push(String(message));
   try { await fixture.flow; } finally { console.warn=originalWarn; }
-  assert.deepEqual(fixture.calls,['loadHTML','present','documentCheck','documentCheck','documentCheck','documentCheck','dismiss']);
+  assert.deepEqual(fixture.calls,['loadHTML','present','registerChannel']);
   assert.deepEqual(fixture.alerts,[]);
   assert.equal(warnings.length,1);
-  assert.match(warnings[0],/WebView document check failed/);
-  assert.match(warnings[0],/"readyState":"complete"/);
-  assert.match(warnings[0],/"zmiReady":""/);
-  assert.doesNotMatch(warnings[0],/mainText/);
-});
-test('dashboardFlow never exposes SMS or OTP text from document diagnostics',async()=>{
-  const secret='Your OTP is 928441';
-  const state={readyState:'complete',hasMain:true,mainText:secret,body:{scrollWidth:390,scrollHeight:0,width:390,height:0},zmiReady:''};
-  const fixture=dashboardLifecycle(state);
-  const warnings=[];
-  const originalWarn=console.warn;
-  console.warn=message=>warnings.push(String(message));
-  try { await fixture.flow; } finally { console.warn=originalWarn; }
-  assert.deepEqual(fixture.alerts,[]);
-  assert.equal(warnings.length,1);
-  assert.doesNotMatch(warnings[0],/mainText|928441|Your OTP/);
-  assert.doesNotMatch(JSON.stringify(fixture.alerts),/928441|Your OTP/);
+  assert.match(warnings[0],/command channel registration failed: registration unavailable/);
+  assert.equal(fixture.calls.includes('dismiss'),false);
 });
 test('dashboardFlow uses the native Scriptable Timer when no sleep override is provided',async()=>{
   const originalTimer=global.Timer;
@@ -114,9 +83,7 @@ test('dashboardFlow uses the native Scriptable Timer when no sleep override is p
   global.setTimeout=()=>{throw new Error('native dashboard sleep must not use setTimeout')};
   const web={
     loadHTML:async()=>{},present:()=>closed,
-    evaluateJavaScript:async script=>script.includes("document.querySelector('main')")
-      ? {readyState:'complete',hasMain:true,mainText:'Dashboard',body:{scrollWidth:390,scrollHeight:844,width:390,height:844},zmiReady:'true'}
-      : script.includes('window.__zmiCommandQueue=[]') ? true : null
+    evaluateJavaScript:async script=>script.includes('window.__zmiCommandQueue=[]') ? true : null
   };
   try {
     await app.dashboardFlow({},'', 'sms',{

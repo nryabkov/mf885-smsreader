@@ -72,7 +72,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, inspectDashboardDocument, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, statusCompatibilityError, routerAccepted };
+module.exports = { run, dashboardFlow, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, statusCompatibilityError, routerAccepted };
 
 function configureDebug(options = {}) {
   DEBUG = options.debug !== false;
@@ -196,29 +196,13 @@ async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
   }
   let presentationClosed = false;
   const presentationResult = Promise.resolve(presented).then(() => { presentationClosed = true; return { closed: true }; }, error => { presentationClosed = true; return { closed: true, error }; });
-  // Let Scriptable enter its native presentation before touching the rendered
-  // document. In particular, do not install a completion callback while
-  // present() itself is being started.
+  // Let Scriptable enter its native presentation before installing a
+  // completion callback while present() itself is being started.
   await dependencies.sleep(0);
-  let documentState;
   try {
-    // present() can resolve while the page's client script is still finishing.
-    // Give its readiness marker a few short opportunities to appear before
-    // treating the rendered document as unusable and dismissing the WebView.
-    for (let attempt = 0; attempt < 4; attempt++) {
-      documentState = await inspectDashboardDocument(web);
-      if (dashboardDocumentIsUsable(documentState)) break;
-      if (attempt < 3) await dependencies.sleep(50);
-    }
-    if (!dashboardDocumentIsUsable(documentState)) throw new Error("rendered dashboard is empty or not ready");
     await registerWebViewCommandChannel(web);
   } catch (error) {
-    if (typeof web.dismiss === "function") {
-      try { web.dismiss(); } catch (_) {}
-    }
-    // mainText can contain complete SMS messages (including OTPs), so never
-    // forward the raw inspection result to either a logger or an Alert.
-    console.warn(`ZMI dashboard WebView document check failed: ${cleanError(error)} ${JSON.stringify(dashboardDocumentDiagnostics(documentState))}`);
+    console.warn(`ZMI dashboard WebView command channel registration failed: ${cleanError(error)}`);
     return;
   }
   const smsGuard = createInFlightGuard();
@@ -1087,32 +1071,12 @@ function createWebViewDispatcher(handlers, reply) {
   };
 }
 async function applyWebView(web, method, payload) { await web.evaluateJavaScript(`window.${method} && window.${method}(${JSON.stringify(payload)})`,false); }
-async function inspectDashboardDocument(web) {
-  return web.evaluateJavaScript(`(function(){
-    var main=document.querySelector('main'),body=document.body,rect=body&&body.getBoundingClientRect();
-    return {readyState:document.readyState,hasMain:!!main,mainText:main?main.textContent.trim():'',body:{scrollWidth:body?body.scrollWidth:0,scrollHeight:body?body.scrollHeight:0,width:rect?rect.width:0,height:rect?rect.height:0},zmiReady:document.documentElement.dataset.zmiReady||''};
-  })()`, false);
-}
-function dashboardDocumentIsUsable(state) {
-  return !!state && (state.readyState === "interactive" || state.readyState === "complete") && state.hasMain === true && typeof state.mainText === "string" && state.mainText.length > 0 && state.body && Number(state.body.width) > 0 && Number(state.body.height) > 0 && state.zmiReady === "true";
-}
-function dashboardDocumentDiagnostics(state) {
-  if (!state || typeof state !== "object") return { inspected:false };
-  const body = state.body && typeof state.body === "object" ? state.body : {};
-  return {
-    inspected:true,
-    readyState:String(state.readyState || ""),
-    hasMain:state.hasMain === true,
-    zmiReady:String(state.zmiReady || ""),
-    body:{ scrollWidth:Number(body.scrollWidth) || 0, scrollHeight:Number(body.scrollHeight) || 0, width:Number(body.width) || 0, height:Number(body.height) || 0 }
-  };
-}
 async function registerWebViewCommandChannel(web) {
   await web.evaluateJavaScript(`(function(){if(window.__zmiCommandQueue)return true;window.__zmiCommandQueue=[];window.addEventListener('ZMICommand',function(e){window.__zmiCommandQueue.push(e.detail)});return true})()`, false);
 }
 async function nextWebViewCommand(web, sleep = scriptableSleep, stopped = () => false) {
   // Scriptable completion callbacks can contend with present(). Polling keeps
-  // every evaluation finite and only starts after the visible-document check.
+  // every evaluation finite and only starts after command channel registration.
   while (true) {
     if (stopped()) return null;
     const message = await web.evaluateJavaScript("window.__zmiCommandQueue && window.__zmiCommandQueue.length ? window.__zmiCommandQueue.shift() : null", false);
