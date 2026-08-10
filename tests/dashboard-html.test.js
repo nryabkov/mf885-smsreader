@@ -437,7 +437,7 @@ test('Router groups are ordered, compact, and retain command hooks',()=>{
   assert.equal((html.match(/data-capability-status/g)||[]).length,3);
   assert.doesNotMatch(html,/experimental-subsection/);
   assert.equal((html.match(/data-detect-experimental/g)||[]).length,1);
-  assert.equal((html.match(/topgrid router-only/g)||[]).length,1); assert.match(html,/Loading diagnostics…/);
+  assert.equal((html.match(/topgrid router-only/g)||[]).length,1); assert.equal((html.match(/class=\"diag-spinner\"/g)||[]).length,1); assert.doesNotMatch(html,/Loading diagnostics…/);
 });
 
 test('polling exposes full Router and diagnostics update hooks with stale preservation',()=>{
@@ -624,4 +624,23 @@ test('42 messages across five total_number pages finish with a 42/42 SMS counter
     assert.match(html,/SMS: 42\/42/);
     assert.doesNotMatch(html,/SMS: 42\/5/);
   } finally { global.Request=originalRequest; }
+});
+
+test('diagnostics use one accessible spinner, friendly grouped labels and selectable values',()=>{
+  const fixture=model('router'); fixture.cellularDiagnostics={loadedAt:Date.now(),values:{ipv4:{value:'10.2.3.4',raw:'10.2.3.4'},gateway4:{value:'10.2.3.1',raw:'10.2.3.1'},dns1:{value:'1.1.1.1',raw:'1.1.1.1'},configuredApn:{value:'internet',raw:'internet'}},stages:{sim:{state:'ok',detail:'Ready'},registration:{state:'ok',detail:'Home'},pdp:{state:'ok',detail:'Connected'}}};
+  const html=app.buildHtml(fixture);
+  assert.equal((html.match(/class="diag-spinner"/g)||[]).length,1);
+  assert.match(html,/role="status"[\s\S]*Loading diagnostics/); assert.doesNotMatch(html,/Loading diagnostics…/);
+  for(const label of ['Connection and APN','Configured APN','IP, gateways and DNS','IPv4 gateway','Radio network and signal quality'])assert.match(html,new RegExp(label));
+  for(const internal of ['>configuredApn<','>activeApn<','>pdpType<','>gateway4<'])assert.doesNotMatch(html,new RegExp(internal));
+  for(const address of ['10.2.3.4','10.2.3.1','1.1.1.1'])assert.equal((html.match(new RegExp(address.replace(/\./g,'\\.'),'g'))||[]).length,2); // text plus data-raw
+  assert.match(html,/class="app-value" data-diag="ipv4"/); assert.match(html,/\.app-value\{user-select:text;-webkit-user-select:text;-webkit-touch-callout:default/);
+  assert.match(html,/@media\(prefers-reduced-motion:reduce\)[^{]*\{[^}]*[\s\S]*?\.diag-spinner\{animation:none/);
+});
+
+test('initial and dynamically inserted SMS values remain selectable',()=>{
+  const html=app.buildHtml(model()),js=app.clientScript(model());
+  assert.match(html,/<h3 class="app-value">\+1<\/h3>/); assert.match(html,/<p class="body app-value">hello<\/p>/);
+  assert.match(js,/querySelectorAll\('h3,time,\.body,\.translation span'\)[\s\S]*classList\.add\('app-value'\)/);
+  assert.doesNotMatch(html,/<button[^>]*class="[^"]*app-value/);
 });
