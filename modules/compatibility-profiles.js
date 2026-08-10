@@ -30,7 +30,19 @@ const PROFILES = Object.freeze({
       signalMetrics: Object.freeze({ rsrp: true, rsrq: true, sinr: true, rssi: true, signalbar: true, signalStrength: "csq" }),
       modes: Object.freeze([]), operations: Object.freeze({})
     }),
-    destructive: Object.freeze({})
+    // Recovered from ZMI_MiFi_1.2.42_english.apk for MF885 / MF96 Ver.D.
+    // These are command-on-read GETs with no XML request body. The tree field
+    // records the firmware semantic XML tree; it is not sent as the GET body.
+    destructive: Object.freeze({
+      reset: Object.freeze({
+        file: Object.freeze({ name: "reset", method: "GET" }),
+        tree: "reboot"
+      }),
+      poweroff: Object.freeze({
+        file: Object.freeze({ name: "poweroff", method: "GET" }),
+        tree: "shutdown"
+      })
+    })
   }),
   "2.5.94_release_MF855_NZ_CP_2.129.003": Object.freeze({
     id: "zmi-mf855-nz-2.5.94",
@@ -39,7 +51,7 @@ const PROFILES = Object.freeze({
     xmlRequestPath: "/xml_action.cgi",
     diagnosticEndpoints: Object.freeze(["status1", "wan", "Engineer_parameter"]),
     // Only the existence of these read endpoints/fields has been observed on
-    // this build.  Enum meanings (including SIM_status=0) remain intentionally
+    // this build. Enum meanings (including SIM_status=0) remain intentionally
     // absent until they are independently confirmed.
     wan: Object.freeze({
       mappings: Object.freeze({
@@ -48,13 +60,14 @@ const PROFILES = Object.freeze({
       }),
       rat: Object.freeze({ current: Object.freeze(["sys_mode"]), alternativeSources: Object.freeze(["sys_mode", "network_mode"]), supplemental: Object.freeze(["sys_submode", "ConnType", "proto"]), preferred: Object.freeze(["preferred_mode", "connect_mode"]), connectionType: Object.freeze(["ConnType"]) }),
       signalMetrics: Object.freeze({ rsrp: true, rsrq: true, sinr: true, rssi: true, signalbar: true, signalStrength: "csq" }),
-      // This is a combination observed together with a connected WAN and the
-      // stock UI showing 4G. Neither numeric value is a portable enum.
       currentRatRules: Object.freeze([
         Object.freeze({ fields: Object.freeze({ sys_mode: "17", sys_submode: "17" }), connected: true, label: "4G · LTE", source: "firmware combination rule" })
       ]),
       modes: Object.freeze([]), operations: Object.freeze({})
     }),
+    // The APK evidence is specifically tied to the MF885 / MF96 Ver.D product
+    // path. Do not automatically advertise destructive controls for this MF855
+    // NZ lineage solely because the version string also starts with 2.5.94.
     destructive: Object.freeze({})
   }),
   "2.5.96": Object.freeze({
@@ -84,9 +97,11 @@ const PROFILES = Object.freeze({
       signalMetrics: Object.freeze({ rsrp: true, rsrq: true, sinr: true, rssi: true, signalbar: true, signalStrength: "csq" }),
       modes: Object.freeze([]), operations: Object.freeze({})
     }),
+    // Preserve the existing 2.5.96 POST/SET mapping until that build is
+    // independently reclassified. The API helper can now express both forms.
     destructive: Object.freeze({
-      reset: { file: "reset", tree: "reboot" },
-      poweroff: { file: "poweroff", tree: "shutdown" }
+      reset: Object.freeze({ file: "reset", tree: "reboot" }),
+      poweroff: Object.freeze({ file: "poweroff", tree: "shutdown" })
       // trueshutdown is deliberately absent: no confirmed trigger was supplied.
     })
   })
