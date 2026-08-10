@@ -16,6 +16,7 @@ It is **not vendor documentation**. Firmware revisions differ, and the presence 
 - [Authentication](AUTHENTICATION.md) — the router's unusual HTTP Digest flow.
 - [Firmware compatibility](FIRMWARE_COMPATIBILITY.md) — what is known for MF855/MF885 and firmware 2.5.94/2.5.96.
 - [MF885 2.5.94 static analysis](MF885_2.5.94_STATIC_ANALYSIS.md) — exact golden-image fingerprints, native Duster findings, 2.5.94/2.5.96 comparison, and the evidence split for reboot/shutdown commands.
+- [Power clients: stock WebUI and ZMI Android app](POWER_CLIENTS.md) — power-control evidence from the firmware-resident UI, archived official Android app, and the firmware `idle_socket` companion service; explicitly separates command semantics from trigger transport.
 - [Research notes](RESEARCH_NOTES.md) — debug mode, Telnet, firmware backup, CWMP/TR-069 and other reverse-engineering findings.
 - [`api/mf885-api.yaml`](api/mf885-api.yaml) — machine-readable, commented specification intended for humans and coding agents.
 
