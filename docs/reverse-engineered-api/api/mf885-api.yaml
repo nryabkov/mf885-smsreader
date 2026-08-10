@@ -82,6 +82,7 @@ firmware_profiles:
       - xml-schema
       - native-handler
       - android-apk
+      - project-client
     diagnostic_models:
       - status1
       - wan
@@ -108,8 +109,14 @@ firmware_profiles:
           file: restore_defaults
           body: none
     runtime_support:
-      destructive_enabled: false
-      reason: current Scriptable destructive helper assumes POST/SET and must become transport-aware before enabling these GET commands
+      destructive_enabled: true
+      implementation: transport-aware destructive model descriptors
+      enabled_commands:
+        - reboot
+        - poweroff
+      notes:
+        - Factory reset remains deliberately unexposed in the dashboard.
+        - Live exact-device execution remains a separate evidence level.
     policy:
       unknown_writes_are_read_only: true
       verify_normal_writes_by_readback: true
@@ -127,6 +134,10 @@ firmware_profiles:
       - status1
       - wan
       - Engineer_parameter
+    destructive_transport:
+      implementation: retained-project-mapping
+      method: POST
+      body: semantic XML tree
     policy:
       unknown_writes_are_read_only: true
       verify_normal_writes_by_readback: true
@@ -250,10 +261,11 @@ models:
     known_tree: RGW/reboot
     firmware_2_5_94_client_trigger:
       confidence: companion-app-confirmed
-      provenance: [android-apk]
+      provenance: [android-apk, project-client]
       transport: command_on_read
       request: "GET /xml_action.cgi?method=get&module=duster&file=reset"
       body: none
+      runtime_enabled: true
     notes:
       - `reset` is reboot, not factory reset.
       - Do not automatically retry after timeout/connection loss.
@@ -266,10 +278,11 @@ models:
     known_tree: RGW/shutdown
     firmware_2_5_94_client_trigger:
       confidence: companion-app-confirmed
-      provenance: [android-apk]
+      provenance: [android-apk, project-client]
       transport: command_on_read
       request: "GET /xml_action.cgi?method=get&module=duster&file=poweroff"
       body: none
+      runtime_enabled: true
     notes:
       - The analysed Android shutdown UI uses `poweroff`, not `trueshutdown`.
       - Do not automatically retry after timeout/connection loss.
@@ -284,8 +297,10 @@ models:
       transport: command_on_read
       request: "GET /xml_action.cgi?method=get&module=duster&file=restore_defaults"
       body: none
+      runtime_enabled: false
     notes:
       - Never substitute for `reset` when implementing Restart/Reboot.
+      - Deliberately not exposed as a dashboard control.
 
   trueshutdown:
     description: Additional shutdown-related family model with unresolved distinction from normal poweroff.
@@ -373,10 +388,11 @@ actions:
 
 client_rules:
   - Keep physical /xml_action.cgi separate from Digest uri /cgi/xml_action.cgi.
-  - Re-authenticate carefully on 401; never blindly replay a destructive command.
+  - Re-authenticate carefully on 401; never blindly replay a destructive command after connection loss.
   - For normal writes, POST/SET then read back where possible.
-  - For MF885 2.5.94 reboot/poweroff/restore-defaults, the recovered companion client uses GET method=get with no XML body.
-  - Do not automatically retry restart/shutdown after connection loss.
+  - For MF885 2.5.94 reboot/poweroff, the recovered companion client and project profile use GET method=get with no XML body.
+  - Destructive transport is profile-specific; string descriptors preserve the retained POST behaviour for older mappings.
+  - Keep factory reset separate and unexposed unless deliberately implemented.
   - Keep unknown firmware enum values raw.
   - Never probe unknown destructive values merely because a schema exists.
   - Redact credentials, Digest material and device identifiers from diagnostics.
