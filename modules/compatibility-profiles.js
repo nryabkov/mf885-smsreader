@@ -82,16 +82,6 @@ const PROFILES = Object.freeze({
     })
   })
 });
-
-function selectProfile(value) {
-  const profile = PROFILES[String(value || "")];
-  return profile || { id: "unknown", firmware: String(value || "unknown"), confirmed: false };
-}
-
-function confirmed(profile, path) {
-  let value = profile;
-  for (const part of String(path).split(".")) value = value && value[part];
-  return value && value.confirmed !== false ? value : null;
-}
-
+function selectProfile(value) { const profile = PROFILES[String(value || "")]; return profile || { id: "unknown", firmware: String(value || "unknown"), confirmed: false }; }
+function confirmed(profile, path) { let value = profile; for (const part of String(path).split(".")) value = value && value[part]; return value && value.confirmed !== false ? value : null; }
 module.exports = { PROFILES, selectProfile, confirmed };
