@@ -611,3 +611,20 @@ test('initial and dynamically inserted SMS values remain selectable',()=>{
   assert.match(js,/querySelectorAll\('h3,time,\.body,\.translation span'\)[\s\S]*classList\.add\('app-value'\)/);
   assert.doesNotMatch(html,/<button[^>]*class="[^"]*app-value/);
 });
+
+test('v2 client delegates SMS long press copying and suppresses its following click',()=>{
+  const html=require('../modules/ui-v2.js').buildHtml(model());
+  const script=html.match(/<script>([\s\S]*)<\/script>/i);
+  assert.ok(script,'v2 dashboard must contain a generated client script');
+  const js=script[1];
+  assert.match(js,/addEventListener\('pointerdown'/);
+  assert.match(js,/setTimeout\(async\(\)=>[\s\S]*?,550\)/);
+  assert.match(js,/command\('copySms', \{text\}\)/);
+  assert.match(js,/addEventListener\('pointermove'[\s\S]*?cancelSmsLongPress/);
+  assert.match(js,/addEventListener\('pointerup',cancelSmsLongPress\)/);
+  assert.match(js,/addEventListener\('pointercancel',cancelSmsLongPress\)/);
+  assert.match(js,/addEventListener\('scroll',cancelSmsLongPress,true\)/);
+  assert.match(js,/suppressSmsClick=row/);
+  assert.match(js,/stopImmediatePropagation\(\)/);
+  assert.match(js,/closest\('\.row-menu'\)/);
+});
