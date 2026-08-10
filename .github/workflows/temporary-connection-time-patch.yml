@@ -150,7 +150,7 @@ jobs:
             assert.match(js, /\[data-connection-time\]/);
             assert.match(js, /payload\.connectionTime/);
           });
-          '''.replace(/^          /gm, ''))
+          ''')
       - name: Validate
         run: |
           node --check scriptable.js
