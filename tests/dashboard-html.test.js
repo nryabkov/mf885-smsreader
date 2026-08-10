@@ -46,6 +46,39 @@ test('status1 hardware revision accepts common XML field names',()=>{
   assert.equal(app.hardwareRevision('<RGW><status></status></RGW>'),'');
   assert.equal(app.firmwareUserVersion('2.5.94_release_MF855_NZ_CP_2.129.003'),'2.5.94');
 });
+test('uptime normalization accepts compatible status1 field names and common values',()=>{
+  for(const field of ['uptime','up_time','system_uptime','sys_uptime','run_time','running_time','work_time']) {
+    assert.equal(app.normalizeUptime(`<RGW><status><${field}>274620</${field}></status></RGW>`),274620);
+  }
+  assert.equal(app.normalizeUptime(undefined),null);
+  assert.equal(app.normalizeUptime(274620.9),274620);
+  assert.equal(app.normalizeUptime('3 days 04:17:00'),274620);
+  assert.equal(app.normalizeUptime('not available'),null);
+});
+test('uptime formatting is compact and safely falls back for invalid values',()=>{
+  assert.equal(app.formatUptime(),'—');
+  assert.equal(app.formatUptime(274620),'3d 04h 17m');
+  assert.equal(app.formatUptime('274620'),'3d 04h 17m');
+  assert.equal(app.formatUptime('3d 04h 17m'),'3d 04h 17m');
+  assert.equal(app.formatUptime('broken'),'—');
+});
+test('uptime control and its independent confirmation precede tabs while System keeps power off',()=>{
+  const html=app.buildHtml({...model(),uptime:274620});
+  const markup=html.slice(html.indexOf('<body>'),html.indexOf('<script>'));
+  const tabs=markup.indexOf('<nav class="seg dashboard-tabs"');
+  const toolbar=markup.indexOf('<section class="power-toolbar"');
+  assert.ok(toolbar>=0&&toolbar<tabs);
+  assert.match(markup.slice(toolbar,tabs),/Uptime: <strong>3d 04h 17m<\/strong>/);
+  assert.equal((markup.match(/data-power-action="powerOff"/g)||[]).length,2);
+  assert.equal((markup.match(/data-power-confirm/g)||[]).length,2);
+  assert.match(markup.slice(toolbar,tabs),/data-power-control[\s\S]*data-power-action="powerOff"[\s\S]*data-power-confirm/);
+  assert.match(app.clientScript(model()),/button\.closest\('\[data-power-control\]'\)[\s\S]*'data-power-confirm'/);
+});
+test('missing uptime renders a fallback without interrupting dashboard HTML',()=>{
+  const html=app.buildHtml(model());
+  assert.match(html,/Uptime: <strong>—<\/strong>/);
+  assert.match(html,/<nav class="seg dashboard-tabs"/);
+});
 test('SMS and router models render a non-empty main with the requested active tab',()=>{for(const tab of ['sms','router']){const html=app.buildHtml(model(tab));const main=html.match(/<main>([\s\S]*?)<\/main>/i);assert.ok(main&&main[1].trim(),`${tab} main must not be empty`);assert.match(html,new RegExp(`<section id="${tab}" class="tab active"`));}});
 test('dashboard has native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
 
@@ -426,7 +459,7 @@ test('one experimental command is validated and automatically dispatched with in
 });
 
 test('experimental capabilities use canonical labels and only render confirmed actions',()=>{
-  const uncheckedPage=app.buildHtml(model('router')),unchecked=uncheckedPage.slice(uncheckedPage.indexOf('<article class="card experimental'),uncheckedPage.indexOf('<article class="card"><small>System'));
+  const uncheckedPage=app.buildHtml(model('router')),unchecked=uncheckedPage.slice(uncheckedPage.indexOf('<article class="card experimental'),uncheckedPage.indexOf('<article class="card" data-power-control><small>System'));
   for(const label of ['Cellular controls','USSD','Device access'])assert.match(unchecked,new RegExp('<span data-capability-name>'+label+'<\\/span>: <span data-capability-status>Not checked<\\/span>'));
   for(const action of ['data-cellular-action','data-device-action','Dial USSD'])assert.doesNotMatch(unchecked,new RegExp(action));
 
