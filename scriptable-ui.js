@@ -8,7 +8,9 @@ async function run(options = {}) {
   const sourcePath = fm.joinPath(options.moduleDirectory, "scriptable.js");
   if (!fm.fileExists(sourcePath)) throw new Error("Base application module scriptable.js is missing.");
   const ui = importModule(`${options.moduleDirectory}/modules/ui-v2.js`);
+  const uiFixes = importModule(`${options.moduleDirectory}/modules/ui-v2-fixes.js`);
   if (!ui || typeof ui.buildHtml !== "function") throw new Error("UI v2 module is invalid.");
+  if (!uiFixes || typeof uiFixes.enhanceHtml !== "function") throw new Error("UI v2 fixes module is invalid.");
 
   let source = fm.readString(sourcePath);
   const buildMarker = "function buildHtml(model) {";
@@ -24,8 +26,10 @@ async function run(options = {}) {
   source = source.replace(pollMarker, "function legacyWebPollPayload(model) {");
   source = `
 const __MF885_UI_V2 = globalThis.__MF885_UI_V2;
+const __MF885_UI_V2_FIXES = globalThis.__MF885_UI_V2_FIXES;
 function buildHtml(model) {
   let html = __MF885_UI_V2.buildHtml(model);
+  html = __MF885_UI_V2_FIXES.enhanceHtml(html, model);
   // The proven backend validates legacy structural hooks before WebView load.
   // UI v2 uses .screen instead of .tab and originally omitted <main>, so add
   // non-visual compatibility structure without changing the rendered design.
@@ -87,6 +91,7 @@ function webPollPayload(model) {
 
   const moduleShim = { exports: {} };
   globalThis.__MF885_UI_V2 = ui;
+  globalThis.__MF885_UI_V2_FIXES = uiFixes;
   try {
     // Preserve the base application's original require semantics. On Scriptable
     // require may not exist; passing undefined keeps its top-level optional
@@ -99,6 +104,7 @@ function webPollPayload(model) {
     await application.run(options);
   } finally {
     try { delete globalThis.__MF885_UI_V2; } catch (_) { globalThis.__MF885_UI_V2 = null; }
+    try { delete globalThis.__MF885_UI_V2_FIXES; } catch (_) { globalThis.__MF885_UI_V2_FIXES = null; }
   }
 }
 
