@@ -16,8 +16,9 @@ const DEFAULT_CONFIG = {
   translationTarget: "en",
   showExperimentalControls: true,
   locale: "en",
-  compatibilityProfile: "2.5.96",
+  // Selection priority: explicit override, detected firmware/model, fallback.
   compatibilityProfileOverride: "",
+  compatibilityProfile: "2.5.96",
   xmlRequestPath: "/xml_action.cgi",
   telnetPortCheckTimeoutMs: 1000,
   telnetPortCheckRetries: 2

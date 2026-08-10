@@ -209,9 +209,9 @@ test('firmware RAT fixtures distinguish LTE, 3G, unknown codes and conflicts',()
   const threeG=app.parseNetwork('<RGW><wan><cellular><sys_mode>4</sys_mode><sys_submode>17</sys_submode></cellular></wan></RGW>',profile);
   assert.match(threeG.mode,/3G/);
   const unknown=app.parseNetwork('<RGW><wan><cellular><sys_submode>777</sys_submode></cellular></wan></RGW>',profile);
-  assert.equal(unknown.mode,'Unknown (raw: 777)');
+  assert.equal(unknown.mode,'Unknown'); assert.match(unknown.networkDiagnostic,/sys_submode=777/);
   const conflict=app.parseNetwork('<RGW><wan><cellular><ConnType>LTE</ConnType><sys_mode>4</sys_mode></cellular></wan></RGW>',profile);
-  assert.equal(conflict.mode,'Conflicting network data'); assert.equal(conflict.networkConflict,true);
+  assert.match(conflict.mode,/3G/); assert.equal(conflict.networkConflict,false); assert.match(conflict.networkDiagnostic,/ConnType=LTE/);
 });
 
 test('MF855 NZ 2.5.94 confirmed connected 17/17 fixture is LTE',()=>{
@@ -318,4 +318,27 @@ test('one experimental command is validated and automatically dispatched with in
 test('copy success and failure both provide visible accessible feedback',()=>{
   const js=app.clientScript(model()); assert.match(js,/textContent='Copied'/); assert.match(js,/aria-label','SMS copied'/);
   assert.match(js,/setActionStatus\('SMS copied to clipboard'\)/); assert.match(js,/Could not copy SMS/); assert.match(js,/Copy SMS manually/);
+});
+
+test('profile selection is override, detection, then configured fallback',()=>{
+  const choose=app.chooseCompatibilityProfile;
+  assert.equal(choose({compatibilityProfile:'2.5.96',compatibilityProfileOverride:'2.5.94'},'2.5.96').firmware,'2.5.94');
+  assert.equal(choose({compatibilityProfile:'2.5.96'},'2.5.94','MF885').firmware,'2.5.94');
+  assert.equal(choose({compatibilityProfile:'2.5.96'},'').firmware,'2.5.96');
+  assert.equal(choose({compatibilityProfile:'2.5.94'},'9.9.9').id,'unknown');
+});
+
+test('battery state and mobile card CSS are canonical and scoped',()=>{
+  const cases=[['<Battery_status>2</Battery_status><Battery_percent>40</Battery_percent>','charging'],['<Battery_status>1</Battery_status><Charger_status>0</Charger_status>','discharging'],['<Battery_status>3</Battery_status><Battery_percent>100</Battery_percent>','full'],['<Battery_status>88</Battery_status>','unknown']];
+  for(const [body,state] of cases){const b=app.parseBattery(`<batteryinfo>${body}</batteryinfo>`);assert.equal(b.state,state);assert.equal(b.status,state[0].toUpperCase()+state.slice(1));assert.match(app.batteryInlineLabel(b),new RegExp(b.status));}
+  const html=app.buildHtml(model('router')); for(const card of ['signal','battery','traffic'])assert.match(html,new RegExp(`data-overview-card="${card}"`));
+  assert.match(html,/@media\(max-width:520px\).*mini-traffic\{grid-column:1 \/ -1\}/); assert.match(html,/@media\(max-width:340px\)/); assert.match(html,/\.mini > span\{/); assert.doesNotMatch(html,/\.mini span\{/);
+  for(const width of [320,375,390,430,520])assert.ok(width<=520 && /grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\)/.test(html));
+});
+
+test('only profile-declared alternative RAT sources conflict',()=>{
+ const base=require('../modules/compatibility-profiles.js').selectProfile('2.5.96');
+ const real={...base,wan:{...base.wan,rat:{...base.wan.rat,alternativeSources:['sys_mode','ConnType']}}};
+ assert.equal(app.parseNetwork('<sys_mode>4</sys_mode><ConnType>LTE</ConnType>',base).networkConflict,false);
+ assert.equal(app.parseNetwork('<sys_mode>4</sys_mode><ConnType>LTE</ConnType>',real).mode,'Conflicting network data');
 });

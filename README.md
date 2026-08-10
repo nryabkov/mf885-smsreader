@@ -180,10 +180,7 @@ The Router tab is ordered as **Overview**, **Mobile network**, **Connection diag
 
 Current RAT and preferred/configured mode are separate. Numeric RAT values are decoded only by a mapping confirmed for the active firmware profile; unknown values display their safe raw field/code and conflicting fields are reported without guessing. Debug logging records firmware-profile mismatches and safe RAT sources/codes. Logs redact IMEI/ICCID, telephone numbers, credentials, cookies, tokens, Digest material, SMS, and USSD payloads. For troubleshooting, enable debug logging, reproduce while the stock router network screen is visible, and share only anonymized XML summaries—never raw authentication or subscriber identifiers.
 
-Firmware selection is automatic from `version_num`. The legacy `compatibilityProfile`
-default is retained only for configuration migration and does not pin the dashboard to
-that firmware. To deliberately pin a profile, set `compatibilityProfileOverride` to
-the exact firmware identifier; leave it empty for normal automatic selection.
+Firmware profile precedence is explicit: `compatibilityProfileOverride`, then the detected device `version_num`/model, then `compatibilityProfile`. The configured `2.5.96` fallback is a valid profile and is never converted to `unknown`. Set the override only to deliberately pin an exact firmware; leave it empty for normal detection. MF885 firmware `2.5.94` has its own profile and is not treated as equivalent to the MF855 NZ 2.5.94 build.
 
 Every command button exposes an accessible lifecycle: immediate action-specific
 pending text and spinner, `aria-busy`, disabled duplicate-submit protection, and a

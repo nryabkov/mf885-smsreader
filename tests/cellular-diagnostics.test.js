@@ -38,3 +38,21 @@ test("2.5.94 status1 aliases are decoded without guessing enum meanings", () => 
   assert.equal(result.values.dns2.raw, "8.8.8.8");
   assert.equal(result.values.configuredApn.raw, "internet");
 });
+
+test("MF885 2.5.94 fixture provides canonical provenance and conservative enums", () => {
+  const fs=require("node:fs"), path=require("node:path"), dir=path.join(__dirname,"fixtures/mf885-2.5.94");
+  const responses={}; for(const name of ["status1","wan","Engineer_parameter"])responses[name]=fs.readFileSync(path.join(dir,`${name}.xml`),"utf8");
+  const result=diagnostics.normalize(responses,selectProfile("2.5.94"));
+  assert.deepEqual(result.values.rat.value,"4G · LTE");
+  assert.equal(result.values.sys_mode.raw,"17"); assert.equal(result.values.sys_mode.source,"status1:sys_mode"); assert.equal(result.values.sys_mode.confidence,"confirmed");
+  assert.equal(result.values.sys_submode.value,"Unknown (raw: 99)"); assert.equal(result.values.sys_submode.confidence,"low");
+  assert.equal(result.values.sim.value,"Ready"); assert.equal(result.values.registration.value,"Registered (home)"); assert.equal(result.values.roaming.value,"Home network");
+  assert.equal(result.values.pdpState.value,"Connected"); assert.equal(result.values.pdpType.value,"IPv4");
+  assert.equal(result.signal.metric,"RSRP"); assert.equal(result.signal.dbm,-97); assert.equal(result.values.rsrq.raw,"-11"); assert.equal(result.values.sinr.raw,"18");
+});
+
+test("signal priority rejects arbitrary percentages and keeps RSRQ/SINR separate",()=>{
+  let result=diagnostics.normalize({status1:"<RGW><signal_strength>80</signal_strength><RSRQ>-12</RSRQ><SINR>9</SINR></RGW>"},selectProfile("2.5.94"));
+  assert.equal(result.signal.bars,null); assert.equal(result.signal.dbm,null); assert.equal(result.signal.rsrq.raw,"-12"); assert.equal(result.signal.sinr.raw,"9");
+  result=diagnostics.normalize({status1:"<RGW><signalbar>3</signalbar><RSSI>-88</RSSI></RGW>"},selectProfile("2.5.94")); assert.equal(result.signal.metric,"signalbar"); assert.equal(result.signal.bars,3);
+});
