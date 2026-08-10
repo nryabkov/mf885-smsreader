@@ -7,7 +7,7 @@ This note separates four different claims that are easy to conflate when reverse
 3. the HTTP request shape used by a stock-family client;
 4. the observed side effect on a live router.
 
-The first three are now established for reboot, power-off and factory reset on the MF885 / MF96 Ver.D generation. A live execution on the exact 2.5.94 device remains a separate evidence level.
+The first three are now established for reboot, power-off and factory reset on the MF885 / MF96 Ver.D generation. Project runtime support is now implemented for reboot and power-off; live execution on the exact 2.5.94 device remains a separate evidence level.
 
 ## Evidence baseline
 
@@ -364,7 +364,7 @@ APK UI -> API call chain recovered         confirmed
 HTTP method                                GET, companion-app-confirmed
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=reset
 XML request body                           none
-factory reset distinction                  confirmed
+project runtime support                    enabled for dedicated MF885 2.5.94 profile
 live execution on exact 2.5.94 router      separate/not established by static APK analysis
 ```
 
@@ -378,6 +378,7 @@ HTTP method                                GET, companion-app-confirmed
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=poweroff
 XML request body                           none
 uses trueshutdown                          no evidence; APK uses poweroff
+project runtime support                    enabled for dedicated MF885 2.5.94 profile
 live execution on exact 2.5.94 router      separate/not established by static APK analysis
 ```
 
@@ -389,43 +390,48 @@ APK call chain recovered                   confirmed
 HTTP method                                GET
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=restore_defaults
 interchangeable with reboot                no
+project dashboard control                  not exposed
 ```
 
 ---
 
-## 11. Consequence for this project
+## 11. Project runtime implementation
 
-The earlier 2.5.94 transport uncertainty is resolved at the stock-family client level.
+The transport gap and the runtime-expression gap are both closed.
 
-The current project implementation must **not** simply reuse its POST/SET destructive helper for MF885 2.5.94. To match the recovered client it should eventually encode destructive transport explicitly, for example:
+`modules/compatibility-profiles.js` now uses a transport-bearing destructive descriptor for the dedicated MF885 2.5.94 profile. Conceptually:
 
 ```text
 reset:
-  semantic: reboot
   method: GET
   file: reset
   body: none
 
 poweroff:
-  semantic: shutdown
   method: GET
   file: poweroff
   body: none
 ```
 
-The existing 2.5.94 runtime profile can remain disabled until that transport-aware code path is implemented and tested. At that point enabling Restart and Power off is no longer a guessing exercise: the request shapes are now documented.
+The existing `scriptable.js` power flow passes the descriptor into `modules/api-contract.js`. The API helper normalises the descriptor and submits a GET for `method: GET`; the XML semantic tree supplied by the older caller is ignored as a request body in that branch.
 
-Do not automatically retry either destructive GET after a timeout/connection loss.
+Legacy/string destructive descriptors still use the previous POST/SET path. That preserves the existing 2.5.96 mapping rather than silently changing it while fixing 2.5.94.
+
+The helper also fixes a separate bug: destructive commands no longer require a normal `verify` callback. Previously `writeThenVerify()` validated `verify` even for destructive calls, so a power action could fail before issuing any HTTP request.
+
+The runtime profile now advertises Restart and Power off for MF885 2.5.94. Factory reset remains deliberately unexposed.
+
+The one-shot rule still applies: do not automatically replay either destructive command after a transport drop. The current GET path uses the normal authenticated GET transport; a live exact-device run is still useful to confirm the observed effect and any authentication-edge behaviour.
 
 ---
 
 ## 12. Remaining evidence gaps
 
-The APK closes the principal **request-shape** gap. The remaining high-value checks are narrower:
+The APK closes the principal **request-shape** gap, and the project now implements that shape. Remaining checks are narrower:
 
 1. live one-shot execution of each GET on the exact MF885 2.5.94 device;
 2. optional packet capture of the stock WebUI button to determine whether WebUI independently uses the same GET path;
 3. native descriptor decode for `reset`/`poweroff` to tie the GET request to the exact 2.5.94 pre/post-GET handler;
 4. reverse-engineering of `trueshutdown` only if a practical use case appears.
 
-These are useful corroboration, but they no longer justify describing the companion-client GET transport as unknown.
+These are corroboration/behavioural validation tasks. They no longer justify describing the companion-client GET transport or the project runtime expression as unknown.
