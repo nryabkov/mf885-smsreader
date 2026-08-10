@@ -47,6 +47,17 @@ function enhancementScript() {
         const sections=String(card.dataset.diagSection||'').split(/\\s+/);
         card.classList.toggle('diag-hidden',!sections.includes(name));
       });
+
+      // Connection state is reused by Connection and SIM. On the SIM tab show
+      // only the SIM stage; on Connection show the full registration chain.
+      const stageCard=$('[data-diag-section~="sim"]');
+      if(stageCard){
+        $$('.diag-stage',stageCard).forEach((row,index)=>{
+          row.classList.toggle('diag-stage-hidden',name==='sim' && index!==0);
+        });
+        const heading=$('h3',stageCard);
+        if(heading) heading.textContent=name==='sim'?'SIM state':'Connection state';
+      }
     }
 
     function openMessage(row){
@@ -56,8 +67,8 @@ function enhancementScript() {
       root().innerHTML='<div class="sheet-backdrop sms-detail-backdrop"><div class="sheet sms-detail-sheet" role="dialog" aria-modal="true" aria-label="SMS message">'
         +'<div class="sms-detail-head"><div><small>SMS from</small><h2>'+esc(sender)+'</h2><time>'+esc(date)+'</time></div><button class="sms-detail-close" type="button" aria-label="Close">×</button></div>'
         +'<div class="sms-full-text">'+esc(text)+'</div>'
-        +'<button type="button" class="sms-detail-actions">Message actions</button>'
-        +'<button type="button" data-detail-close>Close</button></div></div>';
+        +'<div class="sms-detail-buttons"><button type="button" class="sms-detail-actions">Message actions</button><button type="button" data-detail-close>Close</button></div>'
+        +'</div></div>';
       $('.sms-detail-close').onclick=closeOverlay;
       $('[data-detail-close]').onclick=closeOverlay;
       $('.sms-detail-backdrop').onclick=e=>{if(e.target.classList.contains('sms-detail-backdrop'))closeOverlay()};
@@ -75,27 +86,22 @@ function enhancementScript() {
       const software=value('#deviceSoftware','—');
       const network=value('#mode','Unknown');
       const operator=value('#headerMeta','—');
-      const apn=value('#apn','—');
-      root().innerHTML='<section class="settings-view" role="dialog" aria-modal="true" aria-label="Settings">'
-        +'<header class="settings-header"><button type="button" class="settings-back">‹</button><h1>Settings</h1><span></span></header>'
-        +'<div class="settings-tabs"><button class="active" type="button">General</button><button type="button" data-settings-diag>Diagnostics</button></div>'
-        +'<article class="settings-card"><h3>Device</h3>'
-        +'<div class="settings-row"><span>Model</span><b>'+esc(model)+'</b></div>'
-        +'<div class="settings-row"><span>Firmware</span><b>'+esc(firmware)+'</b></div>'
-        +'<div class="settings-row"><span>Software</span><b>'+esc(software)+'</b></div></article>'
-        +'<article class="settings-card"><h3>Network</h3>'
-        +'<div class="settings-row"><span>Operator</span><b>'+esc(operator)+'</b></div>'
-        +'<div class="settings-row"><span>Mode</span><b>'+esc(network)+'</b></div>'
-        +'<div class="settings-row"><span>APN</span><b>'+esc(apn)+'</b></div></article>'
-        +'<article class="settings-card"><h3>Dashboard</h3>'
-        +'<div class="settings-row"><span>Auto refresh</span><b>30 seconds</b></div>'
-        +'<button class="settings-primary" type="button" data-settings-open-diag>Open diagnostics</button></article>'
-        +'</section>';
-      $('.settings-back').onclick=closeOverlay;
-      $$('[data-settings-diag],[data-settings-open-diag]').forEach(b=>b.onclick=()=>{closeOverlay();const t=$('[data-tab="diagnostics"]');if(t)t.click();});
+      root().innerHTML='<div class="sheet-backdrop settings-backdrop"><div class="sheet settings-sheet" role="dialog" aria-modal="true" aria-label="Router settings">'
+        +'<div class="settings-head"><div><small>Router</small><h2>Settings</h2></div><button class="settings-close" type="button" aria-label="Close">×</button></div>'
+        +'<div class="settings-group"><div class="settings-row"><span>Model</span><b>'+esc(model)+'</b></div><div class="settings-row"><span>Firmware</span><b>'+esc(firmware)+'</b></div><div class="settings-row"><span>Software</span><b>'+esc(software)+'</b></div></div>'
+        +'<div class="settings-group"><div class="settings-row"><span>Operator</span><b>'+esc(operator)+'</b></div><div class="settings-row"><span>Network</span><b>'+esc(network)+'</b></div><div class="settings-row"><span>Auto refresh</span><b>30 s</b></div></div>'
+        +'<button type="button" class="settings-primary" data-settings-open-diag>Open diagnostics</button>'
+        +'<button type="button" data-settings-capabilities>Detect capabilities</button>'
+        +'<button type="button" class="danger" data-settings-power>Reboot / Power</button>'
+        +'</div></div>';
+      $('.settings-close').onclick=closeOverlay;
+      $('.settings-backdrop').onclick=e=>{if(e.target.classList.contains('settings-backdrop'))closeOverlay()};
+      $('[data-settings-open-diag]').onclick=()=>{closeOverlay();const t=$('[data-tab="diagnostics"]');if(t)t.click();};
+      $('[data-settings-capabilities]').onclick=()=>{closeOverlay();const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const d=$('#detectAll');if(d){d.scrollIntoView({behavior:'smooth',block:'center'});d.focus();}},100);};
+      $('[data-settings-power]').onclick=()=>{closeOverlay();setTimeout(()=>{const p=$('#powerBtn');if(p)p.click();},0);};
     }
 
-    // Override the temporary v2 settings sheet with a proper full settings view.
+    // Replace the temporary v2 settings popup with a compact, consistent sheet.
     const settings=$('#settingsBtn');
     if(settings) settings.onclick=e=>{e.preventDefault();e.stopPropagation();openSettings();};
 
@@ -116,29 +122,23 @@ function enhanceHtml(html, model) {
   let output = String(html || "");
 
   const css = `
-    .diag-hidden{display:none!important}
+    .diag-hidden,.diag-stage-hidden{display:none!important}
     .diag-log-error{color:var(--red)!important;max-width:62%;overflow-wrap:anywhere;text-align:right}
     .diag-empty{color:var(--muted);padding:8px 0;line-height:1.45}
     .sms-row{cursor:pointer}
     .sms-detail-sheet{padding-bottom:calc(22px + env(safe-area-inset-bottom));}
-    .sms-detail-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:13px;margin-bottom:15px}
-    .sms-detail-head small,.sms-detail-head time{display:block;color:var(--muted);font-size:12px}
-    .sms-detail-head h2{margin:3px 0 5px;font-size:22px}
-    .sms-detail-close{width:42px!important;height:42px;padding:0!important;margin:0!important;border-radius:50%!important;font-size:28px!important;line-height:1!important}
+    .sms-detail-head,.settings-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:13px;margin-bottom:15px}
+    .sms-detail-head small,.sms-detail-head time,.settings-head small{display:block;color:var(--muted);font-size:12px}
+    .sms-detail-head h2,.settings-head h2{margin:3px 0 5px;font-size:22px}
+    .sms-detail-close,.settings-close{width:42px!important;height:42px;padding:0!important;margin:0!important;border-radius:50%!important;font-size:28px!important;line-height:1!important}
     .sms-full-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:17px;line-height:1.5;color:var(--text);background:#08131d;border:1px solid var(--line);border-radius:14px;padding:15px;min-height:92px;margin-bottom:12px;user-select:text;-webkit-user-select:text}
-    .settings-view{position:fixed;inset:0;z-index:50;overflow:auto;background:radial-gradient(circle at 50% -15%,#102a40 0,#07111c 40%,#050b12 100%);padding:calc(18px + env(safe-area-inset-top)) 14px calc(96px + env(safe-area-inset-bottom));color:var(--text)}
-    .settings-header{max-width:732px;margin:0 auto 18px;display:grid;grid-template-columns:48px 1fr 48px;align-items:center}
-    .settings-header h1{text-align:center;font-size:20px;margin:0}
-    .settings-back{border:0;background:none;color:var(--cyan);font-size:42px;line-height:1;padding:0;text-align:left}
-    .settings-tabs{max-width:732px;margin:0 auto 13px;display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line)}
-    .settings-tabs button{border:0;background:none;color:var(--muted);padding:11px 4px;position:relative}
-    .settings-tabs button.active{color:var(--cyan)}
-    .settings-tabs button.active:after{content:"";position:absolute;left:18px;right:18px;bottom:-1px;height:2px;background:var(--cyan)}
-    .settings-card{max-width:732px;margin:0 auto 12px;background:linear-gradient(145deg,rgba(16,31,46,.97),rgba(10,23,35,.98));border:1px solid var(--line);border-radius:18px;padding:15px}
-    .settings-card h3{margin:0 0 9px;font-size:16px}
-    .settings-row{display:grid;grid-template-columns:1fr minmax(0,60%);gap:14px;padding:10px 0;border-top:1px solid var(--line)}
-    .settings-row span{color:var(--muted)}.settings-row b{text-align:right;overflow-wrap:anywhere}
-    .settings-primary{width:100%;margin-top:11px;border:1px solid #38566f;background:#132536;color:var(--text);padding:12px;border-radius:12px}
+    .sms-detail-buttons{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .sms-detail-buttons button{margin-top:0!important}
+    .settings-sheet{max-width:620px;margin:0 auto;width:100%;}
+    .settings-group{border:1px solid var(--line);border-radius:14px;background:#08131d;padding:0 13px;margin-bottom:11px}
+    .settings-row{display:grid;grid-template-columns:1fr minmax(0,62%);gap:14px;padding:11px 0;border-top:1px solid var(--line)}
+    .settings-row:first-child{border-top:0}.settings-row span{color:var(--muted)}.settings-row b{text-align:right;overflow-wrap:anywhere}
+    .settings-primary{border-color:#32627d!important;color:var(--cyan)!important}
   `;
   output = output.replace("</style>", `${css}</style>`);
 
@@ -148,8 +148,8 @@ function enhanceHtml(html, model) {
   );
   output = output.replace('<article class="card diag-card"><h3>Connection state</h3>', '<article class="card diag-card" data-diag-section="connection sim"><h3>Connection state</h3>');
   output = output.replace('<article class="card diag-card"><h3>Network details</h3>', '<article class="card diag-card" data-diag-section="network"><h3>Network details</h3>');
-  output = output.replace('<article class="card diag-card"><h3>APN details</h3>', '<article class="card diag-card" data-diag-section="connection"><h3>APN details</h3>');
-  output = output.replace('<article class="card diag-card"><h3>Ping / reachability</h3>', '<article class="card diag-card" data-diag-section="connection"><h3>Ping / reachability</h3>');
+  output = output.replace('<article class="card diag-card"><h3>APN details</h3>', '<article class="card diag-card" data-diag-section="connection network"><h3>APN details</h3>');
+  output = output.replace('<article class="card diag-card"><h3>Ping / reachability</h3>', '<article class="card diag-card" data-diag-section="connection logs"><h3>Ping / reachability</h3>');
 
   const logCard = `<article class="card diag-card diag-hidden" data-diag-section="logs"><h3>Diagnostic log</h3>${diagnosticsLogHtml(model)}</article>`;
   output = output.replace('</section>\n  </div><footer class="footerbar">', `${logCard}</section>\n  </div><footer class="footerbar">`);
