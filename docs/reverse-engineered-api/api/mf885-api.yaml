@@ -77,16 +77,8 @@ firmware_profiles:
       - MF885
       - MF96 Ver.D
     confidence: firmware-confirmed
-    provenance:
-      - live-device
-      - xml-schema
-      - native-handler
-      - android-apk
-      - project-client
-    diagnostic_models:
-      - status1
-      - wan
-      - Engineer_parameter
+    provenance: [live-device, xml-schema, native-handler, android-apk, project-client]
+    diagnostic_models: [status1, wan, Engineer_parameter]
     power_transport_evidence:
       confidence: companion-app-confirmed
       apk:
@@ -96,24 +88,13 @@ firmware_profiles:
         classes_dex_sha256: 5d679764de58c25d8866068108a01361d0571a0e2e05ad8a55f23ca1b1516eba
         provenance_note: supplied English APK is repacked/test-key-signed, not a cryptographically verified original store APK
       commands:
-        reboot:
-          transport: command_on_read
-          file: reset
-          body: none
-        poweroff:
-          transport: command_on_read
-          file: poweroff
-          body: none
-        restore_defaults:
-          transport: command_on_read
-          file: restore_defaults
-          body: none
+        reboot: { transport: command_on_read, file: reset, body: none }
+        poweroff: { transport: command_on_read, file: poweroff, body: none }
+        restore_defaults: { transport: command_on_read, file: restore_defaults, body: none }
     runtime_support:
       destructive_enabled: true
       implementation: transport-aware destructive model descriptors
-      enabled_commands:
-        - reboot
-        - poweroff
+      enabled_commands: [reboot, poweroff]
       notes:
         - Factory reset remains deliberately unexposed in the dashboard.
         - Live exact-device execution remains a separate evidence level.
@@ -122,18 +103,22 @@ firmware_profiles:
       verify_normal_writes_by_readback: true
       never_retry_destructive_command_automatically: true
 
+  "2.5.94_release_MF855_NZ_CP_2.129.003":
+    id: zmi-mf855-nz-2.5.94
+    confidence: companion-app-confirmed
+    provenance: [android-apk, project-client]
+    notes:
+      - The analysed APK explicitly contains MF855 plus MF885/MF96 Ver.D support and uses the same local power GET endpoints.
+      - The clean MF885 golden carries this release-lineage string, so the project preserves power availability if the router reports the full build string rather than short version 2.5.94.
+    power_commands:
+      reboot: { transport: command_on_read, file: reset, body: none, runtime_enabled: true }
+      poweroff: { transport: command_on_read, file: poweroff, body: none, runtime_enabled: true }
+
   "2.5.96":
     id: zmi-mf855-mf885-2.5.96
     confidence: firmware-confirmed
-    provenance:
-      - xml-schema
-      - web-ui-js
-      - native-handler
-      - project-client
-    diagnostic_models:
-      - status1
-      - wan
-      - Engineer_parameter
+    provenance: [xml-schema, web-ui-js, native-handler, project-client]
+    diagnostic_models: [status1, wan, Engineer_parameter]
     destructive_transport:
       implementation: retained-project-mapping
       method: POST
@@ -211,14 +196,9 @@ models:
     provenance: [live-device, project-client, web-ui-js, xml-schema, android-apk]
     transport: model_write
     known_commands:
-      GET_RCV_SMS_LOCAL:
-        purpose: Read inbox page.
-      SEND_SMS:
-        purpose: Send SMS.
-        sms_cmd: "4"
-      DELETE_SMS:
-        purpose: Delete SMS.
-        sms_cmd: "6"
+      GET_RCV_SMS_LOCAL: { purpose: Read inbox page. }
+      SEND_SMS: { purpose: Send SMS., sms_cmd: "4" }
+      DELETE_SMS: { purpose: Delete SMS., sms_cmd: "6" }
     encoding:
       sms_content: UTF-16BE hexadecimal on analysed client path
 
@@ -235,12 +215,8 @@ models:
     risk: low
     confidence: live-tested
     fields:
-      tx_byte_all:
-        unit: bytes
-        meaning: total mobile-WAN upload bytes
-      rx_byte_all:
-        unit: bytes
-        meaning: total mobile-WAN download bytes
+      tx_byte_all: { unit: bytes, meaning: total mobile-WAN upload bytes }
+      rx_byte_all: { unit: bytes, meaning: total mobile-WAN download bytes }
     notes:
       - Do not mix with per-device/LAN/WLAN/billing-period counters.
 
@@ -267,7 +243,7 @@ models:
       body: none
       runtime_enabled: true
     notes:
-      - `reset` is reboot, not factory reset.
+      - reset is reboot, not factory reset.
       - Do not automatically retry after timeout/connection loss.
 
   poweroff:
@@ -284,7 +260,7 @@ models:
       body: none
       runtime_enabled: true
     notes:
-      - The analysed Android shutdown UI uses `poweroff`, not `trueshutdown`.
+      - The analysed Android shutdown UI uses poweroff, not trueshutdown.
       - Do not automatically retry after timeout/connection loss.
 
   restore_defaults:
@@ -299,7 +275,7 @@ models:
       body: none
       runtime_enabled: false
     notes:
-      - Never substitute for `reset` when implementing Restart/Reboot.
+      - Never substitute for reset when implementing Restart/Reboot.
       - Deliberately not exposed as a dashboard control.
 
   trueshutdown:
@@ -341,25 +317,21 @@ actions:
   GetInfo:
     method: GET
     path: /xml_action.cgi
-    query:
-      Action: GetInfo
-      Id: "<id>"
+    query: { Action: GetInfo, Id: "<id>" }
     confidence: firmware-confirmed
     provenance: [web-ui-js, native-handler, android-apk]
 
   BackupFwStart:
     method: GET
     path: /xml_action.cgi
-    query:
-      Action: BackupFwStart
+    query: { Action: BackupFwStart }
     confidence: firmware-confirmed
     provenance: [web-ui-js, native-handler, android-apk]
 
   BackupFw:
     method: GET
     path: /xml_action.cgi
-    query:
-      Action: BackupFw
+    query: { Action: BackupFw }
     risk: critical-sensitive-download
     confidence: firmware-confirmed
     provenance: [web-ui-js, native-handler]
@@ -368,10 +340,7 @@ actions:
     method: POST
     path: /xml_action.cgi
     multipart: true
-    query:
-      Action: Upload
-      file: upgrade
-      command: ""
+    query: { Action: Upload, file: upgrade, command: "" }
     risk: critical
     confidence: frontend-confirmed
 
@@ -379,10 +348,7 @@ actions:
     method: POST
     path: /xml_action.cgi
     multipart: true
-    query:
-      Action: Upload
-      file: backfile
-      config_backup: ""
+    query: { Action: Upload, file: backfile, config_backup: "" }
     risk: critical
     confidence: frontend-confirmed
 
@@ -390,7 +356,7 @@ client_rules:
   - Keep physical /xml_action.cgi separate from Digest uri /cgi/xml_action.cgi.
   - Re-authenticate carefully on 401; never blindly replay a destructive command after connection loss.
   - For normal writes, POST/SET then read back where possible.
-  - For MF885 2.5.94 reboot/poweroff, the recovered companion client and project profile use GET method=get with no XML body.
+  - For MF885/MF855 2.5.94-family reboot/poweroff, the recovered companion client and project profiles use GET method=get with no XML body.
   - Destructive transport is profile-specific; string descriptors preserve the retained POST behaviour for older mappings.
   - Keep factory reset separate and unexposed unless deliberately implemented.
   - Keep unknown firmware enum values raw.
