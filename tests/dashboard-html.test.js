@@ -6,7 +6,7 @@ const app = require('../scriptable.js');
 
 function model(tab='sms') { return {tab,loadedAt:Date.now(),sms:{messages:[{id:'1',phone:'+1',date:'now',content:'hello'}],loading:true},errors:{},network:{},battery:{},traffic:{},cellularDiagnostics:{},ussd:{state:'unchecked',detail:'Not checked'},deviceAccess:{state:'unchecked',detail:'Not checked',capabilities:[]},cellularControl:{state:'unchecked',detail:'Not checked'}}; }
 
-test('initial HTML is immediately useful and marks history as loading',()=>{const html=app.buildHtml(model());assert.match(html,/hello/);assert.match(html,/Loading message history…/);assert.match(html,/Not checked/);assert.match(html,/data-detect-experimental/);assert.match(html,/Detect experimental features/);assert.doesNotMatch(html,/data-detect="ussd"/);});
+test('initial HTML is immediately useful and marks history as loading',()=>{const html=app.buildHtml(model());assert.match(html,/hello/);assert.match(html,/Loading messages: 1/);assert.match(html,/Not checked/);assert.match(html,/data-detect-experimental/);assert.match(html,/Detect experimental features/);assert.doesNotMatch(html,/data-detect="ussd"/);});
 test('SMS and router models render a non-empty main with the requested active tab',()=>{for(const tab of ['sms','router']){const html=app.buildHtml(model(tab));const main=html.match(/<main>([\s\S]*?)<\/main>/i);assert.ok(main&&main[1].trim(),`${tab} main must not be empty`);assert.match(html,new RegExp(`<section id="${tab}" class="tab active"`));}});
 test('dashboard has native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
 
@@ -135,6 +135,33 @@ test('native dashboard sleep paths do not contain setTimeout Promise wrappers',(
   assert.ok(nextCommand);
   for(const nativeFunction of [dashboard[0],nextCommand[0]])assert.doesNotMatch(nativeFunction,/new Promise\s*\(\s*resolve\s*=>\s*setTimeout/);
 });
+test('SMS history progress derives loaded, total and percent and updates the hero counter',()=>{
+  const fixture=model(); fixture.sms.totalMessages=42;
+  const html=app.buildHtml(fixture),js=app.clientScript(fixture);
+  assert.match(html,/SMS: 1\/42/);
+  assert.match(html,/Loading messages: 1\/42 \(2%\)/);
+  assert.match(js,/loaded=Array\.isArray\(payload\.messages\)\?payload\.messages\.length:0/);
+  assert.match(js,/total=Number\(payload\.totalMessages\)/);
+  assert.match(js,/Number\.isFinite\(total\)&&total>0/);
+  assert.match(js,/Math\.round\(loaded\/total\*100\)/);
+  assert.match(js,/hero\.textContent='SMS: '\+counter/);
+  assert.match(js,/Loading messages: '\+counter/);
+});
+
+test('SMS history uses one warning region and an auto-hiding accessible success toast',()=>{
+  const html=app.buildHtml(model()),js=app.clientScript(model());
+  const markup=html.slice(0,html.indexOf('<script>'));
+  assert.equal((markup.match(/data-history-warning/g)||[]).length,1);
+  assert.equal((markup.match(/data-history-toast/g)||[]).length,1);
+  assert.match(html,/data-history-toast role="status" aria-live="polite" hidden/);
+  assert.match(js,/section&&section\.querySelector\('\[data-history-warning\]'\)/);
+  assert.match(js,/if\(!note&&section\)/);
+  assert.match(js,/toast\.textContent='Message history loaded'/);
+  assert.match(js,/historyToastTimer=setTimeout/);
+  assert.match(js,/toast\.hidden=true;historyToastTimer=null},4000/);
+  assert.match(js,/if\(historyToastTimer!==null\)\{clearTimeout\(historyToastTimer\)/);
+});
+
 test('client applies complete and partial SMS history without document reload',()=>{const js=app.clientScript(model());assert.match(js,/window\.zmiApplySmsHistory=function/);assert.match(js,/payload\.warning/);assert.match(js,/Message history is incomplete|⚠️/);assert.doesNotMatch(js,/location\.(?:href|assign|replace)|location\s*=/);});
 test('document has no Scriptable relaunch links',()=>{const text=app.buildHtml(model())+app.clientScript(model());assert.doesNotMatch(text,/scriptable:\/\/\/run|This action will reopen|runUrl|navigationInProgress/);});
 test('client exposes targeted status, capability and action updates',()=>{const js=app.clientScript(model());for(const name of ['zmiApplyStatus','zmiApplySmsHistory','zmiApplyCapability','zmiApplyActionResult'])assert.match(js,new RegExp('window\\.'+name));assert.match(js,/CustomEvent\('ZMICommand'/);});
@@ -176,7 +203,7 @@ test('polled empty SMS history renders an empty card and preserves its warning',
   assert.match(js,/messages\.length===0/);
   assert.match(js,/empty\.className='card empty'/);
   assert.match(js,/title\.textContent='No SMS found'/);
-  assert.match(js,/payload\.warning\?'⚠️ '\+payload\.warning/);
+  assert.match(js,/note\.textContent='⚠️ '\+payload\.warning/);
 });
 
 test('tabs have independent scroll positions and unsaved tabs restore to top',()=>{
@@ -341,4 +368,22 @@ test('only profile-declared alternative RAT sources conflict',()=>{
  const real={...base,wan:{...base.wan,rat:{...base.wan.rat,alternativeSources:['sys_mode','ConnType']}}};
  assert.equal(app.parseNetwork('<sys_mode>4</sys_mode><ConnType>LTE</ConnType>',base).networkConflict,false);
  assert.equal(app.parseNetwork('<sys_mode>4</sys_mode><ConnType>LTE</ConnType>',real).mode,'Conflicting network data');
+});
+
+
+test('loadRemainingSms progress reports increasing messages and known totalMessages',async()=>{
+  const originalRequest=global.Request;
+  global.Request=class {
+    constructor(url){this.url=url;this.method='GET';this.headers={};this.response=null;}
+    async loadString(){
+      const page=Number((this.body.match(/<page_number>(\d+)<\/page_number>/)||[])[1]);
+      this.response={statusCode:200,headers:{}};
+      return `<RGW><message><get_message><total_pages>3</total_pages><total_sms_count>3</total_sms_count><Item index="${page}"><index>${page}</index><from>+${page}</from><content>message ${page}</content></Item></get_message></message></RGW>`;
+    }
+  };
+  const initial={messages:[{id:'1',phone:'+1',date:'',content:'message 1'}],loadedPages:1,totalPages:3,totalMessages:3,loading:true,_first:{page:1,totalPages:3,totalMessages:3,messages:[{id:'1',phone:'+1',date:'',content:'message 1'}]}};
+  const progress=[];
+  try { await app.loadRemainingSms({realm:'router',nonce:'n',qop:'auth',ha1:'h',nc:1},initial,value=>progress.push({loaded:value.messages.length,total:value.totalMessages})); }
+  finally { global.Request=originalRequest; }
+  assert.deepEqual(progress,[{loaded:2,total:3},{loaded:3,total:3}]);
 });
