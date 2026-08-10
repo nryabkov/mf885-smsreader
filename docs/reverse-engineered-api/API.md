@@ -91,7 +91,7 @@ RGW/wan/proto
 
 **Purpose:** cellular WAN state/configuration.  
 **Access:** read; writes are firmware/profile-specific.  
-**Confidence:** firmware-confirmed for reads on 2.5.96; write mappings are intentionally not advertised by this project until verified.  
+**Confidence:** firmware-confirmed for reads on the analysed family builds; write mappings are intentionally not advertised until verified for a named profile.  
 **Provenance:** `xml-schema`, `project-client`.
 
 Fields worth capturing include:
@@ -130,7 +130,7 @@ On a live MF885, the router was registered on LTE with good signal and an operat
 **Confidence:** firmware-confirmed.  
 **Provenance:** `xml-schema`, `web-ui-js`, `project-client`.
 
-The 2.5.96 schema exposes more than 100 leaf fields. Examples include:
+The analysed schema exposes more than 100 leaf fields. Examples include:
 
 ```text
 RGW/Engi/Dev/vendor
@@ -275,7 +275,7 @@ Do not log responses from this model in public issue reports.
 **Confidence:** firmware-confirmed.  
 **Provenance:** `xml-schema`, `web-ui-js`.
 
-The 2.5.96 schema contains roughly 147 leaf fields and may include:
+The analysed schema contains roughly 147 leaf fields and may include:
 
 - administrator credentials;
 - Wi-Fi keys;
@@ -294,22 +294,42 @@ Treat configuration backups as secrets.
 **Purpose:** restart/reboot.  
 **Access:** write-command.  
 **Risk:** destructive/connection-dropping.  
-**Confidence:** firmware-confirmed; project profile contains a confirmed 2.5.96 mapping.  
-**Provenance:** `native-handler`, `project-client`.
+**Confidence:** firmware-confirmed for MF885 2.5.94 and the analysed 2.5.96 profile.  
+**Provenance:** `xml-schema`, `native-handler`, `project-client`, firmware-specific static analysis.
 
-Analysed tree:
+Confirmed model write:
 
-```xml
-<RGW><reboot>...</reboot></RGW>
+```http
+POST /xml_action.cgi?method=set&module=duster&file=reset
 ```
 
-The connection may disappear before an HTTP response is received. Do not blindly retry.
+Confirmed tree:
+
+```xml
+<RGW><reboot/></RGW>
+```
+
+The client emits the XML-equivalent form `<RGW><reboot></reboot></RGW>`.
+
+On MF885 2.5.94, `restore_defaults` is a separate firmware model. Therefore `file=reset` / `RGW/reboot` is a reboot path, **not** a factory-default reset.
+
+The application naming chain is:
+
+```text
+Restart (UI) -> reboot (client action) -> reset (firmware model) -> RGW/reboot
+```
+
+So “Restart” and “Reboot” are two names for the same device operation in this project, not two separate firmware commands.
+
+The connection may disappear before an HTTP response is received. Submit the destructive request once and do not blindly retry after a 401, timeout or connection loss. See [MF885 2.5.94 static analysis](MF885_2.5.94_STATIC_ANALYSIS.md) for the exact golden-image evidence.
 
 ---
 
 ## Power-off / shutdown
 
 Power control varies by firmware. The project compatibility profile for 2.5.96 contains a confirmed destructive `poweroff` mapping with a `shutdown` tree, while intentionally omitting unconfirmed variants such as `trueshutdown`.
+
+The 2.5.94 firmware material contains `poweroff`/shutdown contracts, but this project does **not** yet enable them in the 2.5.94 compatibility profile because the exact external trigger/effect has not reached the same evidence standard as reboot.
 
 **Rule:** never probe guessed shutdown field values.
 
@@ -396,7 +416,7 @@ Contract found in firmware:
 </RGW>
 ```
 
-Native-handler analysis shows that invoking this model switches an internal modem/USB state machine to **mode 8**. Nearby control-flow/string evidence ties this path to Duster/AT-command/USB handling. The exact USB interfaces/descriptors exposed by mode 8 still require a before/after measurement on a live MF885.
+Native-handler analysis shows that invoking this model switches an internal modem/USB state machine to **mode 8** on the deeply traced build. Nearby control-flow/string evidence ties this path to Duster/AT-command/USB handling. The exact USB interfaces/descriptors exposed by mode 8 still require a before/after measurement on a live MF885.
 
 The model appears in a pre-session allowlist in the analysed firmware. That is not a guarantee that every firmware accepts every request without authentication.
 
@@ -438,7 +458,7 @@ An XML schema exists with fields resembling:
 </diagnostic>
 ```
 
-However, static analysis of the 2.5.96 model-registration entry found the handler slots to be zero. Therefore this is documented as **schema-only / inactive in the analysed build**, not as an arbitrary command-execution API.
+However, static analysis of the 2.5.96 model-registration entry found the handler slots to be zero. Therefore this is documented as **schema-only / inactive in that analysed build**, not as an arbitrary command-execution API.
 
 ---
 
@@ -473,7 +493,7 @@ Interpretation: these routes bypass the **generic** session check. Individual ha
 
 ## API design guidance for client authors
 
-1. Authenticate once, but be prepared to reacquire a Digest challenge on `401`.
+1. Authenticate once, but be prepared to reacquire a Digest challenge on `401` for safe/read operations.
 2. Keep nonce-count handling correct.
 3. Never infer enum labels for unknown firmware.
 4. For normal writes: `POST -> GET -> verify`.
