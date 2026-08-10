@@ -1,22 +1,24 @@
 {
-  "version": "3.0.0",
+  "version": "3.1.0-ui2",
   "loaderProtocol": 2,
   "minimumLoaderProtocol": 2,
   "loader": "loader.js",
-  "entry": "scriptable.js",
+  "entry": "scriptable-ui.js",
   "files": [
+    "scriptable-ui.js",
     "scriptable.js",
+    "modules/ui-v2.js",
     "modules/ussd.js",
     "modules/device-access.js",
-    "modules/cellular-control.js"
-    ,"modules/api-contract.js"
-    ,"modules/compatibility-profiles.js"
-    ,"modules/counters.js"
-    ,"modules/engineer-parameter.js"
-    ,"modules/statistics.js"
-    ,"modules/autoreboot.js"
-    ,"modules/telnet-control.js"
-    ,"modules/localization.js"
-    ,"modules/cellular-diagnostics.js"
+    "modules/cellular-control.js",
+    "modules/api-contract.js",
+    "modules/compatibility-profiles.js",
+    "modules/counters.js",
+    "modules/engineer-parameter.js",
+    "modules/statistics.js",
+    "modules/autoreboot.js",
+    "modules/telnet-control.js",
+    "modules/localization.js",
+    "modules/cellular-diagnostics.js"
   ]
 }
