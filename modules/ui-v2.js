@@ -109,6 +109,26 @@ function clientScript(){
   function renderDiagnostics(d){const v=d.values||{},s=d.stages||{};const get=k=>v[k]&&v[k].value!==null&&v[k].value!==undefined?v[k].value:'—';$('#diagStages').innerHTML=['sim','registration','pdp'].map((k,i)=>{const x=s[k]||{};return `<div class="diag-stage"><i>${i+1}.</i><span>${k==='sim'?'SIM':k==='registration'?'Registration and roaming':'PDP session'}</span><b class="${/ready|registered|active|connected/i.test(x.detail||'')?'status-ok':''}">${html(x.detail||'Unknown')}</b></div>`}).join('');$('#diagNetwork').innerHTML=[['Network',state.data.network.generation||state.data.network.mode],['Band',get('band')],['RSRP',get('rsrp')],['RSRQ',get('rsrq')],['SINR',get('sinr')],['Cell ID',get('cellId')],['PCI',get('pci')]].map(([a,b])=>`<div class="diag-row"><span>${a}</span><b>${html(b)}</b></div>`).join('');$('#diagApn').innerHTML=[['APN',get('activeApn')],['IPv4',get('ipv4')],['IPv6',get('ipv6')],['DNS 1',get('dns1')],['DNS 2',get('dns2')],['Gateway',get('gateway4')]].map(([a,b])=>`<div class="diag-row"><span>${a}</span><b>${html(b)}</b></div>`).join('');$('#diagUpdated').textContent=d.loadedAt?new Date(d.loadedAt).toLocaleTimeString():'—';const ip=get('ipv4');if(ip!=='—')$('#ipAddress').textContent=ip;const apn=get('activeApn');if(apn!=='—')$('#apn').textContent=apn;}
   async function smsAction(row,action){const id=row.dataset.smsId,text=row.dataset.text;try{if(action==='copy'){await command('copySms',{text});toast('Copied')}else if(action==='share'){await command('shareSms',{text})}else if(action==='delete'){if(!confirm('Delete this SMS?'))return;await command('deleteSms',{id,confirmed:true});toast('Deleted');await refresh()}}catch(e){toast(e.message)}}
   window.zmiSmsAction=smsAction;
+  let smsLongPress=null,suppressSmsClick=null;
+  function cancelSmsLongPress(){if(!smsLongPress)return;clearTimeout(smsLongPress.timer);smsLongPress=null;}
+  document.addEventListener('pointerdown',e=>{
+    const row=e.target.closest&&e.target.closest('.sms-row');
+    if(!row||(e.target.closest&&e.target.closest('.row-menu')))return;
+    cancelSmsLongPress();
+    const press={row,pointerId:e.pointerId,x:e.clientX,y:e.clientY};
+    press.timer=setTimeout(async()=>{
+      if(smsLongPress!==press)return;
+      smsLongPress=null;suppressSmsClick=row;
+      const text=row.dataset.text;
+      try{await command('copySms', {text});toast('Copied')}catch(e){toast(e.message)}
+    },550);
+    smsLongPress=press;
+  });
+  document.addEventListener('pointermove',e=>{const p=smsLongPress;if(p&&p.pointerId===e.pointerId&&Math.hypot(e.clientX-p.x,e.clientY-p.y)>10)cancelSmsLongPress();});
+  document.addEventListener('pointerup',cancelSmsLongPress);
+  document.addEventListener('pointercancel',cancelSmsLongPress);
+  document.addEventListener('scroll',cancelSmsLongPress,true);
+  document.addEventListener('click',e=>{const row=e.target.closest&&e.target.closest('.sms-row');if(row&&row===suppressSmsClick){suppressSmsClick=null;e.preventDefault();e.stopImmediatePropagation();}},true);
   function bindSmsMenus(){$$('[data-sms-menu]').forEach(b=>b.onclick=()=>{const row=b.closest('.sms-row');sheet('Message actions',`<button data-copy>Copy text</button><button data-share>Share</button><button class="danger" data-del>Delete</button>`);$('[data-copy]').onclick=()=>{closeSheet();smsAction(row,'copy')};$('[data-share]').onclick=()=>{closeSheet();smsAction(row,'share')};$('[data-del]').onclick=()=>{closeSheet();smsAction(row,'delete')};});}
   function sheet(title,body){$('#sheetRoot').innerHTML=`<div class="sheet-backdrop" id="sheetBackdrop"><div class="sheet"><h2>${html(title)}</h2>${body}<button data-sheet-close>Cancel</button></div></div>`;$('[data-sheet-close]').onclick=closeSheet;$('#sheetBackdrop').onclick=e=>{if(e.target.id==='sheetBackdrop')closeSheet()};}
   function closeSheet(){$('#sheetRoot').innerHTML=''}
