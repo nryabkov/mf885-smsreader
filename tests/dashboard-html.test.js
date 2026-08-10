@@ -358,9 +358,11 @@ test('SMS XML bodies are omitted by default and opt-in still uses central redact
 
 test('Router groups are ordered, compact, and retain command hooks',()=>{
   const page=app.buildHtml(model('router')),html=page.slice(page.indexOf('<section id=\"router\"'),page.indexOf('</section></main>'));
-  const labels=['Overview','Mobile network','Connection diagnostics','Cellular controls','USSD','Device access','System'];
+  const labels=['Overview','Mobile network','Connection diagnostics','Experimental features','Cellular controls','USSD','Device access','System'];
   for(let i=1;i<labels.length;i++)assert.ok(html.indexOf(labels[i-1])<html.indexOf(labels[i]));
   for(const hook of ['data-ussd-section','data-device-access-section','data-cellular-control-section','data-power-action'])assert.match(html,new RegExp(hook));
+  assert.equal((html.match(/class="experimental-subsection"/g)||[]).length,3);
+  assert.equal((html.match(/data-detect-experimental/g)||[]).length,1);
   assert.equal((html.match(/topgrid router-only/g)||[]).length,1); assert.match(html,/Loading diagnostics…/);
 });
 

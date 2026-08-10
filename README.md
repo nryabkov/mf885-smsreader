@@ -176,7 +176,7 @@ For an incompatible `status1` response, look for `status1:xml-summary` (especial
 
 ### Router dashboard and cellular troubleshooting
 
-The Router tab is ordered as **Overview**, **Mobile network**, **Connection diagnostics**, **Cellular controls**, **USSD**, **Device access**, and **System**. The overview is intentionally compact; polling updates it and the detailed network fields from the same snapshot. Diagnostics load after first paint, show endpoint-specific failures, and retain the last successful values as stale when a later poll fails.
+The Router tab is ordered as **Overview**, **Mobile network**, **Connection diagnostics**, **Experimental features**, and **System**. The unconfirmed cellular controls, USSD, and device-access features are grouped into subsections of the single **Experimental features** card and share one detection button. The overview is intentionally compact; polling updates it and the detailed network fields from the same snapshot. Diagnostics load after first paint, show endpoint-specific failures, and retain the last successful values as stale when a later poll fails.
 
 Current RAT and preferred/configured mode are separate. Numeric RAT values are decoded only by a mapping confirmed for the active firmware profile; unknown values display their safe raw field/code and conflicting fields are reported without guessing. Debug logging records firmware-profile mismatches and safe RAT sources/codes. Logs redact IMEI/ICCID, telephone numbers, credentials, cookies, tokens, Digest material, SMS, and USSD payloads. For troubleshooting, enable debug logging, reproduce while the stock router network screen is visible, and share only anonymized XML summaries—never raw authentication or subscriber identifiers.
 
