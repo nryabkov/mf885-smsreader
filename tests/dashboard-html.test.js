@@ -501,10 +501,12 @@ test('loadRemainingSms progress reports increasing messages and known totalMessa
 
 test('42 messages across five total_number pages finish with a 42/42 SMS counter',async()=>{
   const originalRequest=global.Request;
+  const requestedPages=[];
   global.Request=class {
     constructor(url){this.url=url;this.method='GET';this.headers={};this.response=null;}
     async loadString(){
       const page=Number((this.body.match(/<page_number>(\d+)<\/page_number>/)||[])[1]);
+      requestedPages.push(page);
       const start=(page-1)*10+1,end=Math.min(42,page*10);
       const items=Array.from({length:Math.max(0,end-start+1)},(_,offset)=>{const id=start+offset;return `<Item index="${id}"><index>${id}</index><from>+${id}</from><content>message ${id}</content></Item>`}).join('');
       this.response={statusCode:200,headers:{}};
@@ -516,10 +518,14 @@ test('42 messages across five total_number pages finish with a 42/42 SMS counter
     const initial={messages:firstMessages,loadedPages:1,totalPages:5,totalMessages:null,loading:true,_first:{page:1,totalPages:5,totalMessages:null,messages:firstMessages}};
     const progress=[];
     const history=await app.loadRemainingSms({realm:'router',nonce:'n',qop:'auth',ha1:'h',nc:1},initial,value=>progress.push({loaded:value.messages.length,total:value.totalMessages}));
-    assert.deepEqual(progress,[{loaded:20,total:null},{loaded:30,total:null},{loaded:40,total:null},{loaded:42,total:null}]);
+    assert.deepEqual(progress,[{loaded:20,total:42},{loaded:30,total:42},{loaded:40,total:42},{loaded:42,total:42}]);
+    assert.deepEqual(requestedPages,[5,2,3,4]);
     assert.equal(history.totalPages,5);
     assert.equal(history.totalMessages,42);
     assert.equal(history.messages.length,42);
+    assert.deepEqual(history.messages.map(message=>message.id),Array.from({length:42},(_,index)=>String(index+1)));
+    assert.equal(new Set(history.messages.map(message=>message.id)).size,42);
+    assert.ok(!history.warning);
     const html=app.buildHtml({ ...model(), sms:history });
     assert.match(html,/SMS: 42\/42/);
     assert.doesNotMatch(html,/SMS: 42\/5/);

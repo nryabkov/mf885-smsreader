@@ -721,13 +721,22 @@ function mergeSmsPage(result, parsed) {
 async function loadRemainingSms(auth, initial, onProgress) {
   const result = initial || emptySms();
   const first = result._first || { page:1, messages:result.messages.slice(), totalPages:result.totalPages, totalMessages:result.totalMessages };
+  let cachedLast = null;
+  if (result.totalMessages === null && result.totalPages !== null && result.totalPages > 1 && result.totalPages <= SMS_MAX_PAGES) {
+    try {
+      cachedLast = parseSmsPage(await getSmsPage(auth, result.totalPages), result.totalPages);
+      result.totalMessages = (result.totalPages - 1) * SMS_PAGE_SIZE + Math.min(cachedLast.messages.length, SMS_PAGE_SIZE);
+    } catch (error) {
+      result.warning = `Message history is incomplete: ${cleanError(error)}`;
+    }
+  }
   const seenPages = new Set();
   if (first.messages.length) seenPages.add(pageMessageFingerprint(first.messages));
   let last = first;
   for (let page = Math.max(2, (result.loadedPages || 1) + 1); page <= SMS_MAX_PAGES; page++) {
     if (result.totalPages !== null && page > result.totalPages) break;
     let parsed;
-    try { parsed = parseSmsPage(await getSmsPage(auth, page), page); }
+    try { parsed = cachedLast && page === cachedLast.page ? cachedLast : parseSmsPage(await getSmsPage(auth, page), page); }
     catch (error) { result.warning = `Message history is incomplete: ${cleanError(error)}`; break; }
     if (!parsed.messages.length) break;
     const fp = pageMessageFingerprint(parsed.messages);
