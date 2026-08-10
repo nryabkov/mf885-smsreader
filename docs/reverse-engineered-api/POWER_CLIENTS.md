@@ -1,274 +1,431 @@
 # MF885 power controls: stock WebUI and ZMI Android app
 
-This note separates the evidence for the two stock user-facing clients that can manage MF885 power state:
+This note separates four different claims that are easy to conflate when reverse-engineering MF885 power controls:
 
-1. the firmware-resident WEBI/WebUI;
-2. the official ZMI Android application (`com.xiaomi.mifi`).
+1. the XML model/schema shipped in WEBI;
+2. the semantic meaning of that model in firmware;
+3. the HTTP request shape used by a stock-family client;
+4. the observed side effect on a live router.
 
-The purpose is to avoid conflating a model's XML schema, its semantic meaning, the HTTP method that triggers a native callback, and the transport used by the Android companion application.
+The first three are now established for reboot, power-off and factory reset on the MF885 / MF96 Ver.D generation. A live execution on the exact 2.5.94 device remains a separate evidence level.
 
 ## Evidence baseline
 
-The firmware-specific baseline is the clean MF885 / MF96 Ver.D 2.5.94 image documented in `MF885_2.5.94_STATIC_ANALYSIS.md`:
+Firmware baseline: clean MF885 / MF96 Ver.D 2.5.94 image documented in `MF885_2.5.94_STATIC_ANALYSIS.md`.
 
 ```text
 BackupFw SHA-256  2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531
 raw OSLO SHA-256 d51fb378d8ccf68662174f39d6b8c4f6be5571280790bc3a4dc4a9e8a967078c
 ```
 
-The 2.5.94 and analysed 2.5.96 WEBI trees have the same 320 filenames, 319/320 byte-identical files, identical 123/123 XML schemas and identical 51/51 JavaScript files. Native OSLO images are not byte-compatible, so transport/callback conclusions still need firmware-specific proof.
+Android evidence analysed for this note:
+
+```text
+file        ZMI_MiFi_1.2.42_english.apk
+package     com.xiaomi.mifi
+version     1.2.42
+APK SHA-256 66547e5a9423c380845ad4d49e069009c6623e0c36956fd1cabd2fe1df22f8ca
+APK SHA-1   1529ba86cacc907b53d98092381dd4d1efedd6bd
+classes.dex SHA-256 5d679764de58c25d8866068108a01361d0571a0e2e05ad8a55f23ca1b1516eba
+```
+
+The APK files are dated December 2016, placing this client in the same product generation as MF885 2.5.94.
+
+### APK provenance caveat
+
+The supplied English APK is not signed with the original ZMI production certificate. Its `META-INF/CERT.RSA` is the standard Android/AOSP test key:
+
+```text
+certificate SHA-1
+61:ED:37:7E:85:D3:86:A8:DF:EE:6B:86:4B:D8:5B:0B:FA:A5:AF:81
+```
+
+Therefore the correct provenance label is **repacked English 1.2.42 companion APK**, not cryptographically verified original store APK. The power implementation is in `classes.dex`, not in translated resources, and the DEX contains the expected ZMI package/class structure and product mappings. This makes it strong code evidence, while preserving the signing caveat explicitly.
 
 ---
 
-## 1. Stock WebUI
+## 1. Target-hardware relevance
 
-### 1.1 Generic Duster transport
-
-The stock management CGI supports the ordinary model forms:
+The APK is not merely a generic Xiaomi-router client. Its DEX contains explicit product/hardware handling for this family, including:
 
 ```text
-GET  /xml_action.cgi?method=get&module=duster&file=<model>
-POST /xml_action.cgi?method=set&module=duster&file=<model>
+MF815
+MF855
+MF885
+MF96 Ver.B
+MF96 Ver.C
+MF96 Ver.D
 ```
 
-The actual HTTP request path is `/xml_action.cgi`. Digest authentication uses `/cgi/xml_action.cgi` as the XML Authorization URI/HA2 input.
+`LocalRouterApi` inspects the router software/hardware information and explicitly branches on `MF96 Ver.D`. The same APK also contains the `MF885` product name in application/UI logic.
 
-For ordinary settings, the frontend normally uses GET for reading and POST/SET plus XML for changing state. Command-like power models are special: a side effect can be bound to a Duster pre/post GET or SET callback, so the existence of both generic forms does not identify the trigger by itself.
+That makes its local HTTP implementation directly relevant evidence for the user's MF885 / MF96 Ver.D generation.
 
-### 1.2 Reboot model
+---
 
-Stock WEBI contains `xmldata/reset.xml` with the tree:
+## 2. HTTP and Digest implementation in the APK
+
+The local router API falls back to:
+
+```text
+http://192.168.21.1
+```
+
+and sends management requests to the physical path:
+
+```text
+/xml_action.cgi
+```
+
+The APK independently confirms the same Digest quirk used by this project:
+
+```text
+realm = Highwmg
+qop   = auth
+login HA2 uses GET:/cgi/protected.cgi
+XML Authorization URI / HA2 uses /cgi/xml_action.cgi
+physical XML HTTP path remains /xml_action.cgi
+```
+
+So these two paths must not be collapsed:
+
+```text
+actual request: /xml_action.cgi
+Digest uri:     /cgi/xml_action.cgi
+```
+
+---
+
+## 3. Power-command result: GET is confirmed by companion client
+
+The unresolved GET-versus-POST question is closed by `classes.dex`.
+
+`HttpBasedRouterApi` contains literal endpoint strings for all three destructive management operations and passes them to its common HTTP helper with literal method `GET`, a null body/parameter list and no XML payload.
+
+### 3.1 Reboot / Restart
+
+Exact stock-family request shape used by APK 1.2.42:
+
+```http
+GET /xml_action.cgi?method=get&module=duster&file=reset
+```
+
+No `<RGW><reboot/></RGW>` request body is generated by this method.
+
+The WEBI schema remains important because it establishes model semantics:
 
 ```xml
+<!-- xmldata/reset.xml -->
 <RGW><reboot/></RGW>
 ```
 
-Firmware model name:
+These are two different facts:
 
 ```text
-reset
+schema/tree semantics  reset -> RGW/reboot
+client trigger          GET method=get file=reset, no XML body
 ```
 
-The semantic mapping is established:
+### 3.2 Power off
 
-```text
-reset model -> reboot/restart router
-```
+Exact request shape used by APK 1.2.42:
 
-This is **not** factory reset. `restore_defaults` is a separate firmware model.
-
-### 1.3 Power-off model
-
-Stock WEBI contains `xmldata/poweroff.xml` with the tree:
-
-```xml
-<RGW><shutdown/></RGW>
-```
-
-Firmware model name:
-
-```text
-poweroff
-```
-
-The model/schema combination provides strong firmware evidence for:
-
-```text
-poweroff model -> router shutdown/power-off
-```
-
-A separate `trueshutdown` model/schema also exists in the family. Its practical distinction from `poweroff` is not established strongly enough to expose it to clients.
-
-### 1.4 What the JavaScript inventory proves — and does not prove
-
-The generated WEBI inventory did not recover a literal stock JavaScript call site for `poweroff` (`javascript_usage.call_kinds` and source-file list are empty for that model). The same limitation applies to using a literal search alone to prove the reboot trigger.
-
-This is important: the absence of a literal `poweroff` string in the indexed panel JavaScript does **not** disprove the function. It can be invoked through common helper code, dynamically assembled arguments, inline HTML, or another management path. But it also means that schema presence cannot honestly be upgraded to `frontend-confirmed` without the missing call site or a packet capture.
-
-### 1.5 GET versus POST/SET discrepancy
-
-An earlier static API reconstruction records the stock-style power triggers as command-on-read:
-
-```text
-GET /xml_action.cgi?method=get&module=duster&file=reset
+```http
 GET /xml_action.cgi?method=get&module=duster&file=poweroff
 ```
 
-This is plausible in the Duster architecture because the exact 2.5.94 model descriptor has separate native callback slots:
+Again, the method supplies no XML body.
 
-```text
-+0x10  pre_set
-+0x18  post_set
-+0x20  pre_get
-+0x28  post_get
+Firmware WEBI provides the corresponding semantic tree:
+
+```xml
+<!-- xmldata/poweroff.xml -->
+<RGW><shutdown/></RGW>
 ```
 
-However, the currently preserved evidence set does not contain the exact `reset`/`poweroff` descriptor callback decode or stock 2.5.94 packet capture needed to prove that GET is the side-effecting direction and exclude POST/SET.
-
-The current Scriptable client uses POST/SET for the separately confirmed 2.5.96 profile. That must not be treated as proof for 2.5.94.
-
-### 1.6 Stock-WebUI confidence result
-
-For exact MF885 2.5.94:
+Therefore:
 
 ```text
-reset model exists                         confirmed
-reset means reboot                         firmware-confirmed
-reset != restore_defaults                  confirmed
-poweroff model exists                      confirmed
-poweroff/shutdown semantics                strong static evidence
-trueshutdown exists                        family/static evidence
-stock WebUI literal poweroff call site     not recovered
-exact side-effecting GET/SET transport     unresolved
+schema/tree semantics  poweroff -> RGW/shutdown
+client trigger          GET method=get file=poweroff, no XML body
 ```
 
-Therefore the correct wording is **not** “the stock WebUI definitely POSTs `<shutdown/>`”, and it is also not yet strong enough to say “the stock WebUI definitely GETs `file=poweroff`”. The remaining gap is specifically the invocation direction.
+### 3.3 Factory reset
+
+The APK independently keeps factory reset separate from reboot and invokes:
+
+```http
+GET /xml_action.cgi?method=get&module=duster&file=restore_defaults
+```
+
+This is decisive safety evidence that `file=reset` is reboot, not restore-to-defaults.
+
+### 3.4 `trueshutdown`
+
+A `trueshutdown` contract exists in the firmware family, but the analysed APK power-off UI uses `file=poweroff`, not `trueshutdown`.
+
+`trueshutdown` therefore remains unadvertised until its distinct semantics and a real client call site are established.
 
 ---
 
-## 2. Official ZMI Android application
+## 4. Reboot call chain recovered from DEX
 
-### 2.1 Application identity
+The application manifest contains `RouterRebootActivity`.
 
-The official application is distributed as:
-
-```text
-package     com.xiaomi.mifi
-name        ZMI Mobile Router / ZMI 随身路由器
-developer   ZIMI Corporation / ZMI USA Corporation
-```
-
-Archived store descriptions explicitly advertise router-management functions that can remotely **restart** and **shut down/close** the router.
-
-A period-relevant release close to the MF885 2.5.94 generation is:
+The recovered logical chain is:
 
 ```text
-version     1.2.50
-release     2017-03-08
-size        about 19.94 MB
-arch        armeabi
-min Android Android 2.3.2+
-package     com.xiaomi.mifi
-APK SHA-1   d77181b4f0b8aacacd42af9a93bdef8b89c2e5de
-signer SHA1 e3:4c:85:1e:c8:e4:e4:83:cf:bd:58:0d:a2:aa:bb:89:bb:87:80:02
+RouterRebootActivity
+  -> click listener
+  -> RouterRebootActivity.a()
+  -> XMRouterApplication / RouterManager
+  -> RouterManager.b(callback)
+  -> RouterApi.a(callback)
+  -> HttpBasedRouterApi.a(callback)
+  -> GET /xml_action.cgi?method=get&module=duster&file=reset
 ```
 
-The signer fingerprint is also reported for later releases, supporting a common official signing lineage.
-
-Archive references used during research include APKPure, APKFab and Aptoide metadata pages for `com.xiaomi.mifi`. A 4PDA-era archive also lists `ZMI_1.2.50_en.apk` and a Russian-localized build; those filenames alone are not used as code evidence.
-
-### 2.2 APK acquisition status
-
-During this analysis, public mirror metadata was reachable, but the 1.2.50 APK body itself could not be retrieved into the reverse-engineering environment. Therefore this document does **not** claim a JADX/apktool decompilation of 1.2.50 and does not invent Android class names, request paths or opcodes.
-
-The APK remains a high-value evidence target because a decompilation can answer whether the power buttons use:
-
-- the Duster XML HTTP API;
-- the proprietary companion TCP service described below;
-- or a mixture of both.
-
-### 2.3 Firmware-side companion service: `idle_socket`
-
-The exact MF885 firmware contains a separate proprietary TCP-oriented management component named `idle_socket`. Static strings/native evidence identify tasks such as:
+The concrete `HttpBasedRouterApi` method passes approximately this tuple to the common request helper:
 
 ```text
-IdleSocketLoopTask
-IdleReceiveTask
-IdleCheckUpdateTask
+path   = /xml_action.cgi?method=get&module=duster&file=reset
+secure = false
+method = GET
+params = null
+parser = null
+callback = reboot callback
 ```
 
-and application-oriented operations including authentication/binding and retrieval/update of router state, for example:
+After submitting the reboot, `RouterRebootActivity` enters host-refresh/reconnect logic. Its follow-up calls poll for router availability; they do **not** submit a second reset command.
 
-```text
-idle_socket_process_command
-idle_socket_process_authentication
-idle_socket_process_bind_mifi
-idle_socket_process_get_info
-idle_socket_process_get_wan_statistics
-idle_socket_process_updata_wan_setting
-idle_socket_process_get_new_sms_num
-idle_socket_process_get_plmn_network_name
-idle_socket_process_get_wan_speed
-idle_socket_process_get_tf_freesize
-idle_socket_package_notify_new_sms
-idle_socket_package_kickoff_client
-```
-
-This service is strong firmware evidence for a dedicated mobile-companion protocol. It is materially different from the Mongoose/Duster XML HTTP API.
-
-The firmware also contains internal task/event labels including a shutdown flag. That does **not** by itself prove that the Android app has a public “shutdown” opcode on this socket: an internal shutdown flag can simply tell the service to terminate when the router itself is shutting down.
-
-### 2.4 Android-app confidence result
-
-What is established:
-
-```text
-official app identity                      confirmed by archived stores
-official app advertises remote reboot      confirmed
-official app advertises remote shutdown    confirmed
-firmware has mobile companion service       firmware-confirmed (`idle_socket`)
-```
-
-What is not yet established:
-
-```text
-APK 1.2.50 decompiled                       no
-app power transport = HTTP XML              unknown
-app power transport = idle_socket           unknown
-idle_socket shutdown/reboot opcode           not recovered
-idle_socket wire framing/port for power      not recovered
-```
-
-So the Android application is independent evidence that both user-facing operations existed in the stock product ecosystem, but it does not yet close the 2.5.94 HTTP GET/SET question.
+Operational implication: reboot is a one-shot GET. A client must not replay it merely because Wi-Fi/HTTP disappears before a useful response is returned.
 
 ---
 
-## 3. Cross-client interpretation
+## 5. Power-off call chain recovered from DEX
 
-The currently justified model is:
+The manifest contains `RouterShutdownActivity`.
 
-```text
-                         +--> Duster XML models (WebUI)
-user power action -------|
-                         +--> companion protocol / HTTP (Android app; exact split unresolved)
-
-firmware semantics:
-  reset             -> reboot
-  restore_defaults  -> factory reset
-  poweroff          -> shutdown/power-off
-  trueshutdown      -> present, distinction unresolved
-```
-
-The semantic layer is much better established than the invocation layer.
-
-## 4. Consequence for this project
-
-For MF885 2.5.94, destructive controls should remain disabled until the side-effecting transport is proven. In particular:
-
-- do not copy the 2.5.96 POST/SET invocation merely because the XML trees match;
-- do not switch to GET solely because an older static reference names GET;
-- do not use connection loss from an unverified request shape as proof of success;
-- keep `restore_defaults` completely separate from reboot;
-- keep `trueshutdown` unadvertised.
-
-Once the trigger is proven, the compatibility profile should encode transport explicitly, e.g. conceptually:
+The recovered chain is:
 
 ```text
-model: reset
-semantic: reboot
-method: GET | POST
-body: none | <RGW><reboot/></RGW>
+RouterShutdownActivity
+  -> power button listener
+  -> confirmation dialog
+  -> confirmed dialog listener
+  -> RouterShutdownActivity.a()
+  -> XMRouterApplication / RouterManager
+  -> RouterManager.d(callback)
+  -> RouterApi.c(callback)
+  -> HttpBasedRouterApi.c(callback)
+  -> GET /xml_action.cgi?method=get&module=duster&file=poweroff
 ```
 
-rather than relying on one global POST assumption.
+The concrete request helper receives:
 
-## 5. Evidence that would close the remaining gap
+```text
+path   = /xml_action.cgi?method=get&module=duster&file=poweroff
+secure = false
+method = GET
+params = null
+parser = null
+callback = shutdown callback
+```
 
-The highest-value artifacts are, in order:
+The UI asks for explicit confirmation before this request. On success the application presents completion UI and exits/finishes the relevant flow.
 
-1. exact stock WebUI network capture while pressing Restart and Power off;
-2. exact 2.5.94 Duster descriptor decode for `reset` and `poweroff`, including active callback slot and target handler;
-3. original `com.xiaomi.mifi` 1.2.50 APK followed by JADX/apktool/native-library analysis and extraction of its router power requests;
-4. controlled device execution only after a candidate trigger is established statically.
+There is no second-stage XML POST in this call chain.
 
-Until one of these closes the invocation gap, documentation should preserve the distinction between **confirmed semantics** and **unconfirmed trigger transport**.
+---
+
+## 6. Factory-reset call chain
+
+Factory reset uses a separate activity/manager path and eventually calls the dedicated `restore_defaults` GET endpoint:
+
+```text
+SettingRecoveryFactoryActivity
+  -> RouterManager.a(Boolean, callback)
+  -> RouterApi.a(Boolean, callback)
+  -> HttpBasedRouterApi.a(Boolean, callback)
+  -> GET /xml_action.cgi?method=get&module=duster&file=restore_defaults
+```
+
+This gives a clean three-way separation:
+
+```text
+reset             -> reboot
+poweroff          -> power off
+restore_defaults  -> factory reset
+```
+
+---
+
+## 7. Why this is not an accidental generic GET
+
+The common `HttpBasedRouterApi` helper branches on the supplied method string.
+
+The power methods pass literal `GET`. Ordinary settings in the same DEX use the contrasting pattern:
+
+```text
+POST /xml_action.cgi?method=set&module=duster&file=<model>
+```
+
+with XML/body parameters.
+
+Examples of models for which the APK contains POST/SET paths include:
+
+```text
+admin
+device_management
+message
+pin_puk
+smart_set
+statistics
+status1
+uapxb_wlan_security_settings
+wan
+```
+
+This contrast is important: the authors deliberately implemented `reset`, `poweroff`, and `restore_defaults` as command-on-read GET operations rather than routing them through the ordinary POST/SET mechanism.
+
+---
+
+## 8. Broader endpoint inventory recovered from APK
+
+The DEX provides useful client-side confirmation for many real management routes.
+
+Observed GET-style routes include:
+
+```text
+Action=BackupFwStart
+Action=GetInfo&Id=Base
+file=GetRestoreStatus
+file=upgrade_firmware
+admin
+device_management
+pin_puk
+poweroff
+reset
+restore_defaults
+sd_info
+smart_set
+statistics
+status1
+uapxb_wlan_basic_settings
+uapxb_wlan_security_settings
+uploadcrashlog
+wan
+```
+
+Observed POST/SET models include:
+
+```text
+admin
+device_management
+message
+pin_puk
+smart_set
+statistics
+status1
+uapxb_wlan_security_settings
+wan
+```
+
+This inventory should be interpreted as **companion-client use**, not as a guarantee that every route behaves identically on every firmware version.
+
+---
+
+## 9. Native libraries and proprietary companion protocol
+
+The APK contains:
+
+```text
+lib/armeabi/libsdk_patcher_jni.so
+lib/armeabi/libp.so
+```
+
+The recovered reboot and shutdown implementation does not depend on either native library; the power calls are plainly implemented in Java/DEX through `HttpBasedRouterApi`.
+
+Separately, the MF885 firmware contains the proprietary `idle_socket` mobile-companion service (`IdleSocketLoopTask`, authentication/bind/info/statistics/SMS handlers, etc.). Its existence remains useful for reverse engineering other app functions, but it is **not the power transport used by the recovered APK 1.2.42 reboot/shutdown call chains**.
+
+For these power operations the evidence points directly to local HTTP/Duster GET.
+
+---
+
+## 10. Confidence matrix after APK analysis
+
+### Reboot / Restart
+
+```text
+WEBI reset schema present                  confirmed
+reset -> reboot semantics                  firmware-confirmed
+MF96 Ver.D/MF885 relevant APK              confirmed
+APK UI -> API call chain recovered         confirmed
+HTTP method                                GET, companion-app-confirmed
+endpoint                                   /xml_action.cgi?method=get&module=duster&file=reset
+XML request body                           none
+factory reset distinction                  confirmed
+live execution on exact 2.5.94 router      separate/not established by static APK analysis
+```
+
+### Power off
+
+```text
+WEBI poweroff schema present               confirmed
+poweroff -> shutdown semantics             firmware-confirmed / strong static evidence
+APK UI -> API call chain recovered         confirmed
+HTTP method                                GET, companion-app-confirmed
+endpoint                                   /xml_action.cgi?method=get&module=duster&file=poweroff
+XML request body                           none
+uses trueshutdown                          no evidence; APK uses poweroff
+live execution on exact 2.5.94 router      separate/not established by static APK analysis
+```
+
+### Factory reset
+
+```text
+separate restore_defaults model            confirmed
+APK call chain recovered                   confirmed
+HTTP method                                GET
+endpoint                                   /xml_action.cgi?method=get&module=duster&file=restore_defaults
+interchangeable with reboot                no
+```
+
+---
+
+## 11. Consequence for this project
+
+The earlier 2.5.94 transport uncertainty is resolved at the stock-family client level.
+
+The current project implementation must **not** simply reuse its POST/SET destructive helper for MF885 2.5.94. To match the recovered client it should eventually encode destructive transport explicitly, for example:
+
+```text
+reset:
+  semantic: reboot
+  method: GET
+  file: reset
+  body: none
+
+poweroff:
+  semantic: shutdown
+  method: GET
+  file: poweroff
+  body: none
+```
+
+The existing 2.5.94 runtime profile can remain disabled until that transport-aware code path is implemented and tested. At that point enabling Restart and Power off is no longer a guessing exercise: the request shapes are now documented.
+
+Do not automatically retry either destructive GET after a timeout/connection loss.
+
+---
+
+## 12. Remaining evidence gaps
+
+The APK closes the principal **request-shape** gap. The remaining high-value checks are narrower:
+
+1. live one-shot execution of each GET on the exact MF885 2.5.94 device;
+2. optional packet capture of the stock WebUI button to determine whether WebUI independently uses the same GET path;
+3. native descriptor decode for `reset`/`poweroff` to tie the GET request to the exact 2.5.94 pre/post-GET handler;
+4. reverse-engineering of `trueshutdown` only if a practical use case appears.
+
+These are useful corroboration, but they no longer justify describing the companion-client GET transport as unknown.
