@@ -47,7 +47,7 @@ test('dashboardFlow registers command polling after presenting without inspectin
 function clientDom(readyState) {
   const listeners=[];
   const stored=new Map();
-  const element=(id,active)=>({id,hidden:!active,attributes:{},classList:{active, toggle(name,on){if(name==='active')this.active=on}},getAttribute(name){return this.attributes[name]},setAttribute(name,value){this.attributes[name]=value}});
+  const element=(id,active)=>({id,hidden:!active,focused:false,attributes:{},classList:{active, toggle(name,on){if(name==='active')this.active=on}},focus(){this.focused=true},getAttribute(name){return this.attributes[name]},setAttribute(name,value){this.attributes[name]=value}});
   const sms=element('sms',true),router=element('router',false),smsButton=element('',true),routerButton=element('',false);
   smsButton.attributes['data-tab-button']='sms'; routerButton.attributes['data-tab-button']='router';
   const tabs=[sms,router],buttons=[smsButton,routerButton];
@@ -78,6 +78,37 @@ test('complete generated client script compiles and tabs initialize throughout t
     assert.equal(fixture.routerButton.attributes['aria-selected'],'true');
     assert.equal(fixture.stored.get('zmiTab'),'router');
   }
+});
+
+test('dashboard tabs emit dedicated conventional tab styling and active treatment',()=>{
+  const html=app.buildHtml(model());
+  assert.match(html,/<nav class="seg dashboard-tabs" role="tablist"/);
+  assert.match(html,/\.dashboard-tabs\{[^}]*border-bottom:1px solid var\(--line\)[^}]*border-radius:0/);
+  assert.match(html,/\.dashboard-tabs button\{[^}]*border-bottom:3px solid transparent[^}]*border-radius:8px 8px 0 0/);
+  assert.match(html,/\.dashboard-tabs button\.active\{[^}]*background:var\(--panel\)[^}]*border-color:var\(--line\) var\(--line\) var\(--cyan\)[^}]*outline:none/);
+});
+
+test('tab arrow, Home and End keys move focus, selection and the visible panel',()=>{
+  const fixture=clientDom('complete');
+  new vm.Script(app.clientScript(model())).runInNewContext(fixture.context);
+  const keydown=fixture.listeners.find(([name])=>name==='keydown');
+  assert.ok(keydown,'tab keyboard handler must be registered');
+  const press=(target,key)=>{let prevented=false;keydown[1]({target,key,preventDefault(){prevented=true}});assert.equal(prevented,true);};
+  press(fixture.smsButton,'ArrowRight');
+  assert.equal(fixture.routerButton.focused,true);
+  assert.equal(fixture.smsButton.attributes['aria-selected'],'false');
+  assert.equal(fixture.routerButton.attributes['aria-selected'],'true');
+  assert.equal(fixture.sms.hidden,true);
+  assert.equal(fixture.router.hidden,false);
+  press(fixture.routerButton,'ArrowLeft');
+  assert.equal(fixture.smsButton.focused,true);
+  assert.equal(fixture.smsButton.attributes['aria-selected'],'true');
+  press(fixture.smsButton,'End');
+  assert.equal(fixture.routerButton.attributes['aria-selected'],'true');
+  press(fixture.routerButton,'Home');
+  assert.equal(fixture.smsButton.attributes['aria-selected'],'true');
+  assert.equal(fixture.sms.hidden,false);
+  assert.equal(fixture.router.hidden,true);
 });
 
 test('the complete script embedded in buildHtml compiles',()=>{
