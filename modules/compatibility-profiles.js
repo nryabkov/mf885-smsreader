@@ -30,7 +30,13 @@ const PROFILES = Object.freeze({
       signalMetrics: Object.freeze({ rsrp: true, rsrq: true, sinr: true, rssi: true, signalbar: true, signalStrength: "csq" }),
       modes: Object.freeze([]), operations: Object.freeze({})
     }),
-    destructive: Object.freeze({})
+    // Confirmed by static analysis of the clean MF885 Ver.D 2.5.94 image.
+    // `reset` is a reboot model (RGW/reboot); factory reset is the separate
+    // `restore_defaults` model. Power-off remains intentionally unadvertised
+    // here until its exact 2.5.94 external trigger/effect is confirmed.
+    destructive: Object.freeze({
+      reset: Object.freeze({ file: "reset", tree: "reboot" })
+    })
   }),
   "2.5.94_release_MF855_NZ_CP_2.129.003": Object.freeze({
     id: "zmi-mf855-nz-2.5.94",
@@ -55,7 +61,12 @@ const PROFILES = Object.freeze({
       ]),
       modes: Object.freeze([]), operations: Object.freeze({})
     }),
-    destructive: Object.freeze({})
+    // The clean MF885 Ver.D golden analysed by this project carries this release
+    // lineage string. Keep reboot available if a device reports the full build
+    // string rather than the short version_num value.
+    destructive: Object.freeze({
+      reset: Object.freeze({ file: "reset", tree: "reboot" })
+    })
   }),
   "2.5.96": Object.freeze({
     id: "zmi-mf855-mf885-2.5.96",
