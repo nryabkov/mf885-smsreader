@@ -142,7 +142,7 @@ test('SMS history progress derives loaded, total and percent and updates the her
   assert.match(html,/Loading messages: 1\/42 \(2%\)/);
   assert.match(js,/loaded=Array\.isArray\(payload\.messages\)\?payload\.messages\.length:0/);
   assert.match(js,/total=Number\(payload\.totalMessages\)/);
-  assert.match(js,/Number\.isFinite\(total\)&&total>0/);
+  assert.match(js,/Number\.isFinite\(total\)&&total>=loaded&&total>0/);
   assert.match(js,/Math\.round\(loaded\/total\*100\)/);
   assert.match(js,/hero\.textContent='SMS: '\+counter/);
   assert.match(js,/Loading messages: '\+counter/);
@@ -156,7 +156,8 @@ test('SMS history uses one warning region and an auto-hiding accessible success 
   assert.match(html,/data-history-toast role="status" aria-live="polite" hidden/);
   assert.match(js,/section&&section\.querySelector\('\[data-history-warning\]'\)/);
   assert.match(js,/if\(!note&&section\)/);
-  assert.match(js,/toast\.textContent='Message history loaded'/);
+  assert.match(js,/showHistoryToast\('Message history loaded'\)/);
+  assert.match(js,/function showHistoryToast\(text\)/);
   assert.match(js,/historyToastTimer=setTimeout/);
   assert.match(js,/toast\.hidden=true;historyToastTimer=null},4000/);
   assert.match(js,/if\(historyToastTimer!==null\)\{clearTimeout\(historyToastTimer\)/);
@@ -192,6 +193,14 @@ test('router deletion statuses require an explicit known success and reject know
 });
 test('tab, scroll and unsent SMS draft survive DOM updates',()=>{const js=app.clientScript(model());assert.match(js,/zmiTab/);assert.match(js,/zmiScrollY/);assert.match(js,/zmiSmsDraft/);assert.match(js,/window\.scrollTo/);});
 test('SMS pages merge with deduplication',()=>{let r={messages:[],loadedPages:0,totalPages:null,totalMessages:null};app.mergeSmsPage(r,{page:1,totalPages:2,totalMessages:2,messages:[{id:'1',phone:'a',date:'d',content:'x'}]});app.mergeSmsPage(r,{page:2,messages:[{id:'1',phone:'a',date:'d',content:'x'},{id:'2',phone:'b',date:'d',content:'y'}]});assert.deepEqual(r.messages.map(x=>x.id),['1','2']);assert.equal(r.loadedPages,2);});
+test('total_number is page metadata and never becomes the SMS total',()=>{
+  const legacy=app.parseSmsPage('<get_message><total_number>5</total_number><Item index="1"><index>1</index><content>one</content></Item></get_message>',1);
+  assert.equal(legacy.totalPages,5);
+  assert.equal(legacy.totalMessages,null);
+  const explicit=app.parseSmsPage('<get_message><total_number>5</total_number><total_sms_count>42</total_sms_count></get_message>',1);
+  assert.equal(explicit.totalPages,5);
+  assert.equal(explicit.totalMessages,42);
+});
 test('in-flight guard shares concurrent operation',async()=>{const guard=app.createInFlightGuard();let calls=0,release;const gate=new Promise(r=>release=r);const a=guard.run(async()=>{calls++;await gate;return 7});const b=guard.run(async()=>{calls++;return 8});assert.equal(a,b);release();assert.equal(await b,7);assert.equal(calls,1);});
 test('capability cache keeps positives and expires negative entries after 24 hours',()=>{const now=Date.now(),base={schema:1,host:'router',checkedAt:now};assert.equal(app.capabilityCacheValid({...base,positive:true},'router',now+99*86400000),true);assert.equal(app.capabilityCacheValid({...base,positive:false},'router',now+23*3600000),true);assert.equal(app.capabilityCacheValid({...base,positive:false},'router',now+25*3600000),false);assert.equal(app.capabilityCacheValid({...base,positive:true,schema:2},'router',now),false);});
 test('dispatcher whitelists actions, validates parameters and correlates ids',async()=>{const replies=[];const dispatch=app.createWebViewDispatcher({refresh:async()=>({fresh:true}),sendSms:async p=>p.text},r=>replies.push(r));assert.equal((await dispatch({id:'one',action:'refresh',params:{}})).id,'one');assert.equal((await dispatch({id:'two',action:'sendSms',params:{to:'+1',text:'hi'}})).result,'hi');assert.equal((await dispatch({id:'bad',action:'arbitraryFunction',params:{}})).ok,false);assert.deepEqual(replies.map(x=>x.id),['one','two','bad']);});
@@ -344,7 +353,8 @@ test('one experimental command is validated and automatically dispatched with in
 
 test('copy success and failure both provide visible accessible feedback',()=>{
   const js=app.clientScript(model()); assert.match(js,/textContent='Copied'/); assert.match(js,/aria-label','SMS copied'/);
-  assert.match(js,/setActionStatus\('SMS copied to clipboard'\)/); assert.match(js,/Clipboard access failed/); assert.match(js,/Copy SMS manually/);
+  assert.match(js,/showHistoryToast\('SMS copied to clipboard'\)/); assert.doesNotMatch(js,/setActionStatus\('SMS copied to clipboard'\)/);
+  assert.match(js,/showActionError\('Copy SMS manually','Clipboard access failed\. Select and copy the SMS text below\.',value\)/);
 });
 
 test('initial and dynamically rendered SMS cards use the delegated copy hook',()=>{
@@ -416,4 +426,31 @@ test('loadRemainingSms progress reports increasing messages and known totalMessa
   try { await app.loadRemainingSms({realm:'router',nonce:'n',qop:'auth',ha1:'h',nc:1},initial,value=>progress.push({loaded:value.messages.length,total:value.totalMessages})); }
   finally { global.Request=originalRequest; }
   assert.deepEqual(progress,[{loaded:2,total:3},{loaded:3,total:3}]);
+});
+
+test('42 messages across five total_number pages finish with a 42/42 SMS counter',async()=>{
+  const originalRequest=global.Request;
+  global.Request=class {
+    constructor(url){this.url=url;this.method='GET';this.headers={};this.response=null;}
+    async loadString(){
+      const page=Number((this.body.match(/<page_number>(\d+)<\/page_number>/)||[])[1]);
+      const start=(page-1)*10+1,end=Math.min(42,page*10);
+      const items=Array.from({length:Math.max(0,end-start+1)},(_,offset)=>{const id=start+offset;return `<Item index="${id}"><index>${id}</index><from>+${id}</from><content>message ${id}</content></Item>`}).join('');
+      this.response={statusCode:200,headers:{}};
+      return `<RGW><message><get_message><total_number>5</total_number>${items}</get_message></message></RGW>`;
+    }
+  };
+  try {
+    const firstMessages=Array.from({length:10},(_,offset)=>({id:String(offset+1),phone:`+${offset+1}`,date:'',content:`message ${offset+1}`}));
+    const initial={messages:firstMessages,loadedPages:1,totalPages:5,totalMessages:null,loading:true,_first:{page:1,totalPages:5,totalMessages:null,messages:firstMessages}};
+    const progress=[];
+    const history=await app.loadRemainingSms({realm:'router',nonce:'n',qop:'auth',ha1:'h',nc:1},initial,value=>progress.push({loaded:value.messages.length,total:value.totalMessages}));
+    assert.deepEqual(progress,[{loaded:20,total:null},{loaded:30,total:null},{loaded:40,total:null},{loaded:42,total:null}]);
+    assert.equal(history.totalPages,5);
+    assert.equal(history.totalMessages,42);
+    assert.equal(history.messages.length,42);
+    const html=app.buildHtml({ ...model(), sms:history });
+    assert.match(html,/SMS: 42\/42/);
+    assert.doesNotMatch(html,/SMS: 42\/5/);
+  } finally { global.Request=originalRequest; }
 });
