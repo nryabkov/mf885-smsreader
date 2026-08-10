@@ -24,7 +24,20 @@ async function run(options = {}) {
   source = source.replace(pollMarker, "function legacyWebPollPayload(model) {");
   source = `
 const __MF885_UI_V2 = globalThis.__MF885_UI_V2;
-function buildHtml(model) { return __MF885_UI_V2.buildHtml(model); }
+function buildHtml(model) {
+  let html = __MF885_UI_V2.buildHtml(model);
+  // The proven backend validates legacy structural hooks before WebView load.
+  // UI v2 uses .screen instead of .tab and originally omitted <main>, so add
+  // non-visual compatibility structure without changing the rendered design.
+  if (!/<main(?:\\s|>)/i.test(html)) {
+    html = html.replace(/<body([^>]*)>/i, '<body$1><main>')
+      .replace(/<\\/body>/i, '</main></body>');
+  }
+  if (!/<section[^>]*class=["'][^"']*\\btab\\b[^"']*\\bactive\\b[^"']*["']/i.test(html)) {
+    html = html.replace(/<main(?:\\s[^>]*)?>/i, match => match + '<section class="tab active" hidden aria-hidden="true"></section>');
+  }
+  return html;
+}
 function webPollPayload(model) {
   const battery = model && model.battery || {};
   const network = model && model.network || {};
