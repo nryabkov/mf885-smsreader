@@ -38,8 +38,8 @@ The script does **not** read or send messages through Apple Messages on the iPho
 - Loads every available SMS page, removes duplicate messages, and guards against firmware that repeats pages.
 - Refreshes the dashboard automatically to check for new messages and router status changes.
 - Displays cellular network, signal, battery, and mobile traffic information.
-- Sends SMS messages and provides copy actions in a mobile-friendly WebView, including a manual selectable fallback when iOS/WebView clipboard access is unavailable.
-- Offers SMS copy actions in the WebView. Without a configured translation endpoint, the **Translate** button is hidden and only SMS copying is available. With optional `TRANSLATE_ENDPOINT` advanced setup, a LibreTranslate-compatible service enables a **Translate** button that returns the translation inline in the SMS card and reports HTTP/JSON/empty-response diagnostics in the WebView status block. The dashboard does not start automatic bulk translation when opened.
+- Sends SMS messages and provides copy and system **Share** actions in a mobile-friendly WebView, including clipboard fallbacks when the relevant iOS/WebView capability is unavailable.
+- Offers SMS copy and share actions in the WebView. Sharing prepares the sender, date, and message body for Scriptable's native system share sheet; if that API is unavailable, the same contextual text is copied to the clipboard and the dashboard clearly reports the fallback. Without a configured translation endpoint, the **Translate** button is hidden. With optional `TRANSLATE_ENDPOINT` advanced setup, a LibreTranslate-compatible service enables a **Translate** button that returns the translation inline in the SMS card and reports HTTP/JSON/empty-response diagnostics in the WebView status block. The dashboard does not start automatic bulk translation when opened.
 - Deletes individual SMS messages from the router after confirmation.
 - Resets total WAN traffic and provides confirmed restart and power-off controls.
 - Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive.
@@ -116,11 +116,11 @@ Recovery procedures:
 5. **Offline use:** do nothing destructive. The loader reports the precise sync failure and runs the last complete snapshot. Restore connectivity only when an update is desired.
 
 
-### Copying, translation, and refresh behavior
+### Copying, sharing, translation, and refresh behavior
 
-The WebView contains a reusable action status panel for copy, translation, refresh, and JavaScript diagnostics. If iOS or Scriptable denies `navigator.clipboard`, **Copy** shows the SMS text in a read-only selectable field so you can copy it manually.
+The WebView contains a reusable action status panel for copy, system sharing, translation, refresh, and JavaScript diagnostics. **Share** sends a contextual value containing the SMS sender, date, and body to Scriptable's native `ShareSheet`. Cancelling the sheet is a neutral outcome rather than an error. If the native share sheet is not available in the installed Scriptable runtime, the prepared value is copied to the clipboard and a visible status explains the fallback. If iOS or Scriptable denies `navigator.clipboard`, **Copy** shows the SMS text in a read-only selectable field so you can copy it manually.
 
-`TRANSLATE_ENDPOINT` is empty by default, so automatic translation is not configured and SMS cards do not show a **Translate** button. In that default mode, only SMS copying is available. To get inline automatic translation and show **Translate** beside **Copy** and **Delete**, configure a LibreTranslate-compatible endpoint in `scriptable.js`; endpoint failures include HTTP status, JSON parsing, or empty-response details in the diagnostics panel.
+`TRANSLATE_ENDPOINT` is empty by default, so automatic translation is not configured and SMS cards do not show a **Translate** button. Copying and system sharing remain available in that default mode. To get inline automatic translation and show **Translate** alongside **Copy**, **Share**, and **Delete**, configure a LibreTranslate-compatible endpoint in `scriptable.js`; endpoint failures include HTTP status, JSON parsing, or empty-response details in the diagnostics panel.
 
 Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. If the screen closes during refresh, open the Scriptable script again.
 

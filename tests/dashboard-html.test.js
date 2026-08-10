@@ -362,7 +362,7 @@ test('initial and dynamically rendered SMS cards use the delegated copy hook',()
   assert.match(html,/<button data-copy type="button">Copy<\/button>/);
   assert.doesNotMatch(html,/onclick="copySms\(this\)"/);
   assert.match(js,/card\.innerHTML='[^']*<button data-copy>Copy<\/button>/);
-  assert.match(js,/closest\('\[data-copy\],\[data-delete-action\]/);
+  assert.match(js,/closest\('\[data-copy\],\[data-share\],\[data-delete-action\]/);
   assert.match(js,/if\(b\.hasAttribute\('data-copy'\)\)\{e\.preventDefault\(\);e\.stopPropagation\(\);copySms\(b\);return\}/);
 });
 
@@ -372,7 +372,7 @@ test('copy falls back to a dedicated native bridge command',()=>{
   assert.match(js,/bridge\('copySms',\{text:value\}\)/);
   assert.match(js,/Select and copy the SMS text below/);
   const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');
-  assert.match(source,/copySms:async p=>\{Pasteboard\.copyString\(p\.text\);return \{copied:true\};\}/);
+  assert.match(source,/copySms:async p=>\{pasteboard\.copyString\(p\.text\);return \{copied:true\};\}/);
 });
 
 test('dispatcher accepts validated copy commands and rejects invalid copy payloads',async()=>{
@@ -385,6 +385,46 @@ test('dispatcher accepts validated copy commands and rejects invalid copy payloa
     assert.equal(rejected.ok,false); assert.match(rejected.error,/Invalid text/);
   }
   assert.deepEqual(copied,['hello']);
+});
+
+test('initial and dynamically rendered SMS cards expose Share beside Copy',()=>{
+  const html=app.buildHtml(model()),js=app.clientScript(model());
+  assert.match(html,/<button data-copy type="button">Copy<\/button><button data-share type="button">Share<\/button>/);
+  assert.match(js,/card\.innerHTML='[^']*<button data-copy>Copy<\/button><button data-share>Share<\/button>/);
+});
+
+test('delegated Share clicks route separately from Copy and Delete',()=>{
+  const js=app.clientScript(model());
+  assert.match(js,/closest\('\[data-copy\],\[data-share\],\[data-delete-action\]/);
+  assert.match(js,/hasAttribute\('data-copy'\)[\s\S]*copySms\(b\);return[\s\S]*hasAttribute\('data-share'\)[\s\S]*shareSms\(b\);return[\s\S]*hasAttribute\('data-delete-action'\)/);
+  assert.match(js,/value='From: '\+sender\+'\\nDate: '\+date\+'\\n\\n'\+message/);
+  assert.match(js,/bridge\('shareSms',\{text:value\},button\)/);
+});
+
+test('shareSms validation accepts bounded text and rejects invalid values',()=>{
+  assert.equal(app.validateWebViewCommand({id:'share-1',action:'shareSms',params:{text:'From: +1\nDate: now\n\nhello'}}).action,'shareSms');
+  for(const params of [{},{text:''},{text:42},{text:'x'.repeat(12001)}])assert.throws(()=>app.validateWebViewCommand({id:'share-bad',action:'shareSms',params}),/Invalid text/);
+});
+
+test('dashboard share handler correlates ids and passes prepared text to ShareSheet',async()=>{
+  const shared=[],replies=[],text='From: +1\nDate: now\n\nhello';
+  const web={evaluateJavaScript:async source=>{replies.push(source)}};
+  const dispatch=app.createDashboardDispatcher({},model(),web,{refreshGuard:{run:f=>f()},smsGuard:{run:f=>f()}},{ShareSheet:{present:async items=>{shared.push(items);return true}},Pasteboard:{copyString(){}}});
+  const response=await dispatch({id:'share-native-1',action:'shareSms',params:{text}});
+  assert.equal(response.id,'share-native-1'); assert.equal(response.ok,true); assert.deepEqual(shared,[[text]]);
+  assert.match(replies[0],/share-native-1/);
+});
+
+test('share cancellation is neutral, failures are sanitized, and unavailable API copies',async()=>{
+  const make=({ShareSheet,Pasteboard={copyString(){}}})=>app.createDashboardDispatcher({},model(),{evaluateJavaScript:async()=>{}},{refreshGuard:{run:f=>f()},smsGuard:{run:f=>f()}},{ShareSheet,Pasteboard});
+  const cancelled=await make({ShareSheet:{present:async()=>false}})({id:'cancel-1',action:'shareSms',params:{text:'private SMS'}});
+  assert.deepEqual(cancelled.result,{shared:false,cancelled:true});
+  const thrownCancel=await make({ShareSheet:{present:async()=>{const error=new Error('User cancelled');error.cancelled=true;throw error}}})({id:'cancel-2',action:'shareSms',params:{text:'private SMS'}});
+  assert.equal(thrownCancel.ok,true); assert.equal(thrownCancel.result.cancelled,true);
+  const failed=await make({ShareSheet:{present:async()=>{throw new Error('private SMS leaked by API')}}})({id:'fail-1',action:'shareSms',params:{text:'private SMS'}});
+  assert.equal(failed.ok,false); assert.equal(failed.error,'System share failed'); assert.doesNotMatch(JSON.stringify(failed),/private SMS/);
+  const copied=[]; const fallback=await make({ShareSheet:{},Pasteboard:{copyString:value=>copied.push(value)}})({id:'fallback-1',action:'shareSms',params:{text:'prepared context'}});
+  assert.deepEqual(fallback.result,{shared:false,copied:true,fallback:true}); assert.deepEqual(copied,['prepared context']);
 });
 
 test('profile selection is override, detection, then configured fallback',()=>{
