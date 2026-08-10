@@ -6,18 +6,56 @@ The MF855/MF885 family shares substantial web/API code, but hardware revision an
 
 ### MF885 — firmware 2.5.94
 
-Evidence available from a live device/UI:
+This build has now been analysed both on a live MF885 and statically from an exact stock BackupFw image.
 
-- vendor web UI identifies current software version as `2.5.94`;
-- the router exposes the same local management host pattern (`192.168.21.1`);
-- SMS/router UI behaviour is consistent with the family API;
-- an Auto APN recovery behaviour was observed on a live MF885: LTE registration was present, PDP remained `connecting`, IPv4 stayed `NA`, and toggling Auto APN off/on restored data service.
+Static-analysis baseline:
 
-**Status:** live device exists; API coverage has not been statically enumerated from a 2.5.94 firmware image in this repository.
+- stock BackupFw size: `8,323,644` bytes;
+- stock BackupFw SHA-256: `2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531`;
+- decompressed OSLO size: `9,648,064` bytes (`0x9337c0`);
+- decompressed OSLO SHA-256: `d51fb378d8ccf68662174f39d6b8c4f6be5571280790bc3a4dc4a9e8a967078c`;
+- extracted WEBI contains the same 320 paths as the analysed 2.5.96 image, with 319/320 files byte-identical; the stock difference is `www/data/4_apn.txt`;
+- GRBI, WIFI, WCAL and RFBN are byte-identical between the analysed 2.5.94 and 2.5.96 images;
+- raw OSLO is **not** byte-identical: after accounting for the known 64-byte insertion, roughly 16.35% of raw bytes still differ. Native offsets and callbacks must therefore be established per build rather than copied from 2.5.96.
+
+The exact 2.5.94 OSLO was used for native descriptor/callback analysis and for the project's staged firmware research. The Duster registry uses 0x38-byte model descriptors; the active callback slots are `pre_set`, `post_set`, `pre_get`, and `post_get`. This is important because an XML schema alone does not tell us which HTTP method actually causes a command side effect.
+
+Live evidence from the MF885 includes:
+
+- local management at `192.168.21.1` with the project's Digest/XML flow;
+- confirmed `status1`, `wan`, and `Engineer_parameter` data used by `tests/fixtures/mf885-2.5.94`;
+- an Auto APN recovery observation: LTE registration remained present while PDP was stuck in `connecting` with IPv4 `NA`; toggling Auto APN off/on restored the data session.
+
+#### Power-command static findings
+
+The stock web payload contains these XML contracts:
+
+```xml
+<!-- reset.xml -->
+<RGW><reboot/></RGW>
+
+<!-- poweroff.xml -->
+<RGW><shutdown/></RGW>
+```
+
+The firmware also distinguishes the `reset`, `poweroff`, and `restore_defaults` models. Therefore:
+
+- `reset` / `reboot` is a **router reboot**, not a factory reset;
+- `restore_defaults` is the separate factory-default path;
+- `poweroff` / `shutdown` is the shutdown model;
+- `trueshutdown` exists in the wider firmware family, but its practical semantics are not sufficiently established to expose it.
+
+What is **not** yet promoted to runtime-confirmed support on 2.5.94 is the destructive trigger transport. Older static notes identify `reset` and `poweroff` as command-on-read models (`GET ...&file=reset` / `GET ...&file=poweroff`), while the generic schema inventory lists both ordinary Duster GET and SET forms and the current project client implements destructive commands through a POST/SET path. No preserved live packet capture or exact 2.5.94 callback-direction proof currently closes that disagreement.
+
+For that reason the `2.5.94` compatibility profile intentionally keeps `destructive: {}`. This does **not** mean the reboot model is absent; it means the project refuses to guess the side-effecting transport for a destructive command.
+
+See [MF885 2.5.94 static analysis](MF885_2.5.94_STATIC_ANALYSIS.md) for the evidence and confidence split.
+
+**Status:** deeply statically analysed and partially live-tested; read mappings are supported, power-model semantics are firmware-confirmed, destructive trigger transport remains deliberately unadvertised until independently verified.
 
 ### MF855 / MF885 family — firmware 2.5.96
 
-This is the most deeply analysed image.
+This is the other deeply analysed image.
 
 Confirmed static properties include:
 
@@ -37,6 +75,7 @@ Use these words precisely:
 
 - **tested** — exercised on a real router and the result was observed.
 - **present in firmware** — schema, frontend use or native implementation is found statically.
+- **firmware-confirmed semantics** — the model/payload meaning is established statically, but the exact side-effecting transport may still be unverified.
 - **likely** — evidence suggests compatibility, but it has not been demonstrated.
 - **unknown** — no reliable evidence.
 
@@ -46,7 +85,8 @@ Firmware may differ in:
 
 - XML model names and field casing;
 - numeric enum values;
-- reboot/power-off fields;
+- callback direction (`GET` versus `SET`) for command-like models;
+- reboot/power-off trigger transport;
 - statistics reset mechanism;
 - APN/profile behaviour;
 - cellular mode controls;
@@ -62,9 +102,10 @@ The application follows these rules:
 
 1. Read-only diagnostic discovery may try known model names.
 2. Unknown enum values are displayed raw.
-3. A write control is enabled only when the active firmware profile contains a confirmed mapping.
-4. Destructive actions are never inferred from neighbouring field names.
+3. A write control is enabled only when the active firmware profile contains a confirmed mapping **including its trigger transport**.
+4. Destructive actions are never inferred from neighbouring field names or from another firmware's callback layout.
 5. Ordinary writes are verified by a control read when possible.
+6. For reboot/shutdown, a dropped connection can be expected after a valid trigger, but connection loss alone is not proof that an unverified request shape is correct.
 
 ## Suggested evidence when reporting another firmware
 
