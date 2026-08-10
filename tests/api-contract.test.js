@@ -12,6 +12,16 @@ test("physical XML endpoint can differ from the Digest URI", () => {
   assert.equal(api.XML_DIGEST_URI, "/cgi/xml_action.cgi");
 });
 
+test("requestUrl accepts a transport-bearing model descriptor", () => {
+  const url = api.requestUrl("192.168.21.1", "GET", { name: "reset", method: "GET" });
+
+  assert.equal(url, "http://192.168.21.1/xml_action.cgi?method=get&module=duster&file=reset");
+  assert.deepEqual(api.normalizeModelDescriptor({ name: "poweroff", method: "get" }), {
+    name: "poweroff",
+    method: "GET"
+  });
+});
+
 test("router request URL and corresponding Digest header use their distinct paths", () => {
   const url = scriptable.xmlRequestUrl("192.168.21.1", "GET", "status1");
   const header = scriptable.authorization({

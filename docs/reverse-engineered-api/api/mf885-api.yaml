@@ -1,19 +1,18 @@
 # Unofficial reverse-engineered API specification for ZMI MF855/MF885-family routers.
-#
-# This file is intentionally conservative. A schema found in firmware does not imply
-# that a callable backend exists. Add write mappings only after confirming the exact
-# request and a safe read-back verification strategy on a named firmware build.
+# Keep semantics, transport and live-tested behaviour as separate evidence claims.
 
-spec_version: 1
+spec_version: 2
 name: ZMI MF855/MF885 local XML API
 status: reverse-engineered
 base_url_default: http://192.168.21.1
-xml_api_path: /cgi/xml_action.cgi
+physical_xml_api_path: /xml_action.cgi
+digest_xml_uri: /cgi/xml_action.cgi
 
 confidence_levels:
   - live-tested
   - firmware-confirmed
   - frontend-confirmed
+  - companion-app-confirmed
   - schema-only
   - speculative
 
@@ -21,6 +20,7 @@ provenance_values:
   - live-device
   - project-client
   - web-ui-js
+  - android-apk
   - xml-schema
   - native-handler
   - binary-strings
@@ -28,29 +28,30 @@ provenance_values:
 transport:
   model_read:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       method: get
       module: duster
       file: "<model>"
   model_write:
     method: POST
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       method: set
       module: duster
       file: "<model>"
     content_type: application/xml
-  model_command_read:
+  command_on_read:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       method: get
+      module: duster
       file: "<model>"
-      command: "<command>"
+    body: none
   action:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       Action: "<action>"
 
@@ -58,39 +59,81 @@ authentication:
   type: http-digest-with-vendor-login-handshake
   challenge_path: /login.cgi
   algorithm: MD5
+  realm: Highwmg
   qop_default: auth
   notes:
-    - Login query response uses HA2 for GET:/cgi/protected.cgi.
-    - Authorization header uses uri=/cgi/xml_action.cgi and HA2 for that path.
-    - Login consumes nonce count 00000001; the next XML request starts at 00000002.
+    - Login handshake HA2 uses GET:/cgi/protected.cgi.
+    - XML Authorization header uses uri=/cgi/xml_action.cgi and HA2 for that URI.
+    - The physical XML request still targets /xml_action.cgi.
+    - The 1.2.42 ZMI Android client independently confirms this physical-path/Digest-URI split.
     - Plain HTTP means request/response bodies are not encrypted.
   documentation: ../AUTHENTICATION.md
 
 firmware_profiles:
+  "2.5.94":
+    id: zmi-mf885-2.5.94
+    model: MF885
+    hardware_family:
+      - MF885
+      - MF96 Ver.D
+    confidence: firmware-confirmed
+    provenance: [live-device, xml-schema, native-handler, android-apk, project-client]
+    diagnostic_models: [status1, wan, Engineer_parameter]
+    power_transport_evidence:
+      confidence: companion-app-confirmed
+      apk:
+        package: com.xiaomi.mifi
+        version: "1.2.42"
+        apk_sha256: 66547e5a9423c380845ad4d49e069009c6623e0c36956fd1cabd2fe1df22f8ca
+        classes_dex_sha256: 5d679764de58c25d8866068108a01361d0571a0e2e05ad8a55f23ca1b1516eba
+        provenance_note: supplied English APK is repacked/test-key-signed, not a cryptographically verified original store APK
+      commands:
+        reboot: { transport: command_on_read, file: reset, body: none }
+        poweroff: { transport: command_on_read, file: poweroff, body: none }
+        restore_defaults: { transport: command_on_read, file: restore_defaults, body: none }
+    runtime_support:
+      destructive_enabled: true
+      implementation: transport-aware destructive model descriptors
+      enabled_commands: [reboot, poweroff]
+      notes:
+        - Factory reset remains deliberately unexposed in the dashboard.
+        - Live exact-device execution remains a separate evidence level.
+    policy:
+      unknown_writes_are_read_only: true
+      verify_normal_writes_by_readback: true
+      never_retry_destructive_command_automatically: true
+
+  "2.5.94_release_MF855_NZ_CP_2.129.003":
+    id: zmi-mf855-nz-2.5.94
+    confidence: companion-app-confirmed
+    provenance: [android-apk, project-client]
+    notes:
+      - The analysed APK explicitly contains MF855 plus MF885/MF96 Ver.D support and uses the same local power GET endpoints.
+      - The clean MF885 golden carries this release-lineage string, so the project preserves power availability if the router reports the full build string rather than short version 2.5.94.
+    power_commands:
+      reboot: { transport: command_on_read, file: reset, body: none, runtime_enabled: true }
+      poweroff: { transport: command_on_read, file: poweroff, body: none, runtime_enabled: true }
+
   "2.5.96":
     id: zmi-mf855-mf885-2.5.96
     confidence: firmware-confirmed
-    provenance:
-      - xml-schema
-      - web-ui-js
-      - native-handler
-      - project-client
-    diagnostic_models:
-      - status1
-      - wan
-      - Engineer_parameter
+    provenance: [xml-schema, web-ui-js, native-handler, project-client]
+    diagnostic_models: [status1, wan, Engineer_parameter]
+    destructive_transport:
+      implementation: retained-project-mapping
+      method: POST
+      body: semantic XML tree
     policy:
-      # The application deliberately does not infer writes from field names.
       unknown_writes_are_read_only: true
       verify_normal_writes_by_readback: true
 
 models:
   status1:
-    description: Large primary status snapshot covering system, battery, WAN, traffic and identifiers.
+    description: Primary router status snapshot covering system, battery, WAN, traffic and identifiers.
     access: read
     risk: sensitive
     confidence: firmware-confirmed
-    provenance: [xml-schema, web-ui-js, project-client]
+    provenance: [xml-schema, web-ui-js, project-client, android-apk]
     transport: model_read
     known_fields:
       - RGW/sysinfo/hardware_version
@@ -106,16 +149,17 @@ models:
       - RGW/wan/ConnType
       - RGW/wan/proto
     notes:
-      - Values may be empty, NA, stale during transitions, or firmware-specific numeric enums.
-      - Responses can contain identifiers or configuration material; redact before sharing.
+      - Values may be empty, NA, stale during transitions, or firmware-specific enums.
+      - Responses may contain identifiers/configuration material; redact before sharing.
 
   wan:
     description: Cellular WAN state and firmware-specific configuration fields.
     access: read-write-when-profile-confirmed
     risk: medium
     confidence: firmware-confirmed
-    provenance: [xml-schema, project-client]
-    transport: model_read
+    provenance: [xml-schema, project-client, android-apk]
+    read_transport: model_read
+    write_transport: model_write
     known_leaf_names:
       - connect_disconnect
       - connect_mode
@@ -132,33 +176,9 @@ models:
       - pdp_type
       - username
       - auth_type
-    known_2_5_96_enum_mappings:
-      sim:
-        "0": Initializing
-        "1": Ready
-      registration:
-        "0": Not registered
-        "1": Registered (home)
-        "2": Searching
-        "5": Registered (roaming)
-      roaming:
-        "0": Home network
-        "1": Roaming
-      pdp_state:
-        "0": Disconnected
-        "1": Connected
-        "2": Connecting
-      pdp_type:
-        "0": IPv4
-        "1": IPv6
-        "2": IPv4/IPv6
-        IP: IPv4
-        IPV6: IPv6
-        IPV4V6: IPv4/IPv6
     notes:
-      - Do not reuse these enum mappings for another firmware without evidence.
-      - No cellular WAN write operation is advertised by the current 2.5.96 compatibility profile unless explicitly confirmed.
-      - "Live observation on MF885: toggling Auto APN off then on recovered a PDP session stuck in connecting; root cause unknown."
+      - Enum mappings are firmware-specific.
+      - The Android client contains both GET/read and POST/set WAN routes.
 
   Engineer_parameter:
     description: GSM/UMTS/LTE engineering telemetry.
@@ -167,146 +187,110 @@ models:
     confidence: firmware-confirmed
     provenance: [xml-schema, web-ui-js, project-client]
     transport: model_read
-    known_fields:
-      - RGW/Engi/Dev/vendor
-      - RGW/Engi/Dev/model
-      - RGW/Engi/Dev/fw_ver
-      - RGW/Engi/GSM/rxSigLevel
-      - RGW/Engi/GSM/mcc
-      - RGW/Engi/GSM/mnc
-      - RGW/Engi/GSM/lac
-      - RGW/Engi/GSM/ci
-      - RGW/Engi/GSM/arfcn
-    notes:
-      - Analysed 2.5.96 schema exposes more than 100 leaf fields.
-      - LTE fields are used to surface band, EARFCN, PCI, cell ID, TAC, RSRP, RSRQ, SINR/CQI where present.
 
   message:
-    description: SMS list, read-state, delete, send, storage/settings and capacity operations.
+    description: SMS list/read/send/delete/settings.
     access: read-write-command
     risk: sensitive
     confidence: live-tested
-    provenance: [live-device, project-client, web-ui-js, xml-schema]
+    provenance: [live-device, project-client, web-ui-js, xml-schema, android-apk]
     transport: model_write
-    command_selector_fields:
-      - RGW/message/flag/message_flag
-      - RGW/message/flag/sms_cmd
     known_commands:
-      GET_RCV_SMS_LOCAL:
-        purpose: Read an inbox page.
-        request_fields:
-          - RGW/message/get_message/page_number
-      SEND_SMS:
-        purpose: Send an SMS.
-        request_fields:
-          - RGW/message/send_save_message/contacts
-          - RGW/message/send_save_message/content
-          - RGW/message/send_save_message/encode_type
-          - RGW/message/send_save_message/sms_time
+      GET_RCV_SMS_LOCAL: { purpose: Read inbox page. }
+      SEND_SMS: { purpose: Send SMS., sms_cmd: "4" }
+      DELETE_SMS: { purpose: Delete SMS., sms_cmd: "6" }
     encoding:
-      sms_content: UTF-16BE hexadecimal on the analysed UI/API path
-    notes:
-      - Some firmware uses total_number as a page count rather than a message count.
-      - Guard against repeated or empty pages and deduplicate messages.
+      sms_content: UTF-16BE hexadecimal on analysed client path
 
   statistics:
-    description: Traffic/statistics command model; reset details vary by firmware.
+    description: Traffic/statistics model; reset variants are firmware-specific.
     access: read-write-command
     risk: destructive-when-resetting
     confidence: live-tested
-    provenance: [live-device, project-client, web-ui-js, xml-schema]
-    transport: model_read
-    notes:
-      - Multiple statistics-reset variants exist across firmware; verify by reading counters after a reset request.
+    provenance: [live-device, project-client, web-ui-js, xml-schema, android-apk]
 
   WanStatistics:
-    description: WAN byte counters commonly embedded in status/statistics responses.
+    description: WAN byte totals.
     access: read
     risk: low
     confidence: live-tested
-    provenance: [live-device, project-client, xml-schema]
     fields:
-      tx_byte_all:
-        type: unsigned-integer
-        unit: bytes
-        meaning: total mobile-WAN upload bytes
-      rx_byte_all:
-        type: unsigned-integer
-        unit: bytes
-        meaning: total mobile-WAN download bytes
+      tx_byte_all: { unit: bytes, meaning: total mobile-WAN upload bytes }
+      rx_byte_all: { unit: bytes, meaning: total mobile-WAN download bytes }
     notes:
-      - Do not add LAN/WLAN, per-device, session or billing-period counters to these totals.
+      - Do not mix with per-device/LAN/WLAN/billing-period counters.
 
   admin:
-    description: Router management and administrator settings.
+    description: Router management/admin settings.
     access: read-write
     risk: critical-secrets
     confidence: firmware-confirmed
-    provenance: [xml-schema, web-ui-js]
-    transport: model_read
-    known_fields:
-      - RGW/management/router_user_list
-      - RGW/management/router_username
-      - RGW/management/router_password
-      - RGW/management/httpd_port
-      - RGW/management/web_wlan_enable
-      - RGW/management/web_wan_enable
-      - RGW/management/session_timeout
-    notes:
-      - Never log or publish an unredacted response.
-
-  config_save:
-    description: Configuration-export data model.
-    access: read-export
-    risk: critical-secrets
-    confidence: firmware-confirmed
-    provenance: [xml-schema, web-ui-js]
-    transport: model_read
-    may_contain:
-      - administrator credentials
-      - Wi-Fi keys
-      - APN credentials
-      - DDNS credentials
-      - LAN/DHCP settings
-      - firewall/NAT/routes
-      - device lists
-      - Telnet-related persistent state
-    notes:
-      - Treat all configuration backups as secrets.
+    provenance: [xml-schema, web-ui-js, android-apk]
+    read_transport: model_read
+    write_transport: model_write
 
   reset:
-    description: Restart/reboot command path.
-    access: write-command
-    risk: destructive
-    confidence: firmware-confirmed
-    provenance: [native-handler, project-client]
-    transport: model_write
+    description: Router reboot/restart model.
+    risk: destructive-connection-dropping
+    semantic_confidence: firmware-confirmed
+    semantic_provenance: [xml-schema, native-handler]
     known_tree: RGW/reboot
+    firmware_2_5_94_client_trigger:
+      confidence: companion-app-confirmed
+      provenance: [android-apk, project-client]
+      transport: command_on_read
+      request: "GET /xml_action.cgi?method=get&module=duster&file=reset"
+      body: none
+      runtime_enabled: true
     notes:
-      - Connection loss before an HTTP reply can be expected; do not blindly retry.
+      - reset is reboot, not factory reset.
+      - Do not automatically retry after timeout/connection loss.
 
   poweroff:
-    description: Power-off command path used by the confirmed 2.5.96 compatibility profile.
-    access: write-command
-    risk: destructive
-    confidence: firmware-confirmed
-    provenance: [project-client]
-    transport: model_write
+    description: Normal router shutdown/power-off model.
+    risk: destructive-connection-dropping
+    semantic_confidence: firmware-confirmed
+    semantic_provenance: [xml-schema]
     known_tree: RGW/shutdown
+    firmware_2_5_94_client_trigger:
+      confidence: companion-app-confirmed
+      provenance: [android-apk, project-client]
+      transport: command_on_read
+      request: "GET /xml_action.cgi?method=get&module=duster&file=poweroff"
+      body: none
+      runtime_enabled: true
     notes:
-      - Other guessed variants such as trueshutdown are intentionally not documented as supported.
+      - The analysed Android shutdown UI uses poweroff, not trueshutdown.
+      - Do not automatically retry after timeout/connection loss.
+
+  restore_defaults:
+    description: Restore factory defaults; deliberately separate from reboot.
+    risk: critical-destructive
+    semantic_confidence: firmware-confirmed
+    firmware_2_5_94_client_trigger:
+      confidence: companion-app-confirmed
+      provenance: [android-apk]
+      transport: command_on_read
+      request: "GET /xml_action.cgi?method=get&module=duster&file=restore_defaults"
+      body: none
+      runtime_enabled: false
+    notes:
+      - Never substitute for reset when implementing Restart/Reboot.
+      - Deliberately not exposed as a dashboard control.
+
+  trueshutdown:
+    description: Additional shutdown-related family model with unresolved distinction from normal poweroff.
+    access: unadvertised
+    confidence: schema-only
+    notes:
+      - The recovered APK 1.2.42 normal shutdown UI does not use this model.
 
   upgrade_firmware:
     description: Firmware update/backup state model.
     access: read
     risk: high
     confidence: firmware-confirmed
-    provenance: [xml-schema, web-ui-js, native-handler]
-    transport: model_read
-    known_fields:
-      - backup_status
-      - backup_progress
-      - backup_fail_cause
+    provenance: [xml-schema, web-ui-js, native-handler, android-apk]
 
   debugmodeon:
     description: Hidden engineering/debug mode contract.
@@ -314,123 +298,67 @@ models:
     risk: security-sensitive
     confidence: firmware-confirmed
     provenance: [xml-schema, native-handler, binary-strings]
-    transport: model_write
     xml_contract: RGW/debugon/openmode
-    native_effect:
-      analysed_firmware: "2.5.96"
-      internal_mode: 8
-      exact_external_interfaces: unknown
-    notes:
-      - Static evidence ties the path to modem/AT/USB handling.
-      - Exact USB descriptor/interface changes require live before/after enumeration.
 
   control_telnet:
-    description: Telnet-enable configuration contract; listening service is not proven for 2.5.96.
+    description: Telnet-enable configuration contract; listening service remains unproven on analysed stock builds.
     access: write-only-when-profile-confirmed
     risk: security-sensitive
     confidence: schema-only
     provenance: [xml-schema, project-client]
-    transport: model_write
-    xml_contract: RGW/control_telnet/enable_telnet
-    notes:
-      - Static analysis did not identify a clear telnetd, BusyBox, Dropbear or /bin/sh implementation.
-      - A client should require confirmed enable/disable values plus API read-back and port verification.
 
   diagnostic:
-    description: Diagnostic XML contract found in firmware, but no active native handler was identified in 2.5.96.
+    description: Diagnostic XML contract; schema presence is not proof of an active arbitrary-command backend.
     access: none-confirmed
-    risk: unknown
     confidence: schema-only
     provenance: [xml-schema, native-handler]
-    xml_contract:
-      - diagnostic/command
-      - diagnostic/arg
-      - diagnostic/output
-    notes:
-      - Model-registration handler slots were observed as zero in the analysed 2.5.96 build.
-      - Do not describe this model as arbitrary command execution.
 
 actions:
   GetInfo:
     method: GET
-    path: /cgi/xml_action.cgi
-    query:
-      Action: GetInfo
-      Id: "<id>"
-    access: read
-    risk: low-to-sensitive
+    path: /xml_action.cgi
+    query: { Action: GetInfo, Id: "<id>" }
     confidence: firmware-confirmed
-    provenance: [web-ui-js, native-handler]
-    notes:
-      - Some IDs/routes appear in the pre-session allowlist; downstream checks can still apply.
+    provenance: [web-ui-js, native-handler, android-apk]
 
   BackupFwStart:
     method: GET
-    path: /cgi/xml_action.cgi
-    query:
-      Action: BackupFwStart
-    access: command
-    risk: high-load
+    path: /xml_action.cgi
+    query: { Action: BackupFwStart }
     confidence: firmware-confirmed
-    provenance: [web-ui-js, native-handler]
-    purpose: Start firmware-backup preparation.
+    provenance: [web-ui-js, native-handler, android-apk]
 
   BackupFw:
     method: GET
-    path: /cgi/xml_action.cgi
-    query:
-      Action: BackupFw
-    access: sensitive-download
-    risk: critical
+    path: /xml_action.cgi
+    query: { Action: BackupFw }
+    risk: critical-sensitive-download
     confidence: firmware-confirmed
     provenance: [web-ui-js, native-handler]
-    purpose: Download the prepared firmware backup.
-    notes:
-      - This action string appears in a pre-session allowlist in analysed 2.5.96 firmware.
-      - The allowlist bypasses the generic session gate only; it does not prove unconditional unauthenticated success.
 
   UploadFirmware:
     method: POST
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     multipart: true
-    query:
-      Action: Upload
-      file: upgrade
-      command: ""
-    access: destructive-upload
+    query: { Action: Upload, file: upgrade, command: "" }
     risk: critical
     confidence: frontend-confirmed
-    provenance: [web-ui-js]
 
   RestoreConfig:
     method: POST
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     multipart: true
-    query:
-      Action: Upload
-      file: backfile
-      config_backup: ""
-    access: destructive-upload
+    query: { Action: Upload, file: backfile, config_backup: "" }
     risk: critical
     confidence: frontend-confirmed
-    provenance: [web-ui-js]
-
-pre_session_allowlist_observed_2_5_96:
-  # These entries were observed before the normal session gate in static analysis.
-  # They are not equivalent to "guaranteed unauthenticated endpoint".
-  - Action=GetInfo
-  - file=locale
-  - file=debugmodeon
-  - file=sdenable
-  - file=alert0
-  - file=alert2
-  - file=alert3
-  - Action=BackupFw
 
 client_rules:
-  - Re-authenticate on 401 instead of blindly replaying state-changing requests.
-  - For normal writes, POST then GET and verify the actual state.
-  - Do not automatically retry restart/shutdown after connection loss.
+  - Keep physical /xml_action.cgi separate from Digest uri /cgi/xml_action.cgi.
+  - Re-authenticate carefully on 401; never blindly replay a destructive command after connection loss.
+  - For normal writes, POST/SET then read back where possible.
+  - For MF885/MF855 2.5.94-family reboot/poweroff, the recovered companion client and project profiles use GET method=get with no XML body.
+  - Destructive transport is profile-specific; string descriptors preserve the retained POST behaviour for older mappings.
+  - Keep factory reset separate and unexposed unless deliberately implemented.
   - Keep unknown firmware enum values raw.
-  - Never probe unknown destructive write values.
+  - Never probe unknown destructive values merely because a schema exists.
   - Redact credentials, Digest material and device identifiers from diagnostics.
