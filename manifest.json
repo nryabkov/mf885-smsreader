@@ -1,5 +1,5 @@
 {
-  "version": "3.1.0-ui2",
+  "version": "3.1.1-ui2",
   "loaderProtocol": 2,
   "minimumLoaderProtocol": 2,
   "loader": "loader.js",
@@ -8,6 +8,7 @@
     "scriptable-ui.js",
     "scriptable.js",
     "modules/ui-v2.js",
+    "modules/ui-v2-fixes.js",
     "modules/ussd.js",
     "modules/device-access.js",
     "modules/cellular-control.js",
