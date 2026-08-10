@@ -15,7 +15,7 @@ test("normalizes mixed-case nested WAN and Engineer_parameter XML", () => {
   assert.equal(result.values.ipv6.raw, "2001:db8::2");
   assert.equal(result.values.rsrp.source, "Engineer_parameter:RSRP");
   assert.equal(result.stages.registration.state, "ok");
-  assert.equal(result.stages.dns.state, "ok");
+  assert.deepEqual(Object.keys(result.stages), ["sim", "registration", "pdp"]);
 });
 
 test("preserves missing fields, partial endpoint errors, IPv4-only, and unknown enums", () => {
@@ -55,4 +55,15 @@ test("signal priority rejects arbitrary percentages and keeps RSRQ/SINR separate
   let result=diagnostics.normalize({status1:"<RGW><signal_strength>80</signal_strength><RSRQ>-12</RSRQ><SINR>9</SINR></RGW>"},selectProfile("2.5.94"));
   assert.equal(result.signal.bars,null); assert.equal(result.signal.dbm,null); assert.equal(result.signal.rsrq.raw,"-12"); assert.equal(result.signal.sinr.raw,"9");
   result=diagnostics.normalize({status1:"<RGW><signalbar>3</signalbar><RSSI>-88</RSSI></RGW>"},selectProfile("2.5.94")); assert.equal(result.signal.metric,"signalbar"); assert.equal(result.signal.bars,3);
+});
+
+test("rejects placeholder network values without discarding concrete addresses", () => {
+  const result=diagnostics.normalize({wan:"<RGW><ip_address>0.0.0.0</ip_address><ipv6_address>2001:db8::8</ipv6_address><gateway>NA</gateway><ipv6_gateway>2001:db8::1</ipv6_gateway><dns1></dns1><dns2>1.1.1.1</dns2></RGW>"},profile);
+  assert.equal(result.values.ipv4.value,null);
+  assert.equal(result.values.gateway4.value,null);
+  assert.equal(result.values.dns1.value,null);
+  assert.equal(result.values.ipv6.raw,"2001:db8::8");
+  assert.equal(result.values.gateway6.raw,"2001:db8::1");
+  assert.equal(result.values.dns2.raw,"1.1.1.1");
+  assert.deepEqual(Object.keys(result.stages),["sim","registration","pdp"]);
 });
