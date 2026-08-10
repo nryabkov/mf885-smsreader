@@ -42,6 +42,8 @@ Firmware/configuration upload uses multipart POST actions rather than a normal X
 
 For authentication, see [AUTHENTICATION.md](AUTHENTICATION.md).
 
+For exact MF885 2.5.94 native-analysis provenance and the power-command confidence split, see [MF885_2.5.94_STATIC_ANALYSIS.md](MF885_2.5.94_STATIC_ANALYSIS.md).
+
 ---
 
 ## `status1`
@@ -91,7 +93,7 @@ RGW/wan/proto
 
 **Purpose:** cellular WAN state/configuration.  
 **Access:** read; writes are firmware/profile-specific.  
-**Confidence:** firmware-confirmed for reads on 2.5.96; write mappings are intentionally not advertised by this project until verified.  
+**Confidence:** firmware-confirmed for reads on analysed builds; write mappings are intentionally not advertised by this project until verified.  
 **Provenance:** `xml-schema`, `project-client`.
 
 Fields worth capturing include:
@@ -130,7 +132,7 @@ On a live MF885, the router was registered on LTE with good signal and an operat
 **Confidence:** firmware-confirmed.  
 **Provenance:** `xml-schema`, `web-ui-js`, `project-client`.
 
-The 2.5.96 schema exposes more than 100 leaf fields. Examples include:
+The analysed schemas expose a large engineering field set. Examples include:
 
 ```text
 RGW/Engi/Dev/vendor
@@ -275,7 +277,7 @@ Do not log responses from this model in public issue reports.
 **Confidence:** firmware-confirmed.  
 **Provenance:** `xml-schema`, `web-ui-js`.
 
-The 2.5.96 schema contains roughly 147 leaf fields and may include:
+The analysed schemas contain a large set of configuration fields and may include:
 
 - administrator credentials;
 - Wi-Fi keys;
@@ -283,7 +285,7 @@ The 2.5.96 schema contains roughly 147 leaf fields and may include:
 - LAN/DHCP configuration;
 - firewall/NAT/routes;
 - device lists;
-- Telnet-related persistent state.
+- device-access related state.
 
 Treat configuration backups as secrets.
 
@@ -292,26 +294,56 @@ Treat configuration backups as secrets.
 ## `reset`
 
 **Purpose:** restart/reboot.  
-**Access:** write-command.  
-**Risk:** destructive/connection-dropping.  
-**Confidence:** firmware-confirmed; project profile contains a confirmed 2.5.96 mapping.  
-**Provenance:** `native-handler`, `project-client`.
+**Access:** destructive command model.  
+**Risk:** connection-dropping.  
+**Confidence:** model/tree semantics are firmware-confirmed on the exact MF885 2.5.94 image; exact side-effecting transport is not yet independently confirmed for that build. The project profile contains a separately confirmed 2.5.96 destructive mapping.  
+**Provenance:** `xml-schema`, `native-handler`, `project-client`.
 
 Analysed tree:
 
 ```xml
-<RGW><reboot>...</reboot></RGW>
+<RGW><reboot/></RGW>
 ```
 
-The connection may disappear before an HTTP response is received. Do not blindly retry.
+`reset` is the **firmware model name for reboot**. It is not the factory-reset operation. Factory defaults are represented by the separate `restore_defaults` model.
+
+For exact 2.5.94, preserved static evidence disagrees on the trigger transport: older analysis identifies power models as command-on-read (`GET ...&file=reset`), while the generic model inventory lists normal Duster GET/SET forms and the current project client uses POST/SET for the confirmed 2.5.96 profile. Until a stock packet capture or exact callback-direction proof closes that gap, the 2.5.94 compatibility profile intentionally leaves destructive actions disabled.
+
+The connection may disappear before an HTTP response is received after a valid trigger. Do not blindly retry, and do not treat connection loss from an unverified request shape as proof of success.
+
+---
+
+## `restore_defaults`
+
+**Purpose:** restore factory defaults.  
+**Risk:** destructive configuration reset.  
+**Confidence:** separate model/schema is firmware-confirmed.  
+**Provenance:** `xml-schema`, `web-ui-js`, `native-handler`.
+
+This model is deliberately documented separately from `reset`:
+
+```text
+reset             -> reboot semantics
+restore_defaults  -> factory-default semantics
+```
+
+Never substitute one for the other.
 
 ---
 
 ## Power-off / shutdown
 
-Power control varies by firmware. The project compatibility profile for 2.5.96 contains a confirmed destructive `poweroff` mapping with a `shutdown` tree, while intentionally omitting unconfirmed variants such as `trueshutdown`.
+The analysed firmware family contains a `poweroff` model with this tree:
 
-**Rule:** never probe guessed shutdown field values.
+```xml
+<RGW><shutdown/></RGW>
+```
+
+On exact MF885 2.5.94 the model/schema and shutdown semantics have strong static evidence, but the exact side-effecting GET/SET transport has the same unresolved confidence gap described for `reset`. Therefore 2.5.94 does not currently advertise `poweroff` in its destructive compatibility profile.
+
+The project compatibility profile for 2.5.96 contains a separately confirmed destructive `poweroff` mapping with a `shutdown` tree. Variants such as `trueshutdown` remain unadvertised because their practical distinction is not sufficiently established.
+
+**Rule:** never probe guessed shutdown field values or copy a destructive trigger transport across firmware versions without evidence.
 
 ---
 
@@ -407,7 +439,7 @@ The model appears in a pre-session allowlist in the analysed firmware. That is n
 **Purpose:** persistent Telnet-enable flag/contract.  
 **Access:** schema supports control; actual daemon availability is firmware-dependent.  
 **Risk:** security-sensitive.  
-**Confidence:** schema-only to firmware-confirmed for the flag; Telnet service itself is **not proven** on 2.5.96.  
+**Confidence:** schema-only to firmware-confirmed for the flag; Telnet service itself is **not proven** on the analysed stock builds.  
 **Provenance:** `xml-schema`, configuration export, project experimental module.
 
 Contract:
@@ -438,7 +470,7 @@ An XML schema exists with fields resembling:
 </diagnostic>
 ```
 
-However, static analysis of the 2.5.96 model-registration entry found the handler slots to be zero. Therefore this is documented as **schema-only / inactive in the analysed build**, not as an arbitrary command-execution API.
+Stock handler availability is firmware-specific. Static analysis of the 2.5.96 model-registration entry found the handler slots to be zero. Exact 2.5.94 descriptor work likewise demonstrates why schema presence cannot be treated as proof of a callable arbitrary-command backend. Community research builds that attach their own diagnostic callback are separate from stock firmware capability.
 
 ---
 
@@ -477,7 +509,8 @@ Interpretation: these routes bypass the **generic** session check. Individual ha
 2. Keep nonce-count handling correct.
 3. Never infer enum labels for unknown firmware.
 4. For normal writes: `POST -> GET -> verify`.
-5. For restart/shutdown: connection loss may itself be expected; do not retry blindly.
-6. Treat `status1`, `admin`, `config_save`, SIM identifiers and backups as sensitive.
-7. Do not probe unknown write values merely because a schema exists.
-8. Record provenance and confidence when adding a newly discovered model.
+5. For command-like models, distinguish **payload semantics** from **side-effecting transport**.
+6. For restart/shutdown: connection loss may itself be expected after a confirmed trigger; do not retry blindly.
+7. Treat `status1`, `admin`, `config_save`, SIM identifiers and backups as sensitive.
+8. Do not probe unknown write values merely because a schema exists.
+9. Record provenance and confidence when adding a newly discovered model.
