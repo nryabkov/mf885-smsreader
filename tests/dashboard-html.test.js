@@ -9,27 +9,42 @@ function model(tab='sms') { return {tab,loadedAt:Date.now(),sms:{messages:[{id:'
 test('initial HTML is immediately useful and marks history as loading',()=>{const html=app.buildHtml(model());assert.match(html,/hello/);assert.match(html,/Loading messages: 1/);assert.match(html,/Not checked/);assert.match(html,/data-detect-experimental/);assert.match(html,/Detect experimental features/);assert.doesNotMatch(html,/data-detect="ussd"/);});
 test('dashboard header displays device, firmware and installed software versions',()=>{
   const fixture=model();
-  Object.assign(fixture,{actualModel:'MF885',actualFirmware:'BD_MF885V1.0.0B09',softwareVersion:'3.0.0'});
+  Object.assign(fixture,{actualModel:'MF855',actualRevision:'NZ',actualFirmware:'2.5.94_release_MF855_NZ_CP_2.129.003',softwareVersion:'3.0.0'});
   const html=app.buildHtml(fixture);
-  assert.match(html,/<h1>MF885<\/h1>/);
-  assert.match(html,/Firmware: BD_MF885V1\.0\.0B09/);
-  assert.match(html,/Software: 3\.0\.0/);
-  assert.match(html,/<title>MF885 · firmware BD_MF885V1\.0\.0B09 · software 3\.0\.0<\/title>/);
+  assert.match(html,/<h1>MF855<\/h1><span class="device-revision">Revision NZ<\/span>/);
+  assert.match(html,/Firmware version<\/small><b>2\.5\.94<\/b>/);
+  assert.match(html,/Application version<\/small><b>3\.0\.0<\/b>/);
+  assert.match(html,/Firmware build<\/small><code>2\.5\.94_release_MF855_NZ_CP_2\.129\.003<\/code>/);
+  assert.match(html,/<title>MF855 · NZ · firmware 2\.5\.94 · software 3\.0\.0<\/title>/);
+  assert.match(html,/\.device-metadata\{[^}]*display:grid/);
+  assert.match(html,/\.firmware-build code\{[^}]*overflow-wrap:anywhere/);
+  assert.ok(html.indexOf('class="sms-counter"') > html.indexOf('class="firmware-build"'));
 });
 test('dashboard version metadata is escaped before entering markup',()=>{
   const fixture=model();
-  Object.assign(fixture,{actualModel:'MF885<script>',actualFirmware:'fw&<bad>',softwareVersion:'3"<next>'});
+  Object.assign(fixture,{actualModel:'MF885<script>',actualRevision:'R&<rev>',actualFirmware:'2.5&<bad>_release_build"<id>',actualFirmwareVersion:'2.5&<version>',softwareVersion:'3"<next>'});
   const html=app.buildHtml(fixture);
   assert.match(html,/MF885&lt;script&gt;/);
-  assert.match(html,/fw&amp;&lt;bad&gt;/);
+  assert.match(html,/R&amp;&lt;rev&gt;/);
+  assert.match(html,/2\.5&amp;&lt;version&gt;/);
+  assert.match(html,/2\.5&amp;&lt;bad&gt;_release_build&quot;&lt;id&gt;/);
   assert.match(html,/3&quot;&lt;next&gt;/);
   assert.doesNotMatch(html,/<script><\/script>/);
 });
 test('dashboard uses understandable metadata fallbacks when status1 is unavailable',()=>{
   const html=app.buildHtml(model());
   assert.match(html,/<h1>unknown<\/h1>/);
-  assert.match(html,/Firmware: unknown/);
-  assert.match(html,/Software: unknown/);
+  assert.doesNotMatch(html,/<span class="device-revision">/);
+  assert.match(html,/Firmware version<\/small><b>unknown<\/b>/);
+  assert.match(html,/Application version<\/small><b>unknown<\/b>/);
+  assert.match(html,/<title>unknown · firmware unknown · software unknown<\/title>/);
+});
+test('status1 hardware revision accepts common XML field names',()=>{
+  for(const field of ['revision','hardware_version','hardware_ver','hw_version']) {
+    assert.equal(app.hardwareRevision(`<RGW><status><${field}>rev-${field}<\/${field}></status></RGW>`),`rev-${field}`);
+  }
+  assert.equal(app.hardwareRevision('<RGW><status></status></RGW>'),'');
+  assert.equal(app.firmwareUserVersion('2.5.94_release_MF855_NZ_CP_2.129.003'),'2.5.94');
 });
 test('SMS and router models render a non-empty main with the requested active tab',()=>{for(const tab of ['sms','router']){const html=app.buildHtml(model(tab));const main=html.match(/<main>([\s\S]*?)<\/main>/i);assert.ok(main&&main[1].trim(),`${tab} main must not be empty`);assert.match(html,new RegExp(`<section id="${tab}" class="tab active"`));}});
 test('dashboard has native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
