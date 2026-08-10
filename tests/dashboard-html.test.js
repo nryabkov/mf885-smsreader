@@ -361,7 +361,9 @@ test('Router groups are ordered, compact, and retain command hooks',()=>{
   const labels=['Overview','Mobile network','Connection diagnostics','Experimental features','Cellular controls','USSD','Device access','System'];
   for(let i=1;i<labels.length;i++)assert.ok(html.indexOf(labels[i-1])<html.indexOf(labels[i]));
   for(const hook of ['data-ussd-section','data-device-access-section','data-cellular-control-section','data-power-action'])assert.match(html,new RegExp(hook));
-  assert.equal((html.match(/class="experimental-subsection"/g)||[]).length,3);
+  assert.match(html,/<ul class="experimental-list">[\s\S]*?<li data-cellular-control-section>[\s\S]*?<ul><li><h4>Preferred protocol control<\/h4>/);
+  assert.equal((html.match(/data-capability-status/g)||[]).length,3);
+  assert.doesNotMatch(html,/experimental-subsection/);
   assert.equal((html.match(/data-detect-experimental/g)||[]).length,1);
   assert.equal((html.match(/topgrid router-only/g)||[]).length,1); assert.match(html,/Loading diagnostics…/);
 });
@@ -381,7 +383,25 @@ test('experimental progress is a live region with attempts, elapsed time and tim
 test('one experimental command is validated and automatically dispatched with independent results',()=>{
   assert.equal(app.validateWebViewCommand({id:'detect-1',action:'detectExperimental',params:{}}).action,'detectExperimental');
   const js=app.clientScript(model()); assert.match(js,/bridge\('detectExperimental'/); assert.match(js,/setTimeout\(function\(\)\{detectExperimental\(\)\},0\)/);
-  assert.match(js,/Retry experimental detection/); assert.match(js,/item&&item\.supported===true/);
+  assert.match(js,/Retry experimental detection/); assert.match(js,/item\.supported===true/);
+});
+
+test('experimental capabilities use canonical labels and only render confirmed actions',()=>{
+  const uncheckedPage=app.buildHtml(model('router')),unchecked=uncheckedPage.slice(uncheckedPage.indexOf('<article class="card experimental'),uncheckedPage.indexOf('<article class="card"><small>System'));
+  for(const label of ['Cellular controls','USSD','Device access'])assert.match(unchecked,new RegExp('<span data-capability-name>'+label+'<\\/span>: <span data-capability-status>Not checked<\\/span>'));
+  for(const action of ['data-cellular-action','data-device-action','Dial USSD'])assert.doesNotMatch(unchecked,new RegExp(action));
+
+  const available=model('router');
+  available.ussd={state:'available',supported:true,detail:'Ready'};
+  available.cellularControl={state:'available',supported:true,detail:'Ready',modes:[{id:'auto',title:'Automatic'}]};
+  available.deviceAccess={state:'available',supported:true,detail:'Ready',capabilities:[{id:'telnet',title:'Enable telnet',supported:true},{id:'ssh',title:'Enable SSH',supported:false}]};
+  const html=app.buildHtml(available);
+  assert.match(html,/data-cellular-action="reconnect"/); assert.match(html,/>Dial USSD<\/button>/); assert.match(html,/data-device-action="telnet"/); assert.doesNotMatch(html,/data-device-action="ssh"/);
+  assert.doesNotMatch(html,/Status unavailable[^<]*<\/button>|Reconnect unavailable/);
+
+  const js=app.clientScript(model());
+  assert.match(js,/actions\.innerHTML=''/); assert.match(js,/if\(state==='available'\)/); assert.match(js,/data-capability-status/);
+  assert.doesNotMatch(js,/Cellular control'\)\+'|Dial USSD — Status unavailable/);
 });
 
 test('copy success and failure both provide visible accessible feedback',()=>{
