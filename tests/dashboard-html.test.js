@@ -7,6 +7,30 @@ const app = require('../scriptable.js');
 function model(tab='sms') { return {tab,loadedAt:Date.now(),sms:{messages:[{id:'1',phone:'+1',date:'now',content:'hello'}],loading:true},errors:{},network:{},battery:{},traffic:{},cellularDiagnostics:{},ussd:{state:'unchecked',detail:'Not checked'},deviceAccess:{state:'unchecked',detail:'Not checked',capabilities:[]},cellularControl:{state:'unchecked',detail:'Not checked'}}; }
 
 test('initial HTML is immediately useful and marks history as loading',()=>{const html=app.buildHtml(model());assert.match(html,/hello/);assert.match(html,/Loading messages: 1/);assert.match(html,/Not checked/);assert.match(html,/data-detect-experimental/);assert.match(html,/Detect experimental features/);assert.doesNotMatch(html,/data-detect="ussd"/);});
+test('dashboard header displays device, firmware and installed software versions',()=>{
+  const fixture=model();
+  Object.assign(fixture,{actualModel:'MF885',actualFirmware:'BD_MF885V1.0.0B09',softwareVersion:'3.0.0'});
+  const html=app.buildHtml(fixture);
+  assert.match(html,/<h1>MF885<\/h1>/);
+  assert.match(html,/Firmware: BD_MF885V1\.0\.0B09/);
+  assert.match(html,/Software: 3\.0\.0/);
+  assert.match(html,/<title>MF885 · firmware BD_MF885V1\.0\.0B09 · software 3\.0\.0<\/title>/);
+});
+test('dashboard version metadata is escaped before entering markup',()=>{
+  const fixture=model();
+  Object.assign(fixture,{actualModel:'MF885<script>',actualFirmware:'fw&<bad>',softwareVersion:'3"<next>'});
+  const html=app.buildHtml(fixture);
+  assert.match(html,/MF885&lt;script&gt;/);
+  assert.match(html,/fw&amp;&lt;bad&gt;/);
+  assert.match(html,/3&quot;&lt;next&gt;/);
+  assert.doesNotMatch(html,/<script><\/script>/);
+});
+test('dashboard uses understandable metadata fallbacks when status1 is unavailable',()=>{
+  const html=app.buildHtml(model());
+  assert.match(html,/<h1>unknown<\/h1>/);
+  assert.match(html,/Firmware: unknown/);
+  assert.match(html,/Software: unknown/);
+});
 test('SMS and router models render a non-empty main with the requested active tab',()=>{for(const tab of ['sms','router']){const html=app.buildHtml(model(tab));const main=html.match(/<main>([\s\S]*?)<\/main>/i);assert.ok(main&&main[1].trim(),`${tab} main must not be empty`);assert.match(html,new RegExp(`<section id="${tab}" class="tab active"`));}});
 test('dashboard has native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
 

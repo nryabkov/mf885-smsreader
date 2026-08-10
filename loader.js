@@ -83,6 +83,14 @@ function synchronizationNeeded(remoteSha, state, artifactsPresent) {
   return !validState(state) || state.activeSha !== remoteSha || !artifactsPresent;
 }
 
+function activeInstallationState(sha, manifest) {
+  return { activeSha: sha, pendingSha: null, loaderProtocol: LOADER_PROTOCOL, status: "active", entry: manifest.entry, version: manifest.version ? String(manifest.version) : "" };
+}
+
+function activeSoftwareVersion(state) {
+  return state && state.version ? String(state.version) : "";
+}
+
 function abbreviate(sha) { return sha ? sha.slice(0, 7) : "unknown"; }
 
 function requestHeaders(token, githubApi) {
@@ -148,7 +156,7 @@ async function main() {
   if (!Keychain.contains(passwordKey)) Keychain.set(passwordKey, "zimifi");
   const application = importModule(entryFile);
   if (!application || typeof application.run !== "function") throw new Error("The installed application does not export run(options)");
-  await application.run({ ...normalizeConfig(config), ip: config.routerAddress, password: Keychain.get(passwordKey), moduleDirectory: appDir });
+  await application.run({ ...normalizeConfig(config), ip: config.routerAddress, password: Keychain.get(passwordKey), moduleDirectory: appDir, softwareVersion: activeSoftwareVersion(state) });
 }
 
 async function synchronize(context) {
@@ -167,7 +175,7 @@ async function synchronize(context) {
     }
     const replaced = await replaceLoader(loader, loaderCode);
     if (!replaced) throw new Error("Self-update skipped: restore the .mf885-backup file or reinstall loader.js manually");
-    const pending = { activeSha: state ? state.activeSha : null, pendingSha: sha, loaderProtocol: manifest.loaderProtocol, status: "pending-restart", loaderBackup: loader.backupPath, entry: state && state.entry ? state.entry : "scriptable.js" };
+    const pending = { activeSha: state ? state.activeSha : null, pendingSha: sha, loaderProtocol: manifest.loaderProtocol, status: "pending-restart", loaderBackup: loader.backupPath, entry: state && state.entry ? state.entry : "scriptable.js", version: state && state.version ? state.version : "" };
     writeStateAtomic(fm, statePath, pending);
     return { state: pending, restart: true };
   }
@@ -212,7 +220,7 @@ async function installApplication(fm, appDir, statePath, priorState, sha, manife
     if (fm.fileExists(appDir)) fm.move(appDir, backup);
     try { fm.move(stage, appDir); }
     catch (error) { if (fm.fileExists(backup) && !fm.fileExists(appDir)) fm.move(backup, appDir); throw error; }
-    const active = { activeSha: sha, pendingSha: null, loaderProtocol: LOADER_PROTOCOL, status: "active", entry: manifest.entry };
+    const active = activeInstallationState(sha, manifest);
     try { writeStateAtomic(fm, statePath, active); }
     catch (error) {
       removeIfExists(fm, appDir); if (fm.fileExists(backup)) fm.move(backup, appDir);
@@ -347,6 +355,6 @@ function removeIfExists(fm, path) { if (fm.fileExists(path)) fm.remove(path); }
 async function downloadICloud(fm, path) { if (fm.isFileDownloaded && !fm.isFileDownloaded(path)) await fm.downloadFileFromiCloud(path); }
 async function showMessage(title, message) { const a = new Alert(); a.title = title; a.message = message; a.addAction("OK"); await a.presentAlert(); }
 
-const exported = { SHA_RE, LOADER_PROTOCOL, DEFAULT_CONFIG, normalizeConfig, commitApiUrl, rawBaseUrl, artifactUrls, assertSha, safeRelativePath, validateManifest, validState, synchronizationNeeded, requestHeaders, abbreviate };
+const exported = { SHA_RE, LOADER_PROTOCOL, DEFAULT_CONFIG, normalizeConfig, commitApiUrl, rawBaseUrl, artifactUrls, assertSha, safeRelativePath, validateManifest, validState, synchronizationNeeded, activeInstallationState, activeSoftwareVersion, requestHeaders, abbreviate };
 if (typeof module !== "undefined" && module.exports) module.exports = exported;
 if (typeof Script !== "undefined" && typeof FileManager !== "undefined") main().catch(error => { console.log(`[Router/startup error] ${error}`); throw error; });

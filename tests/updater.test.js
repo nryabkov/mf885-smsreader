@@ -8,6 +8,7 @@ const A = "a".repeat(40);
 const B = "b".repeat(40);
 const config = { repositoryOwner: "example", repositoryName: "fork", branch: "docs/next" };
 const manifest = {
+  version: "3.0.0",
   loaderProtocol: 2,
   minimumLoaderProtocol: 2,
   loader: "loader.js",
@@ -53,6 +54,24 @@ test("pending restart state is validated independently of semantic version", () 
   assert.equal(updater.validState({ activeSha: A, pendingSha: B, loaderProtocol: 3, status: "pending-restart" }), true);
   assert.equal(updater.validState({ ...active, version: "2.0.0" }), true);
   assert.equal(updater.synchronizationNeeded(A, { ...active, version: "999.0.0" }, true), false);
+});
+
+test("application version is persisted in the active installation state", () => {
+  assert.deepEqual(updater.activeInstallationState(B, manifest), {
+    activeSha: B,
+    pendingSha: null,
+    loaderProtocol: 2,
+    status: "active",
+    entry: "scriptable.js",
+    version: "3.0.0"
+  });
+});
+
+test("offline fallback reports the version of the active local application", () => {
+  const installed = { ...active, version: "2.7.0" };
+  const uninstalledRemoteManifest = { ...manifest, version: "9.0.0" };
+  assert.equal(updater.activeSoftwareVersion(installed), "2.7.0");
+  assert.notEqual(updater.activeSoftwareVersion(installed), uninstalledRemoteManifest.version);
 });
 
 test("manifest validates loader/application separation and compatibility", () => {

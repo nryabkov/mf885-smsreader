@@ -44,6 +44,7 @@ const QUERY = typeof args !== "undefined" && args.queryParameters
   : {};
 const ACTION = String(QUERY.action || "dashboard");
 const INITIAL_TAB = String(QUERY.tab || "sms") === "router" ? "router" : "sms";
+let SOFTWARE_VERSION = "";
 
 /**
  * Run the dashboard with settings supplied by loader.js.
@@ -52,6 +53,7 @@ const INITIAL_TAB = String(QUERY.tab || "sms") === "router" ? "router" : "sms";
  */
 async function run(options = {}) {
   configureDebug(options);
+  SOFTWARE_VERSION = String(options.softwareVersion || "").trim();
   if (options.ip) ROUTER_HOST = String(options.ip);
   if (options.password) PASSWORD = String(options.password);
   POLL_SECONDS = Math.max(15, Math.min(300, Number(options.pollSeconds) || 30));
@@ -300,7 +302,7 @@ function webPollPayload(model) {
 async function loadModel(auth) {
   const model = {
     sms: emptySms(), traffic: {}, battery: {}, network: {}, cellularDiagnostics: {}, ussd: {}, deviceAccess: {}, cellularControl: {},
-    errors: {}, notice: "", tab: "sms", loadedAt: Date.now()
+    errors: {}, notice: "", tab: "sms", loadedAt: Date.now(), softwareVersion: SOFTWARE_VERSION
   };
   let status = null;
   const initial = await Promise.allSettled([getStatus(auth), getSmsPage(auth, 1)]);
@@ -309,8 +311,10 @@ async function loadModel(auth) {
     if (initial[0].status === "rejected") throw initial[0].reason;
     status = initial[0].value;
     const actualFirmware=firmwareVersion(status);
-    ACTIVE_PROFILE=resolveCompatibilityProfile(actualFirmware, firstText(status,["model","model_name","product_name"]));
+    const actualModel=firstText(status,["model","model_name","product_name"]);
+    ACTIVE_PROFILE=resolveCompatibilityProfile(actualFirmware, actualModel);
     model.actualFirmware=actualFirmware;
+    model.actualModel=actualModel;
     const versionWarning=profileVersionWarning(actualFirmware,PROFILE_OVERRIDE,ACTIVE_PROFILE);
     if(versionWarning) {
       model.errors.profile=versionWarning;
@@ -1194,10 +1198,14 @@ function buildHtml(model) {
   const resetTrafficConfirm = "";
   const powerConfirmCard = `<div class="warning" data-power-confirm hidden></div>`;
   const activeTab = model.tab === "router" ? "router" : "sms";
+  const deviceModel = String(model.actualModel || "").trim() || "unknown";
+  const firmwareVersion = String(model.actualFirmware || "").trim() || "unknown";
+  const softwareVersion = String(model.softwareVersion || "").trim() || "unknown";
+  const pageTitle = `${deviceModel} · firmware ${firmwareVersion} · software ${softwareVersion}`;
   const smsActive = activeTab === "sms" ? " active" : "";
   const routerActive = activeTab === "router" ? " active" : "";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>ZMI Router</title><style>${css()}</style></head>
-  <body><div id="progressbar" class="progressbar" aria-hidden="true"><i></i></div><main><header class="hero compact"><div><h1>MF855 / MF885</h1><strong>SMS: ${smsCounter}</strong></div><p class="statusline"><span>📶 ${escapeHtml(network.mode || "Unknown")}</span><span>${escapeHtml(batteryInline)}</span><span>⇅ ${totalTraffic}</span><span data-status-updated>⟳ ${escapeHtml(updated.slice(0,5))}</span></p></header>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${escapeHtml(pageTitle)}</title><style>${css()}</style></head>
+  <body><div id="progressbar" class="progressbar" aria-hidden="true"><i></i></div><main><header class="hero compact"><div><h1>${escapeHtml(deviceModel)}</h1><small>Firmware: ${escapeHtml(firmwareVersion)} · Software: ${escapeHtml(softwareVersion)}</small><strong>SMS: ${smsCounter}</strong></div><p class="statusline"><span>📶 ${escapeHtml(network.mode || "Unknown")}</span><span>${escapeHtml(batteryInline)}</span><span>⇅ ${totalTraffic}</span><span data-status-updated>⟳ ${escapeHtml(updated.slice(0,5))}</span></p></header>
   <nav class="seg dashboard-tabs" role="tablist" aria-label="Dashboard sections"><button role="tab" aria-controls="sms" aria-selected="${activeTab==='sms'}" tabindex="${activeTab==='sms'?'0':'-1'}" data-tab-button="sms" class="${smsActive.trim()}" onclick="tab('sms')">SMS</button><button role="tab" aria-controls="router" aria-selected="${activeTab==='router'}" tabindex="${activeTab==='router'?'0':'-1'}" data-tab-button="router" class="${routerActive.trim()}" onclick="tab('router')">Router</button></nav>
   <section class="refresh"><span id="countdown">Next refresh: ${escapeHtml(nextUpdate)}</span><div class="actions"><button id="refreshLink" class="buttonlike" type="button" onclick="refreshNow(event)">Refresh</button><button id="pauseBtn" aria-pressed="false" onclick="togglePause()">Pause</button></div></section>
   <section id="actionStatus" class="action-status warning" hidden><header><strong data-status-title></strong><button type="button" onclick="hideActionStatus()">Close</button></header><p data-status-detail></p><textarea data-status-copy rows="5" readonly></textarea><pre data-status-pre></pre></section>
