@@ -344,7 +344,37 @@ test('one experimental command is validated and automatically dispatched with in
 
 test('copy success and failure both provide visible accessible feedback',()=>{
   const js=app.clientScript(model()); assert.match(js,/textContent='Copied'/); assert.match(js,/aria-label','SMS copied'/);
-  assert.match(js,/setActionStatus\('SMS copied to clipboard'\)/); assert.match(js,/Could not copy SMS/); assert.match(js,/Copy SMS manually/);
+  assert.match(js,/setActionStatus\('SMS copied to clipboard'\)/); assert.match(js,/Clipboard access failed/); assert.match(js,/Copy SMS manually/);
+});
+
+test('initial and dynamically rendered SMS cards use the delegated copy hook',()=>{
+  const html=app.buildHtml(model()),js=app.clientScript(model());
+  assert.match(html,/<button data-copy type="button">Copy<\/button>/);
+  assert.doesNotMatch(html,/onclick="copySms\(this\)"/);
+  assert.match(js,/card\.innerHTML='[^']*<button data-copy>Copy<\/button>/);
+  assert.match(js,/closest\('\[data-copy\],\[data-delete-action\]/);
+  assert.match(js,/if\(b\.hasAttribute\('data-copy'\)\)\{e\.preventDefault\(\);e\.stopPropagation\(\);copySms\(b\);return\}/);
+});
+
+test('copy falls back to a dedicated native bridge command',()=>{
+  const js=app.clientScript(model());
+  assert.match(js,/navigator\.clipboard\.writeText\(value\)/);
+  assert.match(js,/bridge\('copySms',\{text:value\}\)/);
+  assert.match(js,/Select and copy the SMS text below/);
+  const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');
+  assert.match(source,/copySms:async p=>\{Pasteboard\.copyString\(p\.text\);return \{copied:true\};\}/);
+});
+
+test('dispatcher accepts validated copy commands and rejects invalid copy payloads',async()=>{
+  const copied=[];
+  const dispatch=app.createWebViewDispatcher({copySms:async p=>{copied.push(p.text);return {copied:true}}});
+  const accepted=await dispatch({id:'copy-1',action:'copySms',params:{text:'hello'}});
+  assert.equal(accepted.ok,true); assert.deepEqual(accepted.result,{copied:true}); assert.deepEqual(copied,['hello']);
+  for(const params of [{},{text:''},{text:42},{text:'x'.repeat(10001)}]){
+    const rejected=await dispatch({id:'copy-invalid',action:'copySms',params});
+    assert.equal(rejected.ok,false); assert.match(rejected.error,/Invalid text/);
+  }
+  assert.deepEqual(copied,['hello']);
 });
 
 test('profile selection is override, detection, then configured fallback',()=>{
