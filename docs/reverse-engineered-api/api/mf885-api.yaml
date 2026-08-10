@@ -2,13 +2,14 @@
 #
 # This file is intentionally conservative. A schema found in firmware does not imply
 # that a callable backend exists. Add write mappings only after confirming the exact
-# request and a safe read-back verification strategy on a named firmware build.
+# request on a named firmware build.
 
-spec_version: 1
+spec_version: 2
 name: ZMI MF855/MF885 local XML API
 status: reverse-engineered
 base_url_default: http://192.168.21.1
-xml_api_path: /cgi/xml_action.cgi
+xml_api_path: /xml_action.cgi
+digest_uri: /cgi/xml_action.cgi
 
 confidence_levels:
   - live-tested
@@ -24,18 +25,20 @@ provenance_values:
   - xml-schema
   - native-handler
   - binary-strings
+  - firmware-static-analysis
 
 transport:
+  # Physical HTTP path. Do not replace this with digest_uri.
   model_read:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       method: get
       module: duster
       file: "<model>"
   model_write:
     method: POST
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       method: set
       module: duster
@@ -43,14 +46,14 @@ transport:
     content_type: application/xml
   model_command_read:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       method: get
       file: "<model>"
       command: "<command>"
   action:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       Action: "<action>"
 
@@ -59,14 +62,68 @@ authentication:
   challenge_path: /login.cgi
   algorithm: MD5
   qop_default: auth
+  digest_uri: /cgi/xml_action.cgi
   notes:
+    - Actual XML HTTP requests target /xml_action.cgi.
     - Login query response uses HA2 for GET:/cgi/protected.cgi.
-    - Authorization header uses uri=/cgi/xml_action.cgi and HA2 for that path.
+    - XML Authorization uses uri=/cgi/xml_action.cgi and HA2 for <METHOD>:/cgi/xml_action.cgi.
     - Login consumes nonce count 00000001; the next XML request starts at 00000002.
     - Plain HTTP means request/response bodies are not encrypted.
   documentation: ../AUTHENTICATION.md
 
 firmware_profiles:
+  "2.5.94":
+    id: zmi-mf885-2.5.94
+    model: MF885
+    confidence: firmware-confirmed
+    provenance:
+      - live-device
+      - xml-schema
+      - web-ui-js
+      - project-client
+      - firmware-static-analysis
+    static_analysis:
+      hardware: ZMI MF885 / MF96 Ver.D
+      release_lineage: 2.5.94_release_MF855_NZ_CP_2.129.003
+      backup_size_bytes: 8323644
+      backup_sha256: 2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531
+      oslo_raw_size_bytes: 9648064
+      oslo_raw_sha256: d51fb378d8ccf68662174f39d6b8c4f6be5571280790bc3a4dc4a9e8a967078c
+      documentation: ../MF885_2.5.94_STATIC_ANALYSIS.md
+    diagnostic_models:
+      - status1
+      - wan
+      - Engineer_parameter
+    destructive:
+      reset:
+        file: reset
+        tree: reboot
+        confidence: firmware-confirmed
+        meaning: restart/reboot, not factory reset
+        retry_on_transport_loss: false
+      # poweroff/trueshutdown are deliberately absent for 2.5.94.
+    policy:
+      unknown_writes_are_read_only: true
+      verify_normal_writes_by_readback: true
+      do_not_retry_destructive_transport_loss: true
+
+  "2.5.94_release_MF855_NZ_CP_2.129.003":
+    id: zmi-mf855-nz-2.5.94
+    confidence: firmware-confirmed
+    provenance:
+      - xml-schema
+      - web-ui-js
+      - firmware-static-analysis
+    destructive:
+      reset:
+        file: reset
+        tree: reboot
+        confidence: firmware-confirmed
+        retry_on_transport_loss: false
+    notes:
+      - The clean MF885 Ver.D golden analysed by this project carries this release-lineage string.
+      - The full-string profile retains conservative WAN enum mappings but shares the confirmed reboot contract.
+
   "2.5.96":
     id: zmi-mf855-mf885-2.5.96
     confidence: firmware-confirmed
@@ -79,10 +136,19 @@ firmware_profiles:
       - status1
       - wan
       - Engineer_parameter
+    destructive:
+      reset:
+        file: reset
+        tree: reboot
+        confidence: firmware-confirmed
+      poweroff:
+        file: poweroff
+        tree: shutdown
+        confidence: firmware-confirmed
     policy:
-      # The application deliberately does not infer writes from field names.
       unknown_writes_are_read_only: true
       verify_normal_writes_by_readback: true
+      do_not_retry_destructive_transport_loss: true
 
 models:
   status1:
@@ -157,7 +223,7 @@ models:
         IPV4V6: IPv4/IPv6
     notes:
       - Do not reuse these enum mappings for another firmware without evidence.
-      - No cellular WAN write operation is advertised by the current 2.5.96 compatibility profile unless explicitly confirmed.
+      - Cellular WAN writes are advertised only when explicitly supplied by the active profile.
       - "Live observation on MF885: toggling Auto APN off then on recovered a PDP session stuck in connecting; root cause unknown."
 
   Engineer_parameter:
@@ -178,7 +244,7 @@ models:
       - RGW/Engi/GSM/ci
       - RGW/Engi/GSM/arfcn
     notes:
-      - Analysed 2.5.96 schema exposes more than 100 leaf fields.
+      - Analysed schemas expose more than 100 leaf fields.
       - LTE fields are used to surface band, EARFCN, PCI, cell ID, TAC, RSRP, RSRQ, SINR/CQI where present.
 
   message:
@@ -218,6 +284,7 @@ models:
     transport: model_read
     notes:
       - Multiple statistics-reset variants exist across firmware; verify by reading counters after a reset request.
+      - This counter reset is unrelated to the reset/reboot firmware model.
 
   WanStatistics:
     description: WAN byte counters commonly embedded in status/statistics responses.
@@ -275,26 +342,36 @@ models:
       - Treat all configuration backups as secrets.
 
   reset:
-    description: Restart/reboot command path.
+    description: Restart/reboot command path. The firmware model name reset does not mean factory reset.
     access: write-command
     risk: destructive
     confidence: firmware-confirmed
-    provenance: [native-handler, project-client]
+    provenance: [xml-schema, native-handler, project-client, firmware-static-analysis]
     transport: model_write
     known_tree: RGW/reboot
+    confirmed_profiles:
+      - "2.5.94"
+      - "2.5.94_release_MF855_NZ_CP_2.129.003"
+      - "2.5.96"
+    request_example: '<RGW><reboot/></RGW>'
     notes:
+      - On MF885 2.5.94, restore_defaults is a separate model; reset/reboot is not factory reset.
+      - Restart is the UI label for the same operation the client calls reboot.
       - Connection loss before an HTTP reply can be expected; do not blindly retry.
 
   poweroff:
-    description: Power-off command path used by the confirmed 2.5.96 compatibility profile.
-    access: write-command
+    description: Power-off command path enabled only on profiles where the exact destructive mapping is confirmed.
+    access: write-command-when-profile-confirmed
     risk: destructive
-    confidence: firmware-confirmed
-    provenance: [project-client]
+    confidence: firmware-confirmed-on-2.5.96
+    provenance: [project-client, xml-schema]
     transport: model_write
     known_tree: RGW/shutdown
+    confirmed_profiles:
+      - "2.5.96"
     notes:
-      - Other guessed variants such as trueshutdown are intentionally not documented as supported.
+      - The schema/name is present in 2.5.94 firmware material, but the 2.5.94 compatibility profile intentionally does not advertise it yet.
+      - Other variants such as trueshutdown are intentionally not documented as supported.
 
   upgrade_firmware:
     description: Firmware update/backup state model.
@@ -317,7 +394,7 @@ models:
     transport: model_write
     xml_contract: RGW/debugon/openmode
     native_effect:
-      analysed_firmware: "2.5.96"
+      deeply_traced_firmware: "2.5.96"
       internal_mode: 8
       exact_external_interfaces: unknown
     notes:
@@ -325,7 +402,7 @@ models:
       - Exact USB descriptor/interface changes require live before/after enumeration.
 
   control_telnet:
-    description: Telnet-enable configuration contract; listening service is not proven for 2.5.96.
+    description: Telnet-enable configuration contract; a listening service is not proven.
     access: write-only-when-profile-confirmed
     risk: security-sensitive
     confidence: schema-only
@@ -337,7 +414,7 @@ models:
       - A client should require confirmed enable/disable values plus API read-back and port verification.
 
   diagnostic:
-    description: Diagnostic XML contract found in firmware, but no active native handler was identified in 2.5.96.
+    description: Diagnostic XML contract; no active native handler was identified in the deeply traced 2.5.96 registration entry.
     access: none-confirmed
     risk: unknown
     confidence: schema-only
@@ -347,13 +424,13 @@ models:
       - diagnostic/arg
       - diagnostic/output
     notes:
-      - Model-registration handler slots were observed as zero in the analysed 2.5.96 build.
-      - Do not describe this model as arbitrary command execution.
+      - Do not describe this stock model as arbitrary command execution.
+      - Community lab firmware can deliberately attach a custom callback; that is not stock behaviour.
 
 actions:
   GetInfo:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       Action: GetInfo
       Id: "<id>"
@@ -366,32 +443,34 @@ actions:
 
   BackupFwStart:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       Action: BackupFwStart
     access: command
     risk: high-load
-    confidence: firmware-confirmed
-    provenance: [web-ui-js, native-handler]
+    confidence: live-tested
+    provenance: [live-device, web-ui-js, native-handler]
     purpose: Start firmware-backup preparation.
+    notes:
+      - On live MF885 2.5.94 this temporarily disrupted cellular/PDP service; do not automatically retry it.
 
   BackupFw:
     method: GET
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     query:
       Action: BackupFw
     access: sensitive-download
     risk: critical
-    confidence: firmware-confirmed
-    provenance: [web-ui-js, native-handler]
+    confidence: live-tested
+    provenance: [live-device, web-ui-js, native-handler]
     purpose: Download the prepared firmware backup.
     notes:
-      - This action string appears in a pre-session allowlist in analysed 2.5.96 firmware.
+      - This action string appears in a pre-session allowlist in analysed firmware.
       - The allowlist bypasses the generic session gate only; it does not prove unconditional unauthenticated success.
 
   UploadFirmware:
     method: POST
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     multipart: true
     query:
       Action: Upload
@@ -404,7 +483,7 @@ actions:
 
   RestoreConfig:
     method: POST
-    path: /cgi/xml_action.cgi
+    path: /xml_action.cgi
     multipart: true
     query:
       Action: Upload
@@ -428,9 +507,9 @@ pre_session_allowlist_observed_2_5_96:
   - Action=BackupFw
 
 client_rules:
-  - Re-authenticate on 401 instead of blindly replaying state-changing requests.
+  - Re-authenticate on 401 for safe/read operations instead of blindly replaying state-changing requests.
   - For normal writes, POST then GET and verify the actual state.
-  - Do not automatically retry restart/shutdown after connection loss.
+  - Do not automatically retry restart/shutdown after connection loss or 401.
   - Keep unknown firmware enum values raw.
   - Never probe unknown destructive write values.
   - Redact credentials, Digest material and device identifiers from diagnostics.
