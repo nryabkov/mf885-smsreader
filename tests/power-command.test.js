@@ -4,14 +4,23 @@ const assert = require("node:assert/strict");
 const api = require("../modules/api-contract.js");
 const compatibility = require("../modules/compatibility-profiles.js");
 
-test("MF885 2.5.94 advertises APK-confirmed GET reboot and power-off commands", () => {
-  const profile = compatibility.selectProfile("2.5.94");
-
-  assert.equal(profile.id, "zmi-mf885-2.5.94");
+function assertGetPowerProfile(profile) {
   assert.deepEqual(profile.destructive.reset.file, { name: "reset", method: "GET" });
   assert.equal(profile.destructive.reset.tree, "reboot");
   assert.deepEqual(profile.destructive.poweroff.file, { name: "poweroff", method: "GET" });
   assert.equal(profile.destructive.poweroff.tree, "shutdown");
+}
+
+test("MF885 2.5.94 advertises APK-confirmed GET reboot and power-off commands", () => {
+  const profile = compatibility.selectProfile("2.5.94");
+  assert.equal(profile.id, "zmi-mf885-2.5.94");
+  assertGetPowerProfile(profile);
+});
+
+test("full 2.5.94 release lineage preserves the same GET power commands", () => {
+  const profile = compatibility.selectProfile("2.5.94_release_MF855_NZ_CP_2.129.003");
+  assert.equal(profile.id, "zmi-mf855-nz-2.5.94");
+  assertGetPowerProfile(profile);
 });
 
 test("2.5.96 preserves the existing POST/SET destructive mapping", () => {
