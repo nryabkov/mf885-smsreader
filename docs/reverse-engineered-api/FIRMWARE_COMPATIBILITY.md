@@ -78,3 +78,27 @@ Please include only non-secret diagnostics:
 - whether the operation came from the vendor web UI, this project, or a packet capture.
 
 Do **not** include passwords, Digest responses/nonces, IMEI, ICCID, IMSI, MSISDN, Wi-Fi keys, APN credentials, ACS/TR-069 credentials or configuration backups.
+
+## Profile selection precedence
+
+The application selects exactly one profile in this order: an explicit
+`compatibilityProfileOverride`, the firmware version (and model when needed)
+reported by the device, and finally `compatibilityProfile`. The configured
+`2.5.96` fallback remains a real profile and is never rewritten to `unknown`.
+
+## MF885 2.5.94 mapping evidence
+
+The dedicated `2.5.94` profile is not an alias for the MF855 NZ build. Its
+confirmed mappings come from anonymized simultaneous `status1`, `wan`, and
+`Engineer_parameter` responses in `tests/fixtures/mf885-2.5.94`: `sys_mode=17`
+(LTE), SIM `1` (ready), registration `1` (home), roaming `0` (home), PDP state
+`1` (connected), PDP type `IP` (IPv4), and firmware `signalbar` values 0–5.
+RSRP, RSRQ, SINR, RSSI, band, PCI and EARFCN retain their measured values.
+Codes absent from this list—including the fixture's deliberately unknown
+`sys_submode=99`—are rendered raw with low confidence rather than borrowed from
+MF855 or 2.5.96.
+
+RAT roles are profile data: `sys_mode` is current RAT; `sys_submode`, `ConnType`
+and `proto` are supplemental diagnostics; `preferred_mode`/`connect_mode` are
+configuration; and `ConnType` is also a connection-type observation. Only fields
+listed in `alternativeSources` may produce a current-RAT conflict.

@@ -1,0 +1,1 @@
+<RGW><wan><cellular><lte_apn>example</lte_apn><ip_address>192.0.2.10</ip_address><v4dns1>192.0.2.53</v4dns1></cellular></wan></RGW>

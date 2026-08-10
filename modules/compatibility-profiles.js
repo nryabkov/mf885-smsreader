@@ -1,5 +1,37 @@
 // Values in this file must come from the named firmware, never from probing.
 const PROFILES = Object.freeze({
+  "2.5.94": Object.freeze({
+    id: "zmi-mf885-2.5.94",
+    model: "MF885",
+    firmware: "2.5.94",
+    confirmed: true,
+    evidence: "tests/fixtures/mf885-2.5.94",
+    xmlRequestPath: "/xml_action.cgi",
+    diagnosticEndpoints: Object.freeze(["status1", "wan", "Engineer_parameter"]),
+    wan: Object.freeze({
+      // Packet captures from an MF885 running exactly 2.5.94. These tables are
+      // intentionally small: an absent code is unknown, not an MF855/2.5.96 code.
+      mappings: Object.freeze({
+        sys_mode: Object.freeze({ "17": "4G · LTE" }),
+        sim: Object.freeze({ "1": "Ready" }),
+        registration: Object.freeze({ "1": "Registered (home)" }),
+        roaming: Object.freeze({ "0": "Home network" }),
+        pdpState: Object.freeze({ "1": "Connected" }),
+        pdpType: Object.freeze({ IP: "IPv4" }),
+        signalbar: Object.freeze({ "0": "0", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5" })
+      }),
+      rat: Object.freeze({
+        current: Object.freeze(["sys_mode"]),
+        alternativeSources: Object.freeze([]),
+        supplemental: Object.freeze(["sys_submode", "ConnType", "proto"]),
+        preferred: Object.freeze(["preferred_mode", "connect_mode"]),
+        connectionType: Object.freeze(["ConnType"])
+      }),
+      signalMetrics: Object.freeze({ rsrp: true, rsrq: true, sinr: true, rssi: true, signalbar: true, signalStrength: "csq" }),
+      modes: Object.freeze([]), operations: Object.freeze({})
+    }),
+    destructive: Object.freeze({})
+  }),
   "2.5.94_release_MF855_NZ_CP_2.129.003": Object.freeze({
     id: "zmi-mf855-nz-2.5.94",
     firmware: "2.5.94_release_MF855_NZ_CP_2.129.003",
@@ -14,6 +46,8 @@ const PROFILES = Object.freeze({
         ConnType: Object.freeze({ LTE: "4G · LTE", WCDMA: "3G · WCDMA", GSM: "2G · GSM" }),
         proto: Object.freeze({ LTE: "4G · LTE", WCDMA: "3G · WCDMA", GSM: "2G · GSM" })
       }),
+      rat: Object.freeze({ current: Object.freeze(["sys_mode"]), alternativeSources: Object.freeze(["sys_mode", "network_mode"]), supplemental: Object.freeze(["sys_submode", "ConnType", "proto"]), preferred: Object.freeze(["preferred_mode", "connect_mode"]), connectionType: Object.freeze(["ConnType"]) }),
+      signalMetrics: Object.freeze({ rsrp: true, rsrq: true, sinr: true, rssi: true, signalbar: true, signalStrength: "csq" }),
       // This is a combination observed together with a connected WAN and the
       // stock UI showing 4G. Neither numeric value is a portable enum.
       currentRatRules: Object.freeze([
@@ -46,6 +80,8 @@ const PROFILES = Object.freeze({
         pdpState: Object.freeze({ "0": "Disconnected", "1": "Connected", "2": "Connecting" }),
         pdpType: Object.freeze({ "0": "IPv4", "1": "IPv6", "2": "IPv4/IPv6", IP: "IPv4", IPV6: "IPv6", IPV4V6: "IPv4/IPv6" })
       }),
+      rat: Object.freeze({ current: Object.freeze(["sys_mode"]), alternativeSources: Object.freeze(["sys_mode", "network_mode"]), supplemental: Object.freeze(["sys_submode", "ConnType", "proto"]), preferred: Object.freeze(["preferred_mode", "connect_mode"]), connectionType: Object.freeze(["ConnType"]) }),
+      signalMetrics: Object.freeze({ rsrp: true, rsrq: true, sinr: true, rssi: true, signalbar: true, signalStrength: "csq" }),
       modes: Object.freeze([]), operations: Object.freeze({})
     }),
     destructive: Object.freeze({
