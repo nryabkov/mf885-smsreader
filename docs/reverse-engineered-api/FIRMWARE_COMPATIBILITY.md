@@ -12,7 +12,7 @@ Static firmware baseline:
 
 - BackupFw size: `8,323,644` bytes;
 - BackupFw SHA-256: `2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531`;
-- decompressed OSLO size: `9,648,064` bytes (`0x9337c0`);
+- decompressed OSLO size: `9,648,064` bytes;
 - decompressed OSLO SHA-256: `d51fb378d8ccf68662174f39d6b8c4f6be5571280790bc3a4dc4a9e8a967078c`;
 - WEBI has the same 320 paths as the analysed 2.5.96 image, with 319/320 files byte-identical;
 - GRBI, WIFI, WCAL and RFBN are byte-identical between the analysed 2.5.94 and 2.5.96 images;
@@ -62,20 +62,30 @@ See [Power clients](POWER_CLIENTS.md) for the DEX call chains and provenance.
 
 #### Runtime support status
 
-The evidence gap is now closed, but the current project implementation still assumes destructive commands are POST/SET operations carrying an XML tree. For that reason the current `2.5.94` compatibility profile should remain destructive-disabled until the client can encode the transport explicitly.
+The project runtime is now transport-aware for destructive commands. The `2.5.94` profile advertises:
+
+```text
+reset:    GET /xml_action.cgi?method=get&module=duster&file=reset
+poweroff: GET /xml_action.cgi?method=get&module=duster&file=poweroff
+```
+
+with no XML request body. The firmware semantic trees (`reboot` / `shutdown`) remain profile metadata and are not sent by the GET path.
+
+The API helper also fixes the earlier destructive-validation bug: destructive operations no longer require a normal write/read-back `verify` callback before submission.
 
 This status means:
 
 ```text
 power request shape known        yes
 safe request shape documented    yes
-current runtime can express it   not yet
-live exact-device execution      separate validation step
+current runtime can express it   yes
+2.5.94 profile advertises it     yes
+live exact-device execution      separate validation level
 ```
 
-The future profile should express at least `method`, `file`, and whether a body exists instead of assuming every destructive model is POST.
+Restart and Power off are therefore enabled for the dedicated MF885 `2.5.94` profile. A live run on the exact router is still valuable as behavioural confirmation, but is no longer required to know the request shape.
 
-**Status:** deeply statically analysed, partially live-tested, and companion-client power transport confirmed as GET/no-body. Runtime enablement remains pending transport-aware implementation and exact-device validation.
+**Status:** deeply statically analysed, partially live-tested, companion-client power transport confirmed as GET/no-body, and runtime support implemented.
 
 ### MF855 / MF885 family — firmware 2.5.96
 
@@ -91,7 +101,7 @@ Confirmed static properties include:
 - working Digest/XML flow;
 - `status1`, `wan`, `Engineer_parameter`, `message`, statistics, management, firmware and other models.
 
-The project currently contains 2.5.96 destructive mappings based on the project's prior evidence. Those mappings must not be used to infer the 2.5.94 request method; the companion APK demonstrates why transport belongs in firmware/profile data.
+The project retains its existing 2.5.96 destructive POST/SET mappings. The transport-aware helper can now support 2.5.94 GET/no-body and 2.5.96 POST/XML independently instead of assuming one global destructive transport.
 
 ## Compatibility terminology
 
@@ -105,7 +115,7 @@ Use these words precisely:
 - **likely** — evidence suggests compatibility but has not been demonstrated;
 - **unknown** — no reliable evidence.
 
-These labels can coexist. For example, MF885 2.5.94 reboot currently has firmware-confirmed semantics and companion-app-confirmed GET transport, while a live execution result is a separate evidence level.
+These labels can coexist. MF885 2.5.94 reboot now has firmware-confirmed semantics, companion-app-confirmed GET transport and implemented project support; live execution remains a separate evidence level.
 
 ## Important differences to expect
 
