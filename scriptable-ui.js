@@ -75,9 +75,13 @@ function webPollPayload(model) {
   const moduleShim = { exports: {} };
   globalThis.__MF885_UI_V2 = ui;
   try {
-    const localRequire = typeof require === "function" ? require : (path => importModule(path));
+    // Preserve the base application's original require semantics. On Scriptable
+    // require may not exist; passing undefined keeps its top-level optional
+    // require() block disabled, after which run(options) loads modules by the
+    // absolute moduleDirectory path exactly as before.
+    const nativeRequire = typeof require === "function" ? require : undefined;
     const factory = new Function("module", "exports", "require", "importModule", source + "\nreturn module.exports;");
-    const application = factory(moduleShim, moduleShim.exports, localRequire, importModule);
+    const application = factory(moduleShim, moduleShim.exports, nativeRequire, importModule);
     if (!application || typeof application.run !== "function") throw new Error("Adapted application does not export run(options).");
     await application.run(options);
   } finally {
