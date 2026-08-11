@@ -2,6 +2,78 @@
 // It preserves the proven router backend in scriptable.js and replaces only
 // the WebView renderer plus the polling payload used by that renderer.
 
+function isLv01Device(model) {
+  return /^LV01$/i.test(String(model && model.actualModel || "").trim());
+}
+
+function uiDeviceModel(rawModel) {
+  const value = String(rawModel || "").trim();
+  return /^LV01$/i.test(value) ? "MF885" : value;
+}
+
+function normalizeUiBattery(battery = {}, model = {}) {
+  const source = battery || {};
+  const normalized = { ...source };
+  if (!isLv01Device(model)) return normalized;
+
+  const rawBattery = String(source.rawStatus || "").trim();
+  const rawCharger = String(source.rawChargerStatus || source.chargerStatus || "").trim();
+  const chargerCurrent = Number(source.chargerCurrent);
+  const outputCurrent = Number(source.outputCurrent);
+  const backendInput = !!(source.inputConnected || source.chargerConnected);
+  const backendOutput = !!(source.usbOutputActive || source.usbHostActive);
+  const measuredInput = Number.isFinite(chargerCurrent) && chargerCurrent > 0;
+  const measuredOutput = Number.isFinite(outputCurrent) && outputCurrent > 0;
+
+  // LV01 status1 uses a different numeric battery enum from the legacy parser.
+  // On this firmware the observed externally-powered signature is
+  // Battery_status=1 together with Charger_status=4. Scope this compatibility
+  // rule to LV01 only so other MF855/MF885 builds keep their existing mapping.
+  const lv01Input = rawBattery === "1" && rawCharger === "4";
+  const inputConnected = backendInput || measuredInput || lv01Input;
+  const usbOutputActive = backendOutput || measuredOutput;
+  const percent = Number(source.percent);
+  const full = inputConnected && Number.isFinite(percent) && percent >= 98;
+  const legacyState = String(source.powerStatus || source.state || "").toLowerCase();
+
+  let state;
+  if (full) state = usbOutputActive ? "full-and-powering-usb" : "full";
+  else if (inputConnected) state = usbOutputActive ? "charging-and-powering-usb" : "charging";
+  else if (usbOutputActive) state = "powering-usb";
+  else if (legacyState === "full" || legacyState === "discharging") state = legacyState;
+  else state = "unknown";
+
+  const labels = {
+    charging: "Charging",
+    discharging: "Discharging",
+    "powering-usb": "Powering USB device",
+    "charging-and-powering-usb": "Charging · Powering USB device",
+    full: "Full",
+    "full-and-powering-usb": "Full · Powering USB device",
+    unknown: "Unknown"
+  };
+
+  normalized.inputConnected = inputConnected;
+  normalized.chargerConnected = inputConnected;
+  normalized.charging = inputConnected;
+  normalized.usbOutputActive = usbOutputActive;
+  normalized.usbHostActive = usbOutputActive;
+  normalized.powerStatus = state;
+  normalized.state = state;
+  normalized.status = labels[state];
+  normalized.detailText = labels[state];
+  return normalized;
+}
+
+function normalizeUiModel(model = {}) {
+  const normalized = { ...(model || {}) };
+  const rawModel = String(normalized.actualModel || "").trim();
+  normalized.actualRawModel = rawModel;
+  normalized.actualModel = uiDeviceModel(rawModel) || rawModel;
+  normalized.battery = normalizeUiBattery(normalized.battery || {}, model || {});
+  return normalized;
+}
+
 async function run(options = {}) {
   if (!options.moduleDirectory) throw new Error("The application module directory was not provided by the loader.");
   const fm = FileManager.local();
@@ -27,9 +99,11 @@ async function run(options = {}) {
   source = `
 const __MF885_UI_V2 = globalThis.__MF885_UI_V2;
 const __MF885_UI_V2_FIXES = globalThis.__MF885_UI_V2_FIXES;
+const __MF885_UI_ADAPTER = globalThis.__MF885_UI_ADAPTER;
 function buildHtml(model) {
-  let html = __MF885_UI_V2.buildHtml(model);
-  html = __MF885_UI_V2_FIXES.enhanceHtml(html, model);
+  const uiModel = __MF885_UI_ADAPTER.normalizeUiModel(model);
+  let html = __MF885_UI_V2.buildHtml(uiModel);
+  html = __MF885_UI_V2_FIXES.enhanceHtml(html, uiModel);
   // The proven backend validates legacy structural hooks before WebView load.
   // UI v2 uses .screen instead of .tab and originally omitted <main>, so add
   // non-visual compatibility structure without changing the rendered design.
@@ -43,7 +117,7 @@ function buildHtml(model) {
   return html;
 }
 function webPollPayload(model) {
-  const battery = model && model.battery || {};
+  const battery = __MF885_UI_ADAPTER.normalizeUiBattery(model && model.battery || {}, model || {});
   const network = model && model.network || {};
   const traffic = model && model.traffic || {};
   const chargerCurrent = battery.chargerCurrent === undefined ? null : battery.chargerCurrent;
@@ -93,6 +167,7 @@ function webPollPayload(model) {
   const moduleShim = { exports: {} };
   globalThis.__MF885_UI_V2 = ui;
   globalThis.__MF885_UI_V2_FIXES = uiFixes;
+  globalThis.__MF885_UI_ADAPTER = { normalizeUiModel, normalizeUiBattery };
   try {
     // Preserve the base application's original require semantics. On Scriptable
     // require may not exist; passing undefined keeps its top-level optional
@@ -106,7 +181,8 @@ function webPollPayload(model) {
   } finally {
     try { delete globalThis.__MF885_UI_V2; } catch (_) { globalThis.__MF885_UI_V2 = null; }
     try { delete globalThis.__MF885_UI_V2_FIXES; } catch (_) { globalThis.__MF885_UI_V2_FIXES = null; }
+    try { delete globalThis.__MF885_UI_ADAPTER; } catch (_) { globalThis.__MF885_UI_ADAPTER = null; }
   }
 }
 
-module.exports = { run };
+module.exports = { run, isLv01Device, uiDeviceModel, normalizeUiBattery, normalizeUiModel };
