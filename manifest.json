@@ -13,7 +13,6 @@
     "modules/device-access.js",
     "modules/cellular-control.js",
     "modules/api-contract.js",
-    "modules/compatibility-profiles.js",
     "modules/counters.js",
     "modules/engineer-parameter.js",
     "modules/statistics.js",

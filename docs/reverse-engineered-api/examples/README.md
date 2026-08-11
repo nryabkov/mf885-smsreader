@@ -90,7 +90,7 @@ Useful fields vary by build. Known aliases include APN, PDP state/type, registra
 
 ## Restart / power off
 
-These are deliberately not given as copy-paste write payloads here because the exact command tree/value is firmware-specific and connection loss makes verification special. Use only a confirmed compatibility profile and the project's write/verification helpers.
+
 
 ## Debug / Telnet / firmware operations
 

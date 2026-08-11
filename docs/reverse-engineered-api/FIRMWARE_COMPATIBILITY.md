@@ -160,7 +160,7 @@ Do not publish passwords, Digest responses/nonces, IMEI, ICCID, IMSI, MSISDN, Wi
 
 ## Profile selection precedence
 
-The application selects exactly one profile in this order: explicit `compatibilityProfileOverride`, detected firmware/model, and configured `compatibilityProfile`. Unknown firmware must not silently inherit destructive operations from another build.
+
 
 ## MF885 2.5.94 read-mapping evidence
 

@@ -46,7 +46,7 @@ However, static analysis of 2.5.96 did not reveal obvious `telnetd`, BusyBox, Dr
 - existence of a listening Telnet service is not;
 - if a service appears, it may be a vendor engineering CLI rather than a Unix shell.
 
-The project's `telnet-control.js` intentionally requires a firmware profile to provide confirmed field values and a port, then verifies both API state and port availability.
+The project's `telnet-control.js` disables Telnet because no universal field, value, and port contract has been confirmed.
 
 ## SAC shell
 

@@ -27,7 +27,7 @@ const CAPABILITIES = [
   }
 ];
 
-const TELNET_METADATA = Object.freeze({ id: "tryEnableTelnet", title: "Telnet", description: "Enable Telnet only when the active firmware profile contains a fully confirmed contract.", telnet: true });
+const TELNET_METADATA = Object.freeze({ id: "tryEnableTelnet", title: "Telnet", description: "Enable Telnet only when a universal command contract is fully confirmed.", telnet: true });
 function capabilities() {
   return CAPABILITIES.map(({ id, title, description }) => ({ id, title, description })).concat([{ ...TELNET_METADATA }]);
 }

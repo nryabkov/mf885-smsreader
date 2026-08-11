@@ -310,56 +310,12 @@ test('tabs have independent scroll positions and unsaved tabs restore to top',()
   assert.doesNotMatch(js,/safeStorage(?:Get|Set)\('zmiScrollY'/);
 });
 
-test('structurally incompatible status1 gets a profile-specific aggregate error',()=>{
-  const error=app.statusCompatibilityError('<RGW><status><foo>ok</foo></status></RGW>',{id:'fixture-profile'});
-  assert.match(error,/Router responded successfully/); assert.match(error,/fixture-profile/);
-  for(const missing of ['WanStatistics','batteryinfo','cellular\/network fields'])assert.match(error,new RegExp(missing));
-  assert.equal(app.statusCompatibilityError('<RGW><status><batteryinfo/></status></RGW>',{id:'fixture-profile'}),'');
-});
 
-test('status compatibility warning precedes Router cards',()=>{
-  const fixture=model('router');
-  fixture.errors.status='Router responded successfully, but status1 format does not match compatibility profile fixture.';
-  const html=app.buildHtml(fixture);
-  assert.ok(html.indexOf('data-status-warning') < html.indexOf('topgrid router-only'));
-  assert.match(html,/Status compatibility warning/);
-});
 
-test('firmware RAT fixtures distinguish LTE, 3G, unknown codes and conflicts',()=>{
-  const profile=require('../modules/compatibility-profiles.js').selectProfile('2.5.96');
-  const lte=app.parseNetwork('<RGW><wan><cellular><ConnType>LTE</ConnType><sys_mode>6</sys_mode><rssi>25</rssi></cellular></wan></RGW>',profile);
-  assert.match(lte.mode,/4G/); assert.equal(lte.dbm,-63); assert.match(lte.networkDiagnostic,/ConnType=LTE/);
-  const threeG=app.parseNetwork('<RGW><wan><cellular><sys_mode>4</sys_mode><sys_submode>17</sys_submode></cellular></wan></RGW>',profile);
-  assert.match(threeG.mode,/3G/);
-  const unknown=app.parseNetwork('<RGW><wan><cellular><sys_submode>777</sys_submode></cellular></wan></RGW>',profile);
-  assert.equal(unknown.mode,'Unknown'); assert.match(unknown.networkDiagnostic,/sys_submode=777/);
-  const conflict=app.parseNetwork('<RGW><wan><cellular><ConnType>LTE</ConnType><sys_mode>4</sys_mode></cellular></wan></RGW>',profile);
-  assert.match(conflict.mode,/3G/); assert.equal(conflict.networkConflict,false); assert.match(conflict.networkDiagnostic,/ConnType=LTE/);
-});
 
-test('MF855 NZ 2.5.94 confirmed connected 17/17 fixture is LTE',()=>{
-  const profile=require('../modules/compatibility-profiles.js').selectProfile('2.5.94_release_MF855_NZ_CP_2.129.003');
-  const xml='<RGW><status><version_num>2.5.94_release_MF855_NZ_CP_2.129.003</version_num><wan><cellular><connect_disconnect>1</connect_disconnect><sys_mode>17</sys_mode><sys_submode>17</sys_submode><network_type>106512140</network_type></cellular></wan></status></RGW>';
-  const result=app.parseNetwork(xml,profile);
-  assert.equal(result.mode,'4G · LTE');
-  assert.equal(result.generation,'4G');
-  assert.equal(result.networkSource,'firmware combination rule');
-  assert.match(result.rawMode,/sys_mode=17, sys_submode=17/);
-});
 
-test('17/17 without connected-WAN evidence is unknown rather than guessed 3G',()=>{
-  const profile=require('../modules/compatibility-profiles.js').selectProfile('2.5.94_release_MF855_NZ_CP_2.129.003');
-  const result=app.parseNetwork('<RGW><wan><cellular><sys_mode>17</sys_mode><sys_submode>17</sys_submode></cellular></wan></RGW>',profile);
-  assert.match(result.mode,/Unknown/);
-  assert.equal(result.generation,'Unknown');
-});
 
-test('firmware mismatch stays out of UI while a real status request error remains visible',()=>{
-  const fixture=model('router'); fixture.errors.profile='Firmware profile mismatch'; fixture.firmwareWarning={id:'firmware-x',configured:'x',detected:'y'};
-  let html=app.buildHtml(fixture); assert.doesNotMatch(html,/Firmware profile mismatch|data-warning-id|data-warning-dismiss/);
-  fixture.errors.status='HTTP 401 authentication failed'; fixture.errors.statusRequest=true;
-  html=app.buildHtml(fixture); assert.match(html,/Status request error/); assert.match(html,/HTTP 401 authentication failed/);
-});
+
 
 test('debug defaults are safe and explicit false silences the central logger',()=>{
   const config=require('../mf885-smsreader-config.json');
@@ -536,24 +492,7 @@ test('share cancellation is neutral, failures are sanitized, and unavailable API
   assert.deepEqual(fallback.result,{shared:false,copied:true,fallback:true}); assert.deepEqual(copied,['prepared context']);
 });
 
-test('profile selection is override, detection, then configured fallback',()=>{
-  const choose=app.chooseCompatibilityProfile;
-  assert.equal(choose({compatibilityProfile:'2.5.96',compatibilityProfileOverride:'2.5.94'},'2.5.96').firmware,'2.5.94');
-  assert.equal(choose({compatibilityProfile:'2.5.96'},'2.5.94','MF885').firmware,'2.5.94');
-  assert.equal(choose({compatibilityProfile:'2.5.96'},'').firmware,'2.5.96');
-  assert.equal(choose({compatibilityProfile:'2.5.94'},'9.9.9').id,'unknown');
-});
 
-test('destructive profile requires detected firmware or an explicit override',()=>{
-  const configured=app.chooseCompatibilityProfile({compatibilityProfile:'2.5.96'},'');
-  assert.equal(configured.firmware,'2.5.96');
-  assert.equal(configured.destructive,undefined);
-  assert.match(configured.destructiveUnavailableReason,/disabled until/i);
-  assert.equal(app.chooseCompatibilityProfile({compatibilityProfile:'2.5.96'},'2.5.94').destructive.reset.file.method,'GET');
-  assert.equal(app.chooseCompatibilityProfile({compatibilityProfile:'2.5.94'},'2.5.96').destructive.reset.file,'reset');
-  assert.equal(app.chooseCompatibilityProfile({compatibilityProfile:'2.5.96'},'9.9.9').destructive,undefined);
-  assert.ok(app.chooseCompatibilityProfile({compatibilityProfile:'2.5.96',compatibilityProfileOverride:'2.5.96'},'9.9.9').destructive);
-});
 
 test('dispatcher reports a failed power command and preserves safe diagnostics',async()=>{
   const error=new Error('Authorization failed');error.diagnostics='method=POST; model=poweroff; endpoint=/xml_action.cgi; password=secret';
@@ -602,12 +541,6 @@ test('v2 initial HTML and polling updates share complete accessible power status
   assert.deepEqual(ui.powerState({chargerConnected:true,usbHostActive:true,batteryPowerStatus:'charging-and-powering-usb'}),{input:true,output:true,full:false,label:'Charging · Powering USB device',status:'charging-and-powering-usb'});
 });
 
-test('only profile-declared alternative RAT sources conflict',()=>{
- const base=require('../modules/compatibility-profiles.js').selectProfile('2.5.96');
- const real={...base,wan:{...base.wan,rat:{...base.wan.rat,alternativeSources:['sys_mode','ConnType']}}};
- assert.equal(app.parseNetwork('<sys_mode>4</sys_mode><ConnType>LTE</ConnType>',base).networkConflict,false);
- assert.equal(app.parseNetwork('<sys_mode>4</sys_mode><ConnType>LTE</ConnType>',real).mode,'Conflicting network data');
-});
 
 
 test('loadRemainingSms progress reports increasing messages and known totalMessages',async()=>{
@@ -706,4 +639,28 @@ test('v2 client delegates SMS long press copying and suppresses its following cl
   assert.match(js,/suppressSmsClick=row/);
   assert.match(js,/stopImmediatePropagation\(\)/);
   assert.match(js,/closest\('\.row-menu'\)/);
+});
+
+test('Delete confirmation dispatches one command, reloads history, and removes the card only after verification',async()=>{
+  const calls=[];
+  const deleteSms=async id=>app.deleteSms({},id,{request:async(...args)=>{calls.push(args);return '<RGW><sms_cmd_status_result>0</sms_cmd_status_result></RGW>';},wait:async()=>{},verify:async()=>({messages:[]})});
+  let cards=[{id:'42'}];
+  const dispatch=app.createWebViewDispatcher({deleteSms:async({id})=>{const result=await deleteSms(id);if(!result.ok)throw new Error(result.message);cards=result.history.messages;return result;}});
+  // The first click only opens the client-side confirmation; no command is dispatched.
+  assert.equal(cards.length,1);
+  const result=await dispatch({id:'confirmed',action:'deleteSms',params:{id:'42',confirmed:true}});
+  assert.equal(result.ok,true); assert.equal(calls.length,1); assert.equal(cards.length,0);
+  assert.match(calls[0][3],/<message_flag>DELETE_SMS<\/message_flag><sms_cmd>6<\/sms_cmd>/);
+  assert.match(calls[0][3],/<delete_message><message_id>42<\/message_id><\/delete_message>/);
+});
+
+for(const scenario of [
+  ['router refusal',async()=>'<RGW><sms_cmd_status_result>1</sms_cmd_status_result></RGW>',async()=>({messages:[]}),/rejected/],
+  ['network error',async()=>{throw new Error('network offline')},async()=>({messages:[]}),/connection was lost/],
+  ['message remains',async()=>'<RGW><sms_cmd_status_result>0</sms_cmd_status_result></RGW>',async()=>({messages:[{id:'42'}]}),/still present/]
+]) test(`Delete keeps the card when ${scenario[0]}`,async()=>{
+  let cards=[{id:'42'}];
+  const result=await app.deleteSms({},'42',{request:scenario[1],wait:async()=>{},verify:scenario[2]});
+  if(result.ok)cards=result.history.messages;
+  assert.equal(result.ok,false); assert.match(result.message,scenario[3]); assert.equal(cards.length,1);
 });
