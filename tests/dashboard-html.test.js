@@ -629,6 +629,18 @@ test('initial and dynamically inserted SMS values remain selectable',()=>{
   assert.doesNotMatch(html,/<button[^>]*class="[^"]*app-value/);
 });
 
+test('Dashboard v2 renders five normalized signal bars',()=>{
+  const buildHtml=require('../modules/ui-v2.js').buildHtml;
+  for(const [value,expected] of [[-1,0],[0,0],[2.6,3],[5,5],[8,5]]) {
+    const fixture=model(); fixture.network.bars=value;
+    const html=buildHtml(fixture);
+    const sparkBars=html.match(/<div class="sparkbars" id="sparkBars">([\s\S]*?)<\/div>/);
+    assert.ok(sparkBars,'Dashboard v2 must contain #sparkBars');
+    assert.equal((sparkBars[1].match(/<i\b/g)||[]).length,5);
+    assert.equal((sparkBars[1].match(/class="on"/g)||[]).length,expected);
+  }
+});
+
 test('v2 client delegates SMS long press copying and suppresses its following click',()=>{
   const html=require('../modules/ui-v2.js').buildHtml(model());
   const script=html.match(/<script>([\s\S]*)<\/script>/i);
