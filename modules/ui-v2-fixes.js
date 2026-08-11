@@ -157,7 +157,7 @@ function enhanceHtml(html, model) {
     .sms-row{cursor:pointer}
     .row-menu{transition:transform .2s ease}
     .sms-expanded .row-menu{transform:rotate(90deg)}
-    .sms-expanded .sms-main p{white-space:pre-wrap;overflow-wrap:anywhere}
+    .sms-expanded .sms-main p{display:none}
     .sms-expanded-content{grid-column:2/-1;min-width:0}
     .sms-full-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.5;color:var(--text);padding:8px 0 12px;user-select:text;-webkit-user-select:text}
     .sms-inline-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}

@@ -29,6 +29,8 @@ test('enhancement expands rows inline, safely preserves full text, and toggles c
   assert.match(html, /const expanded=!row\.classList\.contains\('sms-expanded'\)/);
   assert.match(html, /setMessageExpanded\(row,expanded\)/);
   assert.match(html, /\.sms-full-text\{white-space:pre-wrap;overflow-wrap:anywhere/);
+  assert.match(html, /\.sms-expanded \.sms-main p\{display:none\}/);
+  assert.doesNotMatch(html, /\.sms-full-text\{[^}]*display:none/);
   assert.match(html, /\.sms-expanded \.row-menu\{transform:rotate\(90deg\)\}/);
   assert.match(html, /@media\(prefers-reduced-motion:reduce\)\{\.row-menu\{transition:none\}\}/);
 });
