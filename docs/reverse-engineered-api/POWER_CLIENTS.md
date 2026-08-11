@@ -274,7 +274,7 @@ project dashboard control                  not exposed
 
 The transport gap and runtime-expression gap are closed.
 
-`modules/compatibility-profiles.js` now stores transport in the destructive descriptor for MF885 2.5.94. `modules/api-contract.js` normalises that descriptor and chooses GET or POST without requiring changes to the large `scriptable.js` caller.
+
 
 Conceptually:
 

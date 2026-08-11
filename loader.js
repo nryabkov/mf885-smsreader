@@ -17,8 +17,6 @@ const DEFAULT_CONFIG = {
   showExperimentalControls: true,
   locale: "en",
   // Safe reads may use this fallback; destructive commands require detection or override.
-  compatibilityProfileOverride: "",
-  compatibilityProfile: "2.5.96",
   xmlRequestPath: "/xml_action.cgi",
   telnetPortCheckTimeoutMs: 1000,
   telnetPortCheckRetries: 2

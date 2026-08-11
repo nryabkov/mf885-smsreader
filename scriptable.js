@@ -10,15 +10,9 @@ let deviceAccessModule = null;
 let telnetControlModule = null;
 let cellularControlModule = null;
 let apiContractModule = null;
-let compatibilityModule = null;
 let engineerParameterModule = null;
 let cellularDiagnosticsModule = null;
-let ACTIVE_PROFILE = { id: "unknown", confirmed: false };
-let CONFIGURED_PROFILE = "";
-let PROFILE_OVERRIDE = "";
-const LEGACY_DEFAULT_PROFILE = "2.5.96";
 if (typeof require === "function") {
-  compatibilityModule = require("./modules/compatibility-profiles.js");
   cellularDiagnosticsModule = require("./modules/cellular-diagnostics.js");
 }
 
@@ -67,31 +61,13 @@ async function run(options = {}) {
   telnetControlModule = importModule(`${options.moduleDirectory}/modules/telnet-control.js`);
   cellularControlModule = importModule(`${options.moduleDirectory}/modules/cellular-control.js`);
   apiContractModule = importModule(`${options.moduleDirectory}/modules/api-contract.js`);
-  compatibilityModule = importModule(`${options.moduleDirectory}/modules/compatibility-profiles.js`);
   engineerParameterModule = importModule(`${options.moduleDirectory}/modules/engineer-parameter.js`);
   cellularDiagnosticsModule = importModule(`${options.moduleDirectory}/modules/cellular-diagnostics.js`);
-  CONFIGURED_PROFILE = String(options.compatibilityProfile || "");
-  PROFILE_OVERRIDE = String(options.compatibilityProfileOverride || "").trim();
-  ACTIVE_PROFILE = resolveCompatibilityProfile("", "");
-  ACTIVE_XML_REQUEST_PATH = options.xmlRequestPath || ACTIVE_PROFILE.xmlRequestPath || XML_REQUEST_PATH;
+  ACTIVE_XML_REQUEST_PATH = options.xmlRequestPath || XML_REQUEST_PATH;
   await main();
 }
 
-module.exports = { run, dashboardFlow, resolveCompatibilityProfile, chooseCompatibilityProfile, executePowerCommand, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, statusCompatibilityError, routerAccepted, firmwareUserVersion, hardwareRevision };
-
-function chooseCompatibilityProfile(options, detectedFirmware, detectedModel, profiles = compatibilityModule) {
-  const override=String(options&&options.compatibilityProfileOverride||"").trim(), configured=String(options&&options.compatibilityProfile||"").trim();
-  const detected=String(detectedFirmware||"").trim(), model=String(detectedModel||"").trim();
-  const detectedProfile=detected ? profiles.selectProfile(detected) : null;
-  const key=override || detected || (model && profiles.PROFILES[model] ? model : "") || configured || LEGACY_DEFAULT_PROFILE;
-  const selected=profiles.selectProfile(key);
-  const destructiveAllowed=!!override || !!(detectedProfile&&detectedProfile.confirmed&&selected.firmware===detectedProfile.firmware);
-  if(destructiveAllowed) return {...selected,destructiveConfirmed:true};
-  return {...selected,destructive:undefined,destructiveConfirmed:false,destructiveUnavailableReason:"Power controls are disabled until the router firmware is detected or compatibilityProfileOverride is set."};
-}
-function resolveCompatibilityProfile(detectedFirmware, detectedModel) {
-  return chooseCompatibilityProfile({compatibilityProfile:CONFIGURED_PROFILE,compatibilityProfileOverride:PROFILE_OVERRIDE},detectedFirmware,detectedModel);
-}
+module.exports = { run, dashboardFlow, executePowerCommand, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function configureDebug(options = {}) {
   DEBUG = options.debug !== false;
@@ -137,11 +113,6 @@ function xmlStructure(xml) {
   return { sections:Array.from(new Set(Array.from(source.matchAll(/<RGW[^>]*>\s*(?:<[^>]+>\s*)?<([A-Za-z_][\w.-]*)\b/gi),m=>m[1]))), WanStatistics:/<WanStatistics\b/i.test(source), batteryinfo:/<batteryinfo\b/i.test(source), cellularFields:cellular };
 }
 function logXmlSummary(operation, xml) { const summary=xmlStructure(xml); debugLog(`${operation}:xml-summary`,summary); return summary; }
-function statusCompatibilityError(xml, profile = ACTIVE_PROFILE) {
-  const structure=xmlStructure(xml);
-  if (structure.WanStatistics || structure.batteryinfo || structure.cellularFields.length) return "";
-  return `Router responded successfully, but status1 format does not match compatibility profile ${profile.id}. Missing expected XML sections: WanStatistics, batteryinfo, cellular/network fields.`;
-}
 function firmwareVersion(xml) { return firstText(xml, ["version_num"]) || ""; }
 function firmwareUserVersion(value) {
   const firmware=String(value||"").trim();
@@ -149,15 +120,6 @@ function firmwareUserVersion(value) {
   return release ? release[1] : firmware;
 }
 function hardwareRevision(xml) { return firstText(xml, ["revision","hardware_version","hardware_ver","hw_version"]) || ""; }
-function profileVersionWarning(actual, configured, profile) {
-  if (!actual || !configured || actual === configured || actual === (profile && profile.firmware)) return "";
-  return `Firmware profile mismatch: configured ${configured}, but status1 reports ${actual}. Manual compatibilityProfile override remains active.`;
-}
-function firmwareWarningId(actual, configured) {
-  const value=`${String(configured||"unknown")}\u0000${String(actual||"unknown")}`;
-  let hash=2166136261; for(let i=0;i<value.length;i++){hash^=value.charCodeAt(i);hash=Math.imul(hash,16777619);}
-  return `firmware-${(hash>>>0).toString(16)}`;
-}
 
 async function main() {
   try {
@@ -330,23 +292,14 @@ async function loadModel(auth) {
     status = initial[0].value;
     const actualFirmware=firmwareVersion(status);
     const actualModel=firstText(status,["model","model_name","product_name"]);
-    ACTIVE_PROFILE=resolveCompatibilityProfile(actualFirmware, actualModel);
     model.actualFirmware=actualFirmware;
     model.actualFirmwareVersion=firmwareUserVersion(actualFirmware);
     model.actualModel=actualModel;
     model.actualRevision=hardwareRevision(status);
-    const versionWarning=profileVersionWarning(actualFirmware,PROFILE_OVERRIDE,ACTIVE_PROFILE);
-    if(versionWarning) {
-      model.errors.profile=versionWarning;
-      model.firmwareWarning={id:firmwareWarningId(actualFirmware,PROFILE_OVERRIDE),configured:PROFILE_OVERRIDE,detected:actualFirmware,text:versionWarning};
-      if(!LOGGED_FIRMWARE_MISMATCHES.has(model.firmwareWarning.id)){LOGGED_FIRMWARE_MISMATCHES.add(model.firmwareWarning.id);debugLog("firmware:mismatch",{id:model.firmwareWarning.id,configured:CONFIGURED_PROFILE,detected:actualFirmware});}
-    }
     model.traffic = sectionWithError(parseTraffic(status), "trafficError", "status1 has no WanStatistics data");
     model.battery = sectionWithError(parseBattery(status), "batteryError", "status1 has no batteryinfo data");
     model.network = sectionWithError(parseNetwork(status), "networkError", "status1 has no cellular network data");
-    debugLog("network:normalized",{firmware:actualFirmware,profile:ACTIVE_PROFILE.id,sys_mode:model.network.raw&&model.network.raw.sys_mode,sys_submode:model.network.raw&&model.network.raw.sys_submode,ConnType:model.network.raw&&model.network.raw.ConnType,proto:model.network.raw&&model.network.raw.proto,source:model.network.networkSource,currentRat:model.network.mode,reason:model.network.networkConflict?"conflict":model.network.generation==="Unknown"?"unknown":null});
-    const compatibilityError=statusCompatibilityError(status);
-    if (compatibilityError) model.errors.status=compatibilityError;
+    debugLog("network:normalized",{firmware:actualFirmware,sys_mode:model.network.raw&&model.network.raw.sys_mode,sys_submode:model.network.raw&&model.network.raw.sys_submode,ConnType:model.network.raw&&model.network.raw.ConnType,proto:model.network.raw&&model.network.raw.proto,source:model.network.networkSource,currentRat:model.network.mode,reason:model.network.networkConflict?"conflict":model.network.generation==="Unknown"?"unknown":null});
   } catch (error) {
     model.errors.status = cleanError(error);
     model.errors.statusRequest = true;
@@ -423,26 +376,27 @@ async function cellularReconnectFlow(auth) {
   if (String(QUERY.confirm || "") !== "1") {
     return dashboardFlow(auth, warningNotice("Confirm experimental cellular reconnect. Mobile internet will be temporarily unavailable."), "router");
   }
-  const result = await cellularControlModule.executeReconnect(cellularControlApi(auth), capability, ACTIVE_PROFILE);
+  const result = await cellularControlModule.executeReconnect(cellularControlApi(auth), capability);
   return dashboardFlow(auth, { text: `${result.title}: ${result.message}`, type: result.ok ? "success" : "error", diagnostics: result.diagnostics }, "router");
 }
 
 async function cellularModeFlow(auth) {
   const capability = await detectCellularControl(auth);
   const modeId = String(QUERY.mode || "").trim();
-  const mode = cellularControlModule.modeById(modeId, ACTIVE_PROFILE);
+  const mode = cellularControlModule.modeById(modeId);
   if (!mode) return dashboardFlow(auth, errorNotice("Unknown cellular network mode."), "router");
   if (String(QUERY.confirm || "") !== "1") {
     return dashboardFlow(auth, warningNotice(`Confirm experimental cellular mode change: ${mode.title}. Mobile internet may be temporarily unavailable.`), "router");
   }
-  const result = await cellularControlModule.executeSetMode(cellularControlApi(auth), capability, mode.id, ACTIVE_PROFILE);
+  const result = await cellularControlModule.executeSetMode(cellularControlApi(auth), capability, mode.id);
   return dashboardFlow(auth, { text: `${result.title}: ${result.message}`, type: result.ok ? "success" : "error", diagnostics: result.diagnostics }, "router");
 }
 
 async function resetTrafficFlow(auth) {
   if (String(QUERY.confirm || "") !== "1") return dashboardFlow(auth, warningNotice("Confirm WAN traffic reset."), "router");
-  const spec = ACTIVE_PROFILE.statisticsReset;
-  if (!spec || !spec.confirmed) return dashboardFlow(auth, warningNotice("WAN statistics reset is read-only: this firmware has no confirmed reset mapping."), "router");
+  return dashboardFlow(auth, warningNotice("WAN statistics reset is unavailable because no universal write contract is confirmed."), "router");
+  /* istanbul ignore next */
+  const spec = null;
   const beforeXml = await xmlRequest(auth, "GET", "statistics");
   const before = wanCounterSnapshot(beforeXml);
   const body = `<RGW><statistics><WanStatistics><set_action>${escapeXml(spec.set_action)}</set_action><clear_cur_stat_flag>${escapeXml(spec.clear_cur_stat_flag)}</clear_cur_stat_flag></WanStatistics></statistics></RGW>`;
@@ -453,8 +407,9 @@ async function resetTrafficFlow(auth) {
 async function powerFlow(auth, kind) {
   if (String(QUERY.confirm || "") !== "1") return dashboardFlow(auth, warningNotice(kind === "reboot" ? "Confirm router reboot." : "Confirm router shutdown."), "router");
   const operation = kind === "reboot" ? "reset" : kind === "trueShutdown" ? "trueshutdown" : "poweroff";
-  const spec = ACTIVE_PROFILE.destructive && ACTIVE_PROFILE.destructive[operation];
-  if (!spec) return dashboardFlow(auth, warningNotice("This destructive operation is unavailable because its trigger is not confirmed for this firmware."), "router");
+  return dashboardFlow(auth, warningNotice("This destructive operation is unavailable because no universal command contract is confirmed."), "router");
+  /* istanbul ignore next */
+  const spec = null;
   const xml = `<RGW><${spec.tree}></${spec.tree}></RGW>`;
   try {
     const result = await writeThenVerify(auth, { model:spec.file, xml, destructive:true });
@@ -683,45 +638,20 @@ async function sendSms(auth, to, text) {
 }
 
 async function deleteSms(auth, id, dependencies = {}) {
-  const safeId = escapeXml(id);
   const request = dependencies.request || xmlRequest;
   const verify = dependencies.verify || loadAllSms;
   const wait = dependencies.wait || sleep;
-  // DELETE_SMS_LOCAL and the <index> payload are not part of the confirmed
-  // contract. Firmware-specific alternatives must be defined by a compatibility
-  // profile before they can be selected here.
-  const attempts = [
-    `<RGW><message><flag><message_flag>DELETE_SMS</message_flag><sms_cmd>6</sms_cmd></flag><delete_message><message_id>${safeId}</message_id></delete_message></message></RGW>`
-  ];
-  const diagnostics = [];
-  let lostConnection = false;
-  let stillPresent = false;
-  let rejected = false;
-
-  for (const payload of attempts) {
-    const xml = `<?xml version="1.0" encoding="US-ASCII"?>${payload}`;
-    try {
-      const response = await request(auth, "POST", "message", xml);
-      diagnostics.push(compactDebug(response));
-      if (!routerAccepted(response)) { rejected = true; continue; }
-      await wait(500);
-      let current;
-      try { current = await verify(auth); }
-      catch (verifyError) { lostConnection = true; diagnostics.push(cleanError(verifyError)); continue; }
-      if (!current.messages.some(message => String(message.id) === String(id))) return { ok: true, message: "The SMS was removed from the router." };
-      stillPresent = true;
-      diagnostics.push("The message was still present after the command.");
-    } catch (error) {
-      const detail = cleanError(error);
-      diagnostics.push(detail);
-      if (/network|timed? ?out|could not connect|not connected|host|dns|offline|connection/i.test(detail)) lostConnection = true;
-    }
-  }
-  let message = "The router rejected the SMS deletion command.";
-  if (lostConnection) message = "Deletion could not be verified because the router connection was lost.";
-  else if (stillPresent) message = "The router accepted a deletion command, but the SMS is still present.";
-  else if (rejected) message = "The router firmware rejected or did not complete the deletion command.";
-  return { ok: false, message, diagnostics: diagnostics.join("\n") };
+  const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><message><flag><message_flag>DELETE_SMS</message_flag><sms_cmd>6</sms_cmd></flag><delete_message><message_id>${escapeXml(id)}</message_id></delete_message></message></RGW>`;
+  let response;
+  try { response = await request(auth, "POST", "message", xml); }
+  catch (error) { return { ok:false, message:"Deletion could not be verified because the router connection was lost.", diagnostics:cleanError(error) }; }
+  if (!routerAccepted(response)) return { ok:false, message:"The router rejected the SMS deletion command.", diagnostics:compactDebug(response) };
+  await wait(500);
+  let current;
+  try { current = await verify(auth); }
+  catch (error) { return { ok:false, message:"Deletion could not be verified because the router connection was lost.", diagnostics:cleanError(error) }; }
+  if (current.messages.some(message => String(message.id) === String(id))) return { ok:false, message:"The router accepted a deletion command, but the SMS is still present.", diagnostics:"The message was still present after the command." };
+  return { ok:true, message:"The SMS was removed from the router.", history:current };
 }
 
 function compactDebug(value, limit = 240) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, limit); }
@@ -938,17 +868,16 @@ function batteryState(batteryStatus, chargerStatus, percent, chargerCurrent, out
 }
 function enumRaw(value, mapping) { const raw=value===undefined||value===null?null:String(value); const label=raw!==null&&mapping&&Object.prototype.hasOwnProperty.call(mapping,raw)?mapping[raw]:null; return {raw,label,confirmed:label!==null}; }
 function ratGeneration(label) { const text=String(label||"").toLowerCase(); return /5g|\bnr\b/.test(text)?"5G":/4g|lte/.test(text)?"4G":/3g|wcdma|umts|hspa|hsdpa|hsupa/.test(text)?"3G":/2g|gsm|gprs|edge/.test(text)?"2G":/no service/.test(text)?"No service":"Unknown"; }
-function networkProtocol(value, profile, field) {
+function networkProtocol(value, mapping) {
   const raw=value===undefined||value===null?null:String(value).trim();
   if(!raw)return {protocol:"Unknown",generation:"Unknown",confirmed:false};
-  const mapping=profile&&profile.wan&&profile.wan.mappings&&profile.wan.mappings[field];
   if(mapping&&Object.prototype.hasOwnProperty.call(mapping,raw)){const protocol=mapping[raw];return {protocol,generation:ratGeneration(protocol),confirmed:true};}
   // Human-readable RAT names are self-describing; opaque numeric enums are not.
   if(!/^[-+]?\d+$/.test(raw)&&ratGeneration(raw)!=="Unknown"){const generation=ratGeneration(raw);return {protocol:generation==="4G"&&!/4g/i.test(raw)?`4G · ${raw}`:raw,generation,confirmed:true};}
   return {protocol:`Unknown (raw: ${raw})`,generation:"Unknown",confirmed:false};
 }
-function parseNetwork(xml, profile = ACTIVE_PROFILE) {
-  const normalized=xml && typeof xml === "object" && xml.values ? xml : cellularDiagnosticsModule ? cellularDiagnosticsModule.normalize({status1:xml},profile) : null;
+function parseNetwork(xml) {
+  const normalized=xml && typeof xml === "object" && xml.values ? xml : cellularDiagnosticsModule ? cellularDiagnosticsModule.normalize({status1:xml}) : null;
   if(!normalized) return {hasData:false,mode:"Unknown",generation:"Unknown",bars:null,dbm:null};
   const v=normalized.values,rat=normalized.rat,signal=normalized.signal;
   const preferred=v.preferred_mode.raw!==null?v.preferred_mode:v.connect_mode;
@@ -1038,9 +967,8 @@ async function executeDeviceAccess(auth, capability, action) {
   return deviceAccessModule.execute(deviceAccessApi(auth), capability, action);
 }
 async function executeTelnet(auth, enable, confirmed) {
-  const result=await telnetControlModule.control(telnetApi(auth),ACTIVE_PROFILE,enable,confirmed);
-  const firmware=ACTIVE_PROFILE.firmware||ACTIVE_PROFILE.id||"unknown";
-  if(result.outcome==="unsupported") return {ok:false,title:"Telnet",message:`Unavailable: no confirmed mapping for firmware ${firmware}`,outcome:result.outcome};
+  const result=await telnetControlModule.control(telnetApi(auth),enable,confirmed);
+  if(result.outcome==="unsupported") return {ok:false,title:"Telnet",message:"Unavailable: no universal command contract is confirmed",outcome:result.outcome};
   return {ok:result.outcome==="confirmed",title:"Telnet",message:`Telnet result: ${result.outcome}`,outcome:result.outcome};
 }
 function telnetApi(auth) { return { host:ROUTER_HOST, escapeXml, xmlRequest:(method,file,body)=>xmlRequest(auth,method,file,body), writeThenVerify:spec=>writeThenVerify(auth,spec), portCheck:async(host,port,timeout)=>{ if(typeof Socket==="undefined") return false; const socket=new Socket(); try { await socket.connect(host,port,timeout); return true; } catch (_) { return false; } finally { try { socket.close(); } catch (_) {} } } }; }
@@ -1057,7 +985,7 @@ function deviceAccessApi(auth) {
 async function loadCellularDiagnostics(auth, statusXml) {
   const responses = {}; const errors = {};
   if (statusXml) responses.status1 = statusXml;
-  const endpoints = Array.from(new Set(["wan", "Engineer_parameter"].concat((ACTIVE_PROFILE.diagnosticEndpoints || []).filter(name => name !== "status1"))));
+  const endpoints = ["wan", "Engineer_parameter"];
   for (const endpoint of endpoints) {
     try {
       const xml = await xmlRequest(auth, "GET", endpoint);
@@ -1066,12 +994,12 @@ async function loadCellularDiagnostics(auth, statusXml) {
     } catch (error) { errors[endpoint] = cleanError(error); }
   }
   responses.__errors = errors;
-  const normalized=cellularDiagnosticsModule ? cellularDiagnosticsModule.normalize(responses, ACTIVE_PROFILE) : { values: {}, stages: {}, endpointErrors: errors };
+  const normalized=cellularDiagnosticsModule ? cellularDiagnosticsModule.normalize(responses) : { values: {}, stages: {}, endpointErrors: errors };
   normalized.loadedAt=Date.now(); normalized.loading=false; return normalized;
 }
 
 async function detectCellularControl(auth) {
-  return cellularControlModule.detect(cellularControlApi(auth), ACTIVE_PROFILE);
+  return cellularControlModule.detect(cellularControlApi(auth));
 }
 function cellularControlApi(auth) {
   return {
@@ -1173,14 +1101,14 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     deleteSms:async p=>{const r=await deleteSms(auth,p.id);if(!r.ok){const error=new Error(r.message||"SMS deletion was not confirmed");error.diagnostics=sanitizeDiagnostics(r.diagnostics||"");throw error;}model.sms=await loadAllSms(auth);if(model.sms.messages.some(message=>String(message.id)===String(p.id))){const error=new Error("The SMS is still present in the updated history.");error.diagnostics=sanitizeDiagnostics(r.diagnostics||"");throw error;}return {...r,id:String(p.id),history:model.sms};},
     ussd:async p=>executeUssd(auth,readCapabilityCache("ussd")||await detectUssdCapability(auth),p.code),
     deviceAccess:async p=>{const detected=readCapabilityCache("deviceAccess");if(!detected)throw new Error("Run Detect first");return executeDeviceAccess(auth,p.deviceAction,p.deviceAction);},
-    cellularReconnect:async()=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth);const r=await cellularControlModule.executeReconnect(cellularControlApi(auth),c,ACTIVE_PROFILE);await refresh();return r;},
-    cellularMode:async p=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth),m=cellularControlModule.modeById(p.mode,ACTIVE_PROFILE);if(!m)throw new Error("Unknown cellular network mode");const r=await cellularControlModule.executeSetMode(cellularControlApi(auth),c,m.id,ACTIVE_PROFILE);await refresh();return r;},
-    resetTraffic:async()=>{const spec=ACTIVE_PROFILE.statisticsReset;if(!spec||!spec.confirmed)throw new Error("Traffic reset is unavailable");const before=wanCounterSnapshot(await xmlRequest(auth,"GET","statistics"));const body=`<RGW><statistics><WanStatistics><set_action>${escapeXml(spec.set_action)}</set_action><clear_cur_stat_flag>${escapeXml(spec.clear_cur_stat_flag)}</clear_cur_stat_flag></WanStatistics></statistics></RGW>`;const r=await writeThenVerify(auth,{model:"statistics",xml:body,verificationModel:"statistics",verify:x=>statisticsResetMatches(before,wanCounterSnapshot(x))});await refresh();return r;},
+    cellularReconnect:async()=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth);const r=await cellularControlModule.executeReconnect(cellularControlApi(auth),c);await refresh();return r;},
+    cellularMode:async p=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth),m=cellularControlModule.modeById(p.mode);if(!m)throw new Error("Unknown cellular network mode");const r=await cellularControlModule.executeSetMode(cellularControlApi(auth),c,m.id);await refresh();return r;},
+    resetTraffic:async()=>{throw new Error("Traffic reset is unavailable because no universal write contract is confirmed");},
     reboot:()=>executePowerCommand(auth,"reboot"),powerOff:()=>executePowerCommand(auth,"powerOff")};
   return createWebViewDispatcher(handlers,response=>applyWebView(web,"zmiApplyActionResult",response));
 }
 function powerDiagnostics(method,operation,file,error){const descriptor=apiContractModule&&apiContractModule.normalizeModelDescriptor?apiContractModule.normalizeModelDescriptor(file):(typeof file==="string"?{name:file,method:"POST"}:file||{});return sanitizeDiagnostics(`method=${method||descriptor.method||"unknown"}; model=${operation}; endpoint=${ACTIVE_XML_REQUEST_PATH}; error=${error?cleanError(error):"none"}`);}
-async function executePowerCommand(auth,kind){const operation=kind==="reboot"?"reset":"poweroff",spec=ACTIVE_PROFILE.destructive&&ACTIVE_PROFILE.destructive[operation];if(!spec)throw new Error(ACTIVE_PROFILE.destructiveUnavailableReason||"Power command is unavailable because this firmware has not been confirmed");try{const result=await writeThenVerify(auth,{model:spec.file,xml:`<RGW><${spec.tree}></${spec.tree}></RGW>`,destructive:true});if(result.error&&!result.connectionLost)throw result.error;if(result.outcome!=="submitted"&&result.outcome!=="unknown")throw new Error(`Unexpected destructive command outcome: ${result.outcome}`);return {...result,message:result.outcome==="submitted"?"Command submitted; router response received.":"Command sent; connection lost before confirmation.",diagnostics:powerDiagnostics(result.method,operation,spec.file,result.error)};}catch(error){error.diagnostics=powerDiagnostics(null,operation,spec.file,error);throw error;}}
+async function executePowerCommand(){ throw new Error("Power commands are unavailable because no universal command contract is confirmed"); }
 
 // WebView rendering
 function buildHtml(model) {
@@ -1204,7 +1132,7 @@ function buildHtml(model) {
   const noticeHtml = notice && notice.text ? `<div class="notice ${notice.type}">${escapeHtml(notice.text)}${notice.diagnostics ? `<details><summary>Diagnostics</summary><textarea rows="7" readonly>${escapeHtml(notice.diagnostics)}</textarea><pre>${escapeHtml(notice.diagnostics)}</pre></details>` : ""}</div>` : "";
   const signalHtml = signalBarsHtml(network);
   const warnings=[model.errors&&model.errors.status].filter(Boolean);
-  const statusWarning = warnings.length ? `<div class="warning status-compatibility" data-status-warning><strong>${model.errors.statusRequest ? "Status request error" : "Status compatibility warning"}</strong><p>${warnings.map(escapeHtml).join("<br>")}</p></div>` : "";
+  const statusWarning = warnings.length ? `<div class="warning status-warning" data-status-warning><strong>${model.errors.statusRequest ? "Status request error" : "Status data warning"}</strong><p>${warnings.map(escapeHtml).join("<br>")}</p></div>` : "";
   const topCards = `<section class="topgrid router-only">
     <article class="mini mini-signal" data-overview-card="signal"><span>Signal</span><strong data-network-signal>${signalHtml}</strong><small><span data-network-current>${escapeHtml(network.networkError || network.mode || "Unknown")}</span><span data-network-dbm>${network.dbm === null || network.dbm === undefined ? "" : ` · ${escapeHtml(network.dbm)} dBm`}</span></small></article>
     <article class="mini mini-battery" data-overview-card="battery"><span>Battery</span><strong data-battery-percent>${batteryLabel}</strong><small data-battery-inline>${escapeHtml(batteryInline)}</small></article>
@@ -1235,15 +1163,15 @@ function buildHtml(model) {
   const cellular = model.cellularControl || {};
   const defaultCellularModes = [{ id: "auto", title: "Automatic" }, { id: "lteOnly", title: "4G/LTE only" }, { id: "ltePreferred", title: "LTE preferred" }, { id: "wcdmaOnly", title: "3G only" }, { id: "gsmOnly", title: "2G only" }];
   const activePreferredMode = preferredModeId(network.preferredMode || network.mode || "");
-  const cellularModeOptions = (cellular.modes || (cellularControlModule && cellularControlModule.modes ? cellularControlModule.modes(ACTIVE_PROFILE) : defaultCellularModes)).map(mode => `<option value="${escapeHtml(mode.id)}"${mode.id === activePreferredMode ? " selected" : ""}>${escapeHtml(mode.title)}</option>`).join("");
+  const cellularModeOptions = (cellular.modes || (cellularControlModule && cellularControlModule.modes ? cellularControlModule.modes() : defaultCellularModes)).map(mode => `<option value="${escapeHtml(mode.id)}"${mode.id === activePreferredMode ? " selected" : ""}>${escapeHtml(mode.title)}</option>`).join("");
   const controlsDisabled = capabilityState(cellular)!=="available" || cellular.readOnly === true;
   const cellularModeSelect = controlsDisabled || !cellularModeOptions ? "" : `<label class="selectline">Current preferred protocol <select data-cellular-mode-select>${cellularModeOptions}</select></label>`;
   const cellularReconnect = controlsDisabled ? "" : `<button class="danger buttonlike" type="button" data-cellular-action="reconnect">Reconnect cellular network</button>`;
   const resetTrafficConfirm = "";
   const powerConfirmCard = `<div class="warning" data-power-confirm hidden></div>`;
-  const powerAvailable = !!(ACTIVE_PROFILE.destructive && ACTIVE_PROFILE.destructive.reset && ACTIVE_PROFILE.destructive.poweroff);
-  const powerDisabled = powerAvailable ? "" : ` disabled aria-disabled="true" title="${escapeHtml(ACTIVE_PROFILE.destructiveUnavailableReason || "Power commands are unavailable for unconfirmed firmware")}"`;
-  const powerUnavailable = powerAvailable ? "" : `<p class="warning" data-power-unavailable>${escapeHtml(ACTIVE_PROFILE.destructiveUnavailableReason || "Power commands are unavailable for unconfirmed firmware.")}</p>`;
+  const powerAvailable = false;
+  const powerDisabled = ` disabled aria-disabled="true" title="Power commands are unavailable because no universal command contract is confirmed"`;
+  const powerUnavailable = `<p class="warning" data-power-unavailable>Power commands are unavailable because no universal command contract is confirmed.</p>`;
   const connectionTime = formatDuration(traffic.sessionSeconds);
   const activeTab = model.tab === "router" ? "router" : "sms";
   const deviceModel = String(model.actualModel || "").trim() || "unknown";

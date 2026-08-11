@@ -200,9 +200,7 @@ Example delete tree for the confirmed contract:
 </RGW>
 ```
 
-`DELETE_SMS_LOCAL` and a `DELETE_SMS` request using `<index>` are not confirmed
-as equivalent forms. A client must not try either form unless an active firmware
-compatibility profile explicitly defines it.
+This is the only supported deletion request. Alternative command names and identifier elements are not sent.
 
 SMS pagination fields can behave inconsistently across builds; deduplicate and guard against repeated/empty pages.
 

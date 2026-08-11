@@ -8,11 +8,8 @@ digest URI `/cgi/xml_action.cgi` in HA2 and the Authorization header; the vendor
 writes use a single POST followed by a control GET. A successful HTTP response alone
 is not treated as proof that a setting changed.
 
-Compatibility profiles contain only values confirmed for a named firmware. Unknown
-enum values are displayed with their raw vendor value, and controls remain read-only
-when their field names or action values are not confirmed. The application never
-probes write values. In particular, Telnet, cellular, statistics-reset, autoreboot,
-and true-shutdown controls can remain unavailable even when their read model exists.
+
+Unknown enum values are displayed with their raw vendor value. Firmware-dependent writes remain disabled unless one universal contract is confirmed across all supported builds; the application never probes write values.
 
 WAN byte totals are parsed as unsigned decimal `BigInt` values. Download is
 `rx_byte_all`, upload is `tx_byte_all`, and total is their sum; LAN/WLAN, device, and
@@ -79,11 +76,7 @@ The repository keeps the updater, manifest, application, and feature modules sid
    }
    ```
 
-   The confirmed `2.5.96` compatibility profile sends HTTP requests to
-   `/xml_action.cgi` by default. This physical request path is separate from the
-   Digest URI: HA2 and the Authorization header's `uri` field always use the
-   firmware value `/cgi/xml_action.cgi`. The `xmlRequestPath` setting changes only
-   the physical request URL for firmware variants that expose a different endpoint.
+   HTTP requests use the configured `xmlRequestPath` (by default `/xml_action.cgi`). The physical request path remains separate from the Digest URI `/cgi/xml_action.cgi` used in HA2 and the Authorization header.
 
    If you change the configuration later, run the loader again to apply it. On each run, the loader asks GitHub's commits API for the configured branch HEAD, validates the full 40-character SHA, then fetches the manifest, loader, and every application file from raw GitHub URLs containing that exact SHA. A branch move between requests therefore cannot mix commits.
 4. The router password is stored in Keychain as `mf885_router_password_<router address>`. An optional GitHub token may be stored as `mf885_github_token`; it is useful when unauthenticated API rate limits are too low. Neither secret is written to configuration or logs. Use a temporary Scriptable script to set or replace these Keychain values.
@@ -172,15 +165,12 @@ For a short, private troubleshooting session only, set `"skipSmsContentLog": fal
 
 `debugSensitivePayloads` is an explicitly dangerous troubleshooting option and is `false` by default. Enabling it may expose otherwise private application payload fields to the Scriptable console; do so only temporarily, away from shared logs or screen recordings. Security-critical credentials, Digest material, cookies, SMS/contact fields, phone numbers, and USSD values remain redacted by the central logger.
 
-For an incompatible `status1` response, look for `status1:xml-summary` (especially `WanStatistics`, `batteryinfo`, and `cellularFields`) and `loadModel:complete`. These show whether the selected compatibility profile recognizes the router response without revealing the response's private values.
+For an unfamiliar `status1` response, inspect the redacted `status1:xml-summary` and `loadModel:complete` debug entries.
 
 ### Router dashboard and cellular troubleshooting
 
-The Router tab is ordered as **Overview**, **Mobile network**, **Connection diagnostics**, **Experimental features**, and **System**. The unconfirmed cellular controls, USSD, and device-access features are grouped into subsections of the single **Experimental features** card and share one detection button. The overview is intentionally compact; polling updates it and the detailed network fields from the same snapshot. Diagnostics load after first paint, show endpoint-specific failures, and retain the last successful values as stale when a later poll fails.
+The Router tab is ordered as **Overview**, **Mobile network**, **Connection diagnostics**, **Experimental features**, and **System**. The unconfirmed cellular controls, USSD, and device-access features are grouped into subsections of the single **Experimental features** card and share one detection button. The overview is intentionally compact; polling updates it and the detailed network fields from the same snapshot. Diagnostics load after first paint, show endpoint-specific failures, and retain the last successful values as stale when a later poll fails. Status and network parsing checks all known field aliases, preserves unknown raw values, and reports conflicting network data without guessing.
 
-Current RAT and preferred/configured mode are separate. Numeric RAT values are decoded only by a mapping confirmed for the active firmware profile; unknown values display their safe raw field/code and conflicting fields are reported without guessing. Debug logging records firmware-profile mismatches and safe RAT sources/codes. Logs redact IMEI/ICCID, telephone numbers, credentials, cookies, tokens, Digest material, SMS, and USSD payloads. For troubleshooting, enable debug logging, reproduce while the stock router network screen is visible, and share only anonymized XML summaries—never raw authentication or subscriber identifiers.
-
-Firmware profile precedence is explicit: `compatibilityProfileOverride`, then the detected device `version_num`/model, then `compatibilityProfile`. The configured `2.5.96` fallback is a valid profile and is never converted to `unknown`. Set the override only to deliberately pin an exact firmware; leave it empty for normal detection. MF885 firmware `2.5.94` has its own profile and is not treated as equivalent to the MF855 NZ 2.5.94 build.
 
 Every command button exposes an accessible lifecycle: immediate action-specific
 pending text and spinner, `aria-busy`, disabled duplicate-submit protection, and a
