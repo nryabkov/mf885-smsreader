@@ -48,9 +48,9 @@ function webPollPayload(model) {
   const traffic = model && model.traffic || {};
   const chargerCurrent = battery.chargerCurrent === undefined ? null : battery.chargerCurrent;
   const outputCurrent = battery.outputCurrent === undefined ? null : battery.outputCurrent;
-  const chargerStatus = String(battery.chargerStatus || battery.rawChargerStatus || "");
-  const chargerConnected = !!battery.charging || (Number(chargerCurrent) > 0) || /charg|adapter|usb|ac|plug|online/i.test(chargerStatus);
-  const usbHostActive = Number(outputCurrent) > 0;
+  const chargerConnected = !!(battery.inputConnected || battery.chargerConnected);
+  const usbHostActive = !!(battery.usbOutputActive || battery.usbHostActive);
+  const batteryPowerStatus = battery.powerStatus || battery.state || "unknown";
   return {
     loadedAt: model.loadedAt,
     smsCount: model.sms && model.sms.messages ? model.sms.messages.length : 0,
@@ -71,6 +71,7 @@ function webPollPayload(model) {
     pci: network.pci || null,
     batteryInline: batteryInlineLabel(battery),
     batteryStatus: battery.status || "Unknown",
+    batteryPowerStatus,
     batteryPercent: battery.percent,
     batteryChargerCurrent: chargerCurrent,
     batteryOutputCurrent: outputCurrent,
