@@ -52,7 +52,7 @@ test("destructive GET command does not require verify and never calls POST", asy
   });
 
   assert.deepEqual(calls, [["GET", "reset"], ["poll"]]);
-  assert.equal(result.outcome, "pending/unknown");
+  assert.equal(result.outcome, "submitted");
   assert.equal(result.method, "GET");
   assert.equal(result.model, "reset");
 });
@@ -76,7 +76,7 @@ test("legacy destructive string descriptor still uses POST with retry disabled",
   assert.equal(calls[0][0], "POST");
   assert.equal(calls[0][1], "poweroff");
   assert.equal(calls[0][3].retry401, false);
-  assert.equal(result.outcome, "pending/unknown");
+  assert.equal(result.outcome, "submitted");
   assert.equal(result.method, "POST");
 });
 
@@ -98,4 +98,25 @@ test("ordinary writes still require verify and perform POST then GET", async () 
 
   assert.deepEqual(calls, [["POST", "wan", true], ["GET", "wan"]]);
   assert.equal(result.outcome, "confirmed");
+});
+
+
+test("timeout after a single destructive send is unknown and is never retried", async () => {
+  let calls = 0;
+  const result = await api.submitDestructive({ model: "reset", xml: "<RGW/>", post: async () => { calls++; throw new Error("Request timed out"); } });
+  assert.equal(calls, 1);
+  assert.equal(result.outcome, "unknown");
+  assert.equal(result.connectionLost, true);
+});
+
+test("HTTP and authorization failures remain explicit failures without retry", async () => {
+  for (const message of ["reset request failed: HTTP 500 from /xml_action.cgi", "Authorization failed for reset"]) {
+    let calls = 0;
+    await assert.rejects(api.submitDestructive({ model: "reset", xml: "<RGW/>", post: async () => { calls++; throw new Error(message); } }), error => error.message === message);
+    assert.equal(calls, 1);
+  }
+});
+
+test("missing destructive transport fails before submission", async () => {
+  await assert.rejects(api.submitDestructive({ model: { name: "reset", method: "GET" } }), /GET command transport is unavailable/);
 });
