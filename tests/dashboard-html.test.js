@@ -552,6 +552,33 @@ test('battery state and mobile card CSS are canonical and scoped',()=>{
   for(const width of [320,375,390,430,520])assert.ok(width<=520 && /grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\)/.test(html));
 });
 
+test('battery power parsing keeps charger input and USB output independent',()=>{
+  const cases=[
+    ['<Battery_status>2</Battery_status><Charger_current>250</Charger_current><Output_current>0</Output_current>','charging',true,false,'Charging'],
+    ['<Battery_status>1</Battery_status><Charger_status>0</Charger_status><Output_current>120</Output_current>','powering-usb',false,true,'Powering USB device'],
+    ['<Battery_status>1</Battery_status><Charger_status>1</Charger_status><Charger_current>250</Charger_current><Output_current>120</Output_current>','charging-and-powering-usb',true,true,'Charging · Powering USB device'],
+    ['<Battery_status>3</Battery_status><Battery_percent>100</Battery_percent><Charger_status>1</Charger_status>','full',true,false,'Full'],
+    ['', 'unknown',false,false,'Unknown']
+  ];
+  for(const [body,state,input,output,label] of cases){
+    const xml=body===''?'<batteryinfo></batteryinfo>':`<batteryinfo>${body}</batteryinfo>`, battery=app.parseBattery(xml);
+    assert.equal(battery.state,state); assert.equal(battery.inputConnected,input); assert.equal(battery.usbOutputActive,output); assert.equal(battery.status,label);
+  }
+});
+
+test('v2 initial HTML and polling updates share complete accessible power status',()=>{
+  const ui=require('../modules/ui-v2.js'), fixture=model();
+  fixture.battery=app.parseBattery('<batteryinfo><Battery_percent>61</Battery_percent><Charger_status>1</Charger_status><Charger_current>220</Charger_current><Output_current>90</Output_current></batteryinfo>');
+  const html=ui.buildHtml(fixture), script=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  assert.match(html,/Charging · Powering USB device/);
+  assert.match(html,/id="batteryLed"[^>]*aria-label="Battery 61%: Charging · Powering USB device"/);
+  assert.match(html,/class="charge-marker"/); assert.match(html,/class="usb-marker"/);
+  assert.match(script,/const power=powerState\(p\)/); assert.match(script,/chargingText'\)\.textContent=power\.label/);
+  assert.match(script,/batteryTrack'\)\.style\.width/); assert.match(script,/card\.className=`card battery-card \$\{power\.status\}`/);
+  assert.match(script,/updatePanel\(p\)/);
+  assert.deepEqual(ui.powerState({chargerConnected:true,usbHostActive:true,batteryPowerStatus:'charging-and-powering-usb'}),{input:true,output:true,full:false,label:'Charging · Powering USB device',status:'charging-and-powering-usb'});
+});
+
 test('only profile-declared alternative RAT sources conflict',()=>{
  const base=require('../modules/compatibility-profiles.js').selectProfile('2.5.96');
  const real={...base,wan:{...base.wan,rat:{...base.wan.rat,alternativeSources:['sys_mode','ConnType']}}};

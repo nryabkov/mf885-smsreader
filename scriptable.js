@@ -295,6 +295,11 @@ function webPollPayload(model) {
     pci: model.network && model.network.pci || null,
     batteryInline: batteryInlineLabel(model.battery || {}),
     batteryStatus: model.battery && model.battery.status || "Unknown",
+    batteryPowerStatus: model.battery && (model.battery.powerStatus || model.battery.state) || "unknown",
+    chargerConnected: !!(model.battery && (model.battery.inputConnected || model.battery.chargerConnected)),
+    usbHostActive: !!(model.battery && (model.battery.usbOutputActive || model.battery.usbHostActive)),
+    batteryChargerCurrent: model.battery && model.battery.chargerCurrent,
+    batteryOutputCurrent: model.battery && model.battery.outputCurrent,
     batteryPercent: model.battery && model.battery.percent,
     operator: model.network && model.network.operator || "",
     roaming: model.network && model.network.fields && model.network.fields.roaming || null,
@@ -892,33 +897,34 @@ function parseBattery(xml) {
   const chargerCurrent = chargerCurrentRaw !== "" && Number.isFinite(Number(chargerCurrentRaw)) ? Number(chargerCurrentRaw) : null;
   const outputCurrent = outputCurrentRaw !== "" && Number.isFinite(Number(outputCurrentRaw)) ? Number(outputCurrentRaw) : null;
   const state = batteryState(batteryStatus, chargerStatus, percent, chargerCurrent, outputCurrent);
-  const labels={charging:"Charging",discharging:"Discharging",full:"Full",unknown:"Unknown"}, status=labels[state];
-  const contradictory=chargerCurrent!==null&&chargerCurrent>0&&outputCurrent!==null&&outputCurrent>0;
-  const detailText=contradictory?`${status} · conflicting charge/output currents`:status;
-  return { hasData: percentRaw !== "" || !!batteryStatus || !!chargerStatus || chargerCurrent !== null || outputCurrent !== null, percent, percentRaw, percentValid: percent !== null, charging:state==="charging"||state==="full", state, status, detailText, chargerCurrent, outputCurrent, rawStatus:batteryStatus || "", chargerStatus:chargerStatus || "", rawChargerStatus:chargerStatus || "", rawChargerCurrent:chargerCurrentRaw, rawOutputCurrent:outputCurrentRaw };
+  const inputConnected = batteryInputConnected(batteryStatus, chargerStatus, chargerCurrent);
+  const usbOutputActive = outputCurrent !== null && outputCurrent > 0;
+  const labels={charging:"Charging",discharging:"Discharging","powering-usb":"Powering USB device","charging-and-powering-usb":"Charging · Powering USB device",full:"Full","full-and-powering-usb":"Full · Powering USB device",unknown:"Unknown"}, status=labels[state];
+  return { hasData: percentRaw !== "" || !!batteryStatus || !!chargerStatus || chargerCurrent !== null || outputCurrent !== null, percent, percentRaw, percentValid: percent !== null, charging:inputConnected, inputConnected, chargerConnected:inputConnected, usbOutputActive, usbHostActive:usbOutputActive, powerStatus:state, state, status, detailText:status, chargerCurrent, outputCurrent, rawStatus:batteryStatus || "", chargerStatus:chargerStatus || "", rawChargerStatus:chargerStatus || "", rawChargerCurrent:chargerCurrentRaw, rawOutputCurrent:outputCurrentRaw };
+}
+function batteryInputConnected(batteryStatus, chargerStatus, chargerCurrent) {
+  const battery=String(batteryStatus||"").trim(), charger=String(chargerStatus||"").trim();
+  const batteryPositive = !/discharg|not\s*charg|unplug|offline/i.test(battery) && /charg|adapter|\bac\b|plug|online|connected/i.test(battery);
+  const chargerPositive = !/discharg|not\s*charg|unplug|offline/i.test(charger) && /charg|adapter|\bac\b|plug|online|connected/i.test(charger);
+  return (chargerCurrent !== null && chargerCurrent > 0) ||
+    batteryPositive ||
+    chargerPositive ||
+    /^(1|true|yes|on)$/i.test(charger) || battery === "2" || battery === "3";
 }
 function batteryState(batteryStatus, chargerStatus, percent, chargerCurrent, outputCurrent) {
   const raw = String(batteryStatus || "").trim();
   const charger = String(chargerStatus || "").trim();
-  const lower = raw.toLowerCase();
-  const chargerLower = charger.toLowerCase();
-  const hasCharger =
-    /charg|adapter|usb|ac|plug|online/.test(lower) ||
-    /charg|adapter|usb|ac|plug|online/.test(chargerLower) ||
-    (charger && charger !== "0" && /^(1|true|yes|on)$/i.test(charger)) ||
-    (chargerCurrent !== null && chargerCurrent > 0);
-  const discharging =
-    /discharg|unplug|not\s*charg|offline/.test(lower) ||
-    raw === "1" ||
-    charger === "0" ||
-    (outputCurrent !== null && outputCurrent > 0);
+  const hasCharger = batteryInputConnected(raw, charger, chargerCurrent);
+  const hasOutput = outputCurrent !== null && outputCurrent > 0;
   const full =
-    /full|charged|complete|finish/.test(lower) ||
+    /full|charged|complete|finish/i.test(raw) ||
     (percent !== null && percent >= 98 && (raw === "3" || hasCharger));
-  if (discharging) return "discharging";
-  if (full) return "full";
-  if (raw === "3" && percent !== null && percent < 98) return "charging";
+  if (full) return hasOutput ? "full-and-powering-usb" : "full";
+  if (hasCharger && hasOutput) return "charging-and-powering-usb";
+  if (raw === "3" && percent !== null && percent < 98) return hasOutput ? "charging-and-powering-usb" : "charging";
   if (raw === "2" || hasCharger) return "charging";
+  if (hasOutput) return "powering-usb";
+  if (/discharg|unplug|not\s*charg|offline/i.test(raw) || raw === "1" || charger === "0") return "discharging";
   return "unknown";
 }
 function enumRaw(value, mapping) { const raw=value===undefined||value===null?null:String(value); const label=raw!==null&&mapping&&Object.prototype.hasOwnProperty.call(mapping,raw)?mapping[raw]:null; return {raw,label,confirmed:label!==null}; }
@@ -947,14 +953,17 @@ function parseNetwork(xml, profile = ACTIVE_PROFILE) {
 }
 function batteryStatusLabel(value, charging, percent, chargerStatus) {
   const state = batteryState(value, chargerStatus, percent, charging ? 1 : null, null);
-  return state === "full" ? "Full" : state === "charging" ? "Charging" : state === "discharging" ? "Discharging" : "Unknown";
+  return state === "full" ? "Full" : state === "full-and-powering-usb" ? "Full · Powering USB device" : state === "charging" ? "Charging" : state === "discharging" ? "Discharging" : state === "powering-usb" ? "Powering USB device" : state === "charging-and-powering-usb" ? "Charging · Powering USB device" : "Unknown";
 }
 function batteryInlineLabel(battery) {
   const percent = battery && battery.percent !== null && battery.percent !== undefined ? `${battery.percent}%` : "—";
   const status = battery && battery.status ? battery.status : batteryStatusLabel(battery && battery.rawStatus, battery && battery.charging, battery && battery.percent);
   if (status === "Charging") return `🔋 ${percent} ↑ Charging`;
   if (status === "Discharging") return `🔋 ${percent} ↓ Discharging`;
+  if (status === "Powering USB device") return `🔋 ${percent} → Powering USB device`;
+  if (status === "Charging · Powering USB device") return `🔋 ${percent} ↑ Charging · → Powering USB device`;
   if (status === "Full") return `🔋 ${percent} Full`;
+  if (status === "Full · Powering USB device") return `🔋 ${percent} Full · → Powering USB device`;
   return `🔋 ${percent} Unknown`;
 }
 function preferredModeId(label) { const text = String(label || "").toLowerCase(); if (/auto|automatic/.test(text)) return "auto"; if (/lte|4g/.test(text)) return "lteOnly"; if (/wcdma|umts|hspa|hsdpa|hsupa|3g/.test(text)) return "wcdmaOnly"; if (/gsm|gprs|edge|2g/.test(text)) return "gsmOnly"; return "auto"; }
