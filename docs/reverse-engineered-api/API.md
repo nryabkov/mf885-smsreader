@@ -184,6 +184,26 @@ Example send tree:
 </RGW>
 ```
 
+Example delete tree for the confirmed contract:
+
+```xml
+<RGW>
+  <message>
+    <flag>
+      <message_flag>DELETE_SMS</message_flag>
+      <sms_cmd>6</sms_cmd>
+    </flag>
+    <delete_message>
+      <message_id>42</message_id>
+    </delete_message>
+  </message>
+</RGW>
+```
+
+`DELETE_SMS_LOCAL` and a `DELETE_SMS` request using `<index>` are not confirmed
+as equivalent forms. A client must not try either form unless an active firmware
+compatibility profile explicitly defines it.
+
 SMS pagination fields can behave inconsistently across builds; deduplicate and guard against repeated/empty pages.
 
 ---

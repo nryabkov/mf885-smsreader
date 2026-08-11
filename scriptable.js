@@ -77,7 +77,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, resolveCompatibilityProfile, chooseCompatibilityProfile, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, statusCompatibilityError, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, resolveCompatibilityProfile, chooseCompatibilityProfile, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, statusCompatibilityError, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function chooseCompatibilityProfile(options, detectedFirmware, detectedModel, profiles = compatibilityModule) {
   const override=String(options&&options.compatibilityProfileOverride||"").trim(), configured=String(options&&options.compatibilityProfile||"").trim();
@@ -668,12 +668,16 @@ async function sendSms(auth, to, text) {
   return xmlRequest(auth, "POST", "message", xml);
 }
 
-async function deleteSms(auth, id) {
+async function deleteSms(auth, id, dependencies = {}) {
   const safeId = escapeXml(id);
+  const request = dependencies.request || xmlRequest;
+  const verify = dependencies.verify || loadAllSms;
+  const wait = dependencies.wait || sleep;
+  // DELETE_SMS_LOCAL and the <index> payload are not part of the confirmed
+  // contract. Firmware-specific alternatives must be defined by a compatibility
+  // profile before they can be selected here.
   const attempts = [
-    `<RGW><message><flag><message_flag>DELETE_SMS</message_flag></flag><delete_message><message_id>${safeId}</message_id></delete_message></message></RGW>`,
-    `<RGW><message><flag><message_flag>DELETE_SMS_LOCAL</message_flag></flag><delete_message><message_id>${safeId}</message_id></delete_message></message></RGW>`,
-    `<RGW><message><flag><message_flag>DELETE_SMS</message_flag></flag><delete_message><index>${safeId}</index></delete_message></message></RGW>`
+    `<RGW><message><flag><message_flag>DELETE_SMS</message_flag><sms_cmd>6</sms_cmd></flag><delete_message><message_id>${safeId}</message_id></delete_message></message></RGW>`
   ];
   const diagnostics = [];
   let lostConnection = false;
@@ -683,12 +687,12 @@ async function deleteSms(auth, id) {
   for (const payload of attempts) {
     const xml = `<?xml version="1.0" encoding="US-ASCII"?>${payload}`;
     try {
-      const response = await xmlRequest(auth, "POST", "message", xml);
+      const response = await request(auth, "POST", "message", xml);
       diagnostics.push(compactDebug(response));
       if (!routerAccepted(response)) { rejected = true; continue; }
-      await sleep(500);
+      await wait(500);
       let current;
-      try { current = await loadAllSms(auth); }
+      try { current = await verify(auth); }
       catch (verifyError) { lostConnection = true; diagnostics.push(cleanError(verifyError)); continue; }
       if (!current.messages.some(message => String(message.id) === String(id))) return { ok: true, message: "The SMS was removed from the router." };
       stillPresent = true;

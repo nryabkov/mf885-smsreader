@@ -49,6 +49,23 @@ test('status1 hardware revision accepts common XML field names',()=>{
 test('SMS and router models render a non-empty main with the requested active tab',()=>{for(const tab of ['sms','router']){const html=app.buildHtml(model(tab));const main=html.match(/<main>([\s\S]*?)<\/main>/i);assert.ok(main&&main[1].trim(),`${tab} main must not be empty`);assert.match(html,new RegExp(`<section id="${tab}" class="tab active"`));}});
 test('dashboard has native Alert fallback for WebView failures',()=>{const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');assert.match(source,/WebView loadHTML stage failed/);assert.match(source,/WebView present stage failed/);const fallback=source.match(/async function showMessage[\s\S]*?\n}/);assert.ok(fallback);assert.match(fallback[0],/new Alert\(\)/);assert.doesNotMatch(fallback[0],/new WebView\(\)/);});
 
+test('SMS deletion sends the confirmed API contract before any firmware-specific alternative',async()=>{
+  const calls=[];
+  const result=await app.deleteSms({},'42&7',{
+    request:async(...args)=>{calls.push(args);return '<RGW><sms_cmd_status_result>1</sms_cmd_status_result></RGW>';}
+  });
+  assert.equal(result.ok,false);
+  assert.equal(calls.length,1,'an unconfirmed fallback must not be sent after rejection');
+  const [auth,method,file,xml]=calls[0];
+  assert.deepEqual(auth,{});
+  assert.equal(method,'POST');
+  assert.equal(file,'message');
+  assert.match(xml,/<message_flag>DELETE_SMS<\/message_flag>/);
+  assert.match(xml,/<sms_cmd>6<\/sms_cmd>/);
+  assert.match(xml,/<message_id>42&amp;7<\/message_id>/);
+  assert.doesNotMatch(xml,/DELETE_SMS_LOCAL|<index>/);
+});
+
 function dashboardLifecycle({channelError}={}) {
   const calls=[];
   let closePresentation;
