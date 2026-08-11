@@ -35,12 +35,16 @@ async function submitDestructive(options) {
       throw new Error(`Unsupported destructive command method: ${descriptor.method}`);
     }
   } catch (error) {
+    const message = String(error && error.message || error || "");
+    const expectedDisconnect = /timed?\s*out|timeout|connection\s+(?:lost|closed|reset|aborted)|network\s+connection\s+was\s+lost|socket\s+hang\s+up/i.test(message)
+      && !/authorization|unauthorized|HTTP\s+[45]\d\d|transport is unavailable|unsupported destructive/i.test(message);
+    if (!expectedDisconnect) throw error;
     if (typeof pollAvailability === "function") await pollAvailability();
-    return { outcome: "pending/unknown", error, method: descriptor.method, model: descriptor.name };
+    return { outcome: "unknown", connectionLost: true, error, method: descriptor.method, model: descriptor.name };
   }
 
   if (typeof pollAvailability === "function") await pollAvailability();
-  return { outcome: "pending/unknown", response, method: descriptor.method, model: descriptor.name };
+  return { outcome: "submitted", response, method: descriptor.method, model: descriptor.name };
 }
 
 async function writeThenVerify(options) {

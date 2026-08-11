@@ -544,6 +544,29 @@ test('profile selection is override, detection, then configured fallback',()=>{
   assert.equal(choose({compatibilityProfile:'2.5.94'},'9.9.9').id,'unknown');
 });
 
+test('destructive profile requires detected firmware or an explicit override',()=>{
+  const configured=app.chooseCompatibilityProfile({compatibilityProfile:'2.5.96'},'');
+  assert.equal(configured.firmware,'2.5.96');
+  assert.equal(configured.destructive,undefined);
+  assert.match(configured.destructiveUnavailableReason,/disabled until/i);
+  assert.equal(app.chooseCompatibilityProfile({compatibilityProfile:'2.5.96'},'2.5.94').destructive.reset.file.method,'GET');
+  assert.equal(app.chooseCompatibilityProfile({compatibilityProfile:'2.5.94'},'2.5.96').destructive.reset.file,'reset');
+  assert.equal(app.chooseCompatibilityProfile({compatibilityProfile:'2.5.96'},'9.9.9').destructive,undefined);
+  assert.ok(app.chooseCompatibilityProfile({compatibilityProfile:'2.5.96',compatibilityProfileOverride:'2.5.96'},'9.9.9').destructive);
+});
+
+test('dispatcher reports a failed power command and preserves safe diagnostics',async()=>{
+  const error=new Error('Authorization failed');error.diagnostics='method=POST; model=poweroff; endpoint=/xml_action.cgi; password=secret';
+  const dispatch=app.createWebViewDispatcher({powerOff:async()=>{throw error}});
+  const result=await dispatch({id:'off',action:'powerOff',params:{confirmed:true}});
+  assert.equal(result.ok,false);
+  assert.equal(result.error,'Authorization failed');
+  assert.match(result.diagnostics,/method=POST; model=poweroff; endpoint=\/xml_action.cgi/);
+  assert.doesNotMatch(result.diagnostics,/secret/);
+  assert.match(app.clientScript(model()),/Sent · unconfirmed/);
+  assert.match(app.clientScript(model()),/Failed/);
+});
+
 test('battery state and mobile card CSS are canonical and scoped',()=>{
   const cases=[['<Battery_status>2</Battery_status><Battery_percent>40</Battery_percent>','charging'],['<Battery_status>1</Battery_status><Charger_status>0</Charger_status>','discharging'],['<Battery_status>3</Battery_status><Battery_percent>100</Battery_percent>','full'],['<Battery_status>88</Battery_status>','unknown']];
   for(const [body,state] of cases){const b=app.parseBattery(`<batteryinfo>${body}</batteryinfo>`);assert.equal(b.state,state);assert.equal(b.status,state[0].toUpperCase()+state.slice(1));assert.match(app.batteryInlineLabel(b),new RegExp(b.status));}

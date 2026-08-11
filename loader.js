@@ -16,7 +16,7 @@ const DEFAULT_CONFIG = {
   translationTarget: "en",
   showExperimentalControls: true,
   locale: "en",
-  // Selection priority: explicit override, detected firmware/model, fallback.
+  // Safe reads may use this fallback; destructive commands require detection or override.
   compatibilityProfileOverride: "",
   compatibilityProfile: "2.5.96",
   xmlRequestPath: "/xml_action.cgi",
