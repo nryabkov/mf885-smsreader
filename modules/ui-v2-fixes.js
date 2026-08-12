@@ -39,7 +39,26 @@ function enhancementScript() {
     const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const root=()=>$('#sheetRoot');
 
-    function closeOverlay(){ if(root()) root().innerHTML=''; }
+    let overlayTrigger=null;
+    function closeOverlay(kind){
+      const host=root(), backdrop=host&&host.firstElementChild;
+      if(!backdrop||kind&&backdrop.dataset.overlay!==kind)return;
+      host.innerHTML='';
+      const target=overlayTrigger;overlayTrigger=null;
+      if(target&&target.isConnected)target.focus();
+    }
+    function openHelp(key,trigger){
+      const definitions=typeof HELP_DEFINITIONS==='object'?HELP_DEFINITIONS:{},definition=definitions[key],host=root();
+      if(!definition||!host||host.firstElementChild)return;
+      overlayTrigger=trigger;
+      const units=definition.units?'<div class="help-detail"><b>Units</b><p>'+esc(definition.units)+'</p></div>':'';
+      host.innerHTML='<div class="sheet-backdrop help-backdrop" data-overlay="help"><section class="sheet help-sheet" role="dialog" aria-modal="true" aria-labelledby="helpTitle" tabindex="-1">'
+        +'<div class="help-sheet-head"><span class="help-mark">?</span><div><small>Field guide</small><h2 id="helpTitle">'+esc(definition.title)+'</h2></div></div>'
+        +'<div class="help-detail"><b>What it means</b><p>'+esc(definition.meaning)+'</p></div>'+units
+        +'<div class="help-detail"><b>How to read it</b><p>'+esc(definition.guidance)+'</p></div>'
+        +'<button type="button" class="help-close" data-help-close>Close</button></section></div>';
+      $('.help-sheet',host).focus();
+    }
 
     function setDiagTab(name){
       $$('[data-diag-tab]').forEach(b=>b.classList.toggle('active',b.dataset.diagTab===name));
@@ -100,12 +119,14 @@ function enhancementScript() {
 
     function value(id,fallback='—'){const e=$(id);return e&&e.textContent.trim()?e.textContent.trim():fallback;}
     function openSettings(){
+      if(root()&&root().firstElementChild)return;
+      overlayTrigger=$('#settingsBtn');
       const model=value('.title h1','MF885');
       const firmware=value('#deviceFirmware','—');
       const software=value('#deviceSoftware','—');
       const network=value('#mode','Unknown');
       const operator=value('#headerMeta','—');
-      root().innerHTML='<div class="sheet-backdrop settings-backdrop"><div class="sheet settings-sheet" role="dialog" aria-modal="true" aria-label="Router settings">'
+      root().innerHTML='<div class="sheet-backdrop settings-backdrop" data-overlay="settings"><div class="sheet settings-sheet" role="dialog" aria-modal="true" aria-label="Router settings">'
         +'<div class="settings-head"><div><small>Router</small><h2>Settings</h2></div><button class="settings-close" type="button" aria-label="Close">×</button></div>'
         +'<div class="settings-group"><div class="settings-row"><span>Model</span><b>'+esc(model)+'</b></div><div class="settings-row"><span>Firmware</span><b>'+esc(firmware)+'</b></div><div class="settings-row"><span>Software</span><b>'+esc(software)+'</b></div></div>'
         +'<div class="settings-group"><div class="settings-row"><span>Operator</span><b>'+esc(operator)+'</b></div><div class="settings-row"><span>Network</span><b>'+esc(network)+'</b></div><div class="settings-row"><span>Auto refresh</span><b>30 s</b></div></div>'
@@ -113,12 +134,28 @@ function enhancementScript() {
         +'<button type="button" data-settings-capabilities>Detect capabilities</button>'
         +'<button type="button" class="danger" data-settings-power>Reboot / Power</button>'
         +'</div></div>';
-      $('.settings-close').onclick=closeOverlay;
-      $('.settings-backdrop').onclick=e=>{if(e.target.classList.contains('settings-backdrop'))closeOverlay()};
-      $('[data-settings-open-diag]').onclick=()=>{closeOverlay();const t=$('[data-tab="diagnostics"]');if(t)t.click();};
-      $('[data-settings-capabilities]').onclick=()=>{closeOverlay();const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const d=$('#detectAll');if(d){d.scrollIntoView({behavior:'smooth',block:'center'});d.focus();}},100);};
-      $('[data-settings-power]').onclick=()=>{closeOverlay();setTimeout(()=>{const p=$('#powerBtn');if(p)p.click();},0);};
+      $('.settings-close').onclick=()=>closeOverlay('settings');
+      $('.settings-backdrop').onclick=e=>{if(e.target.classList.contains('settings-backdrop'))closeOverlay('settings')};
+      $('[data-settings-open-diag]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="diagnostics"]');if(t)t.click();};
+      $('[data-settings-capabilities]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const d=$('#detectAll');if(d){d.scrollIntoView({behavior:'smooth',block:'center'});d.focus();}},100);};
+      $('[data-settings-power]').onclick=()=>{closeOverlay('settings');setTimeout(()=>{const p=$('#powerBtn');if(p)p.click();},0);};
     }
+
+    // One delegated listener covers initial and refresh-generated help controls.
+    document.addEventListener('click',e=>{
+      const trigger=e.target.closest&&e.target.closest('[data-help-key]');
+      if(!trigger)return;
+      e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();
+      if(trigger.closest('#screen-sms'))return;
+      openHelp(trigger.dataset.helpKey,trigger);
+    },true);
+    document.addEventListener('click',e=>{
+      if(e.target.closest&&e.target.closest('[data-help-close]')){e.preventDefault();closeOverlay('help');return;}
+      if(e.target.classList&&e.target.classList.contains('help-backdrop'))closeOverlay('help');
+    });
+    document.addEventListener('keydown',e=>{
+      if(e.key==='Escape'&&root()&&root().querySelector('[data-overlay="help"]')){e.preventDefault();closeOverlay('help');}
+    });
 
     // Replace the temporary v2 settings popup with a compact, consistent sheet.
     const settings=$('#settingsBtn');
@@ -164,6 +201,16 @@ function enhanceHtml(html, model) {
     .sms-inline-actions button{padding:9px;border:1px solid var(--line);background:#122230;color:white;border-radius:10px}
     .sms-inline-actions .danger{color:var(--red);border-color:rgba(255,75,85,.5)}
     @media(prefers-reduced-motion:reduce){.row-menu{transition:none}}
+
+    .help-inline{display:inline-flex;align-items:center;gap:5px;min-width:0}.help-action{position:relative;display:inline-flex;align-items:center;gap:4px}
+    .help-button{display:inline-grid!important;place-items:center;flex:0 0 auto;width:28px!important;height:28px!important;min-width:28px;padding:0!important;margin:0!important;border:1px solid #49647a!important;border-radius:50%!important;background:#102536!important;color:#bdeeff!important;font-size:14px!important;font-weight:800!important;line-height:1!important;vertical-align:middle;cursor:help;touch-action:manipulation}
+    .help-button:hover{border-color:var(--cyan)!important;color:#fff!important}.help-button:focus-visible,.help-close:focus-visible{outline:3px solid var(--cyan)!important;outline-offset:3px}
+    .panel-wrap{position:relative}.panel-help-controls{position:absolute;right:0;bottom:-8px;display:flex;gap:2px}.panel-help-controls .help-button{width:22px!important;height:22px!important;min-width:22px;font-size:11px!important}.metric span,.device-row span,.usage-row span{display:flex;align-items:center;gap:5px}.card-title .help-button{margin-left:auto!important}.cap-row .help-button{margin-left:6px!important}.footer-inner>.help-button{align-self:center}
+    .help-backdrop{padding-top:max(20px,env(safe-area-inset-top));overscroll-behavior:contain}.help-sheet{max-width:620px;margin:0 auto;width:100%;padding-bottom:max(20px,env(safe-area-inset-bottom));box-shadow:0 -20px 60px rgba(0,0,0,.45)}
+    .help-sheet-head{display:flex;gap:13px;align-items:center;margin-bottom:15px}.help-sheet-head h2{margin:2px 0 0}.help-sheet-head small{color:var(--cyan);text-transform:uppercase;letter-spacing:.08em}.help-mark{display:grid;place-items:center;width:42px;height:42px;border-radius:50%;background:#12354b;color:var(--cyan);font-size:22px;font-weight:800}
+    .help-detail{background:#08131d;border:1px solid var(--line);border-radius:13px;padding:12px 14px;margin:9px 0}.help-detail b{color:#dff6ff}.help-detail p{color:var(--muted);line-height:1.55;margin:6px 0 0}.help-close{min-height:46px}
+    @media(max-width:560px){.help-button{width:30px!important;height:30px!important;min-width:30px}.help-sheet{border-radius:20px 20px 0 0}.footer-inner{gap:5px}.footer-inner>.help-button{width:28px!important;height:28px!important;min-width:28px}.help-action>.help-button{position:absolute;right:-5px;bottom:-7px}}
+    @media(prefers-reduced-motion:reduce){.help-button,.help-sheet,.sheet-backdrop{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
     .settings-sheet{max-width:620px;margin:0 auto;width:100%;}
     .settings-group{border:1px solid var(--line);border-radius:14px;background:#08131d;padding:0 13px;margin-bottom:11px}
     .settings-row{display:grid;grid-template-columns:1fr minmax(0,62%);gap:14px;padding:11px 0;border-top:1px solid var(--line)}
@@ -176,12 +223,12 @@ function enhanceHtml(html, model) {
     '<div class="diag-tabs"><button class="active">Connection</button><button>SIM</button><button>Network</button><button>Logs</button></div>',
     '<div class="diag-tabs"><button class="active" type="button" data-diag-tab="connection">Connection</button><button type="button" data-diag-tab="sim">SIM</button><button type="button" data-diag-tab="network">Network</button><button type="button" data-diag-tab="logs">Logs</button></div>'
   );
-  output = output.replace('<article class="card diag-card"><h3>Connection state</h3>', '<article class="card diag-card" data-diag-section="connection sim"><h3>Connection state</h3>');
-  output = output.replace('<article class="card diag-card"><h3>Network details</h3>', '<article class="card diag-card" data-diag-section="network"><h3>Network details</h3>');
-  output = output.replace('<article class="card diag-card"><h3>APN details</h3>', '<article class="card diag-card" data-diag-section="connection network"><h3>APN details</h3>');
+  output = output.replace('<article class="card diag-card"><h3>Connection state', '<article class="card diag-card" data-diag-section="connection sim"><h3>Connection state');
+  output = output.replace('<article class="card diag-card"><h3>Network details', '<article class="card diag-card" data-diag-section="network"><h3>Network details');
+  output = output.replace('<article class="card diag-card"><h3>APN details', '<article class="card diag-card" data-diag-section="connection network"><h3>APN details');
   output = output.replace('<article class="card diag-card"><h3>Ping / reachability</h3>', '<article class="card diag-card" data-diag-section="connection logs"><h3>Ping / reachability</h3>');
 
-  const logCard = `<article class="card diag-card diag-hidden" data-diag-section="logs"><h3>Diagnostic log</h3>${diagnosticsLogHtml(model)}</article>`;
+  const logCard = `<article class="card diag-card diag-hidden" data-diag-section="logs"><h3>Diagnostic log <button class="help-button" type="button" data-help-key="diagnosticLog" aria-label="Explain Diagnostic log">?</button></h3>${diagnosticsLogHtml(model)}</article>`;
   output = output.replace('</section>\n  </div><footer class="footerbar">', `${logCard}</section>\n  </div><footer class="footerbar">`);
 
   // A replacement callback keeps the script's `$$` selector helper intact;
