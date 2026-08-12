@@ -533,12 +533,30 @@ test('v2 initial HTML and polling updates share complete accessible power status
   fixture.battery=app.parseBattery('<batteryinfo><Battery_percent>61</Battery_percent><Charger_status>1</Charger_status><Charger_current>220</Charger_current><Output_current>90</Output_current></batteryinfo>');
   const html=ui.buildHtml(fixture), script=html.match(/<script>([\s\S]*)<\/script>/)[1];
   assert.match(html,/Charging · Powering USB device/);
+  assert.match(html,/id="batteryLed"[^>]*transform="translate\(302 75\)"/);
   assert.match(html,/id="batteryLed"[^>]*aria-label="Battery 61%: Charging · Powering USB device"/);
   assert.match(html,/class="charge-marker"/); assert.match(html,/class="usb-marker"/);
   assert.match(script,/const power=powerState\(p\)/); assert.match(script,/chargingText'\)\.textContent=power\.label/);
   assert.match(script,/batteryTrack'\)\.style\.width/); assert.match(script,/card\.className=`card battery-card \$\{power\.status\}`/);
   assert.match(script,/updatePanel\(p\)/);
+  assert.match(script,/id="batteryLed"[^>]*transform="translate\(302 75\)"/);
   assert.deepEqual(ui.powerState({chargerConnected:true,usbHostActive:true,batteryPowerStatus:'charging-and-powering-usb'}),{input:true,output:true,full:false,label:'Charging · Powering USB device',status:'charging-and-powering-usb'});
+});
+
+test('v2 battery panel keeps its aligned position for normal, charging, and USB power states',()=>{
+  const ui=require('../modules/ui-v2.js');
+  const cases=[
+    [{percent:61,state:'discharging'},false,false],
+    [{percent:61,state:'charging',inputConnected:true},true,false],
+    [{percent:61,state:'powering-usb',usbOutputActive:true},false,true]
+  ];
+  for(const [battery,chargeMarker,usbMarker] of cases){
+    const fixture=model(); fixture.battery=battery;
+    const html=ui.buildHtml(fixture), batteryLed=html.match(/<g id="batteryLed"[\s\S]*?<\/g>/)[0];
+    assert.match(batteryLed,/transform="translate\(302 75\)"/);
+    assert.equal(/class="charge-marker"/.test(batteryLed),chargeMarker);
+    assert.equal(/class="usb-marker"/.test(batteryLed),usbMarker);
+  }
 });
 
 
