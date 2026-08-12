@@ -52,10 +52,15 @@ function enhancementScript() {
       if(!definition||!host||host.firstElementChild)return;
       overlayTrigger=trigger;
       const units=definition.units?'<div class="help-detail"><b>Units</b><p>'+esc(definition.units)+'</p></div>':'';
+      const reported=value=>value===undefined||value===null||value===''?'Not reported by device':String(value);
+      const current=reported(trigger&&trigger.dataset.helpValue),raw=trigger&&trigger.dataset.helpRaw,source=reported(trigger&&trigger.dataset.helpSource),confidence=trigger&&trigger.dataset.helpConfidence;
+      const rawRow=raw!==undefined&&raw!==''&&String(raw)!==current?'<p><b>Raw value:</b> '+esc(raw)+'</p>':'';
+      const confidenceRow=confidence!==undefined&&confidence!==''?'<p><b>Confidence:</b> '+esc(confidence)+'</p>':'';
+      const technical='<div class="help-detail help-technical"><b>Technical data</b><p><b>Current displayed value:</b> '+esc(current)+'</p>'+rawRow+'<p><b>Technical source:</b> '+esc(source)+'</p>'+confidenceRow+'</div>';
       host.innerHTML='<div class="sheet-backdrop help-backdrop" data-overlay="help"><section class="sheet help-sheet" role="dialog" aria-modal="true" aria-labelledby="helpTitle" tabindex="-1">'
         +'<div class="help-sheet-head"><span class="help-mark">?</span><div><small>Field guide</small><h2 id="helpTitle">'+esc(definition.title)+'</h2></div></div>'
         +'<div class="help-detail"><b>What it means</b><p>'+esc(definition.meaning)+'</p></div>'+units
-        +'<div class="help-detail"><b>How to read it</b><p>'+esc(definition.guidance)+'</p></div>'
+        +'<div class="help-detail"><b>How to read it</b><p>'+esc(definition.guidance)+'</p></div>'+technical
         +'<button type="button" class="help-close" data-help-close>Close</button></section></div>';
       $('.help-sheet',host).focus();
     }
@@ -203,13 +208,13 @@ function enhanceHtml(html, model) {
     @media(prefers-reduced-motion:reduce){.row-menu{transition:none}}
 
     .help-inline{display:inline-flex;align-items:center;gap:5px;min-width:0}.help-action{position:relative;display:inline-flex;align-items:center;gap:4px}
-    .help-button{display:inline-grid!important;place-items:center;flex:0 0 auto;width:28px!important;height:28px!important;min-width:28px;padding:0!important;margin:0!important;border:1px solid #49647a!important;border-radius:50%!important;background:#102536!important;color:#bdeeff!important;font-size:14px!important;font-weight:800!important;line-height:1!important;vertical-align:middle;cursor:help;touch-action:manipulation}
-    .help-button:hover{border-color:var(--cyan)!important;color:#fff!important}.help-button:focus-visible,.help-close:focus-visible{outline:3px solid var(--cyan)!important;outline-offset:3px}
-    .panel-wrap{position:relative}.panel-help-controls{position:absolute;right:0;bottom:-8px;display:flex;gap:2px}.panel-help-controls .help-button{width:22px!important;height:22px!important;min-width:22px;font-size:11px!important}.metric span,.device-row span,.usage-row span{display:flex;align-items:center;gap:5px}.card-title .help-button{margin-left:auto!important}.cap-row .help-button{margin-left:6px!important}.footer-inner>.help-button{align-self:center}
+    .help-button{display:inline-grid!important;place-items:center;flex:0 0 auto;width:24px!important;height:24px!important;min-width:24px;padding:0!important;margin:0!important;border:0!important;border-radius:50%!important;background:transparent!important;color:#bdeeff!important;font-size:12px!important;font-weight:800!important;line-height:1!important;vertical-align:middle;cursor:help;touch-action:manipulation}
+    .help-button:hover{color:#fff!important;background:rgba(25,199,255,.12)!important}.help-button:focus-visible,.help-close:focus-visible{outline:3px solid var(--cyan)!important;outline-offset:3px}
+    .panel-wrap{position:relative}.panel-help-controls{position:absolute;right:0;bottom:-6px}.panel-help-controls .help-button{width:24px!important;height:24px!important;min-width:24px;font-size:12px!important}.metric span,.device-row span,.usage-row span{display:flex;align-items:center;gap:5px}.card-title .help-button{margin-left:auto!important}.cap-row .help-button{margin-left:6px!important}.footer-inner>.help-button{align-self:center}
     .help-backdrop{padding-top:max(20px,env(safe-area-inset-top));overscroll-behavior:contain}.help-sheet{max-width:620px;margin:0 auto;width:100%;padding-bottom:max(20px,env(safe-area-inset-bottom));box-shadow:0 -20px 60px rgba(0,0,0,.45)}
     .help-sheet-head{display:flex;gap:13px;align-items:center;margin-bottom:15px}.help-sheet-head h2{margin:2px 0 0}.help-sheet-head small{color:var(--cyan);text-transform:uppercase;letter-spacing:.08em}.help-mark{display:grid;place-items:center;width:42px;height:42px;border-radius:50%;background:#12354b;color:var(--cyan);font-size:22px;font-weight:800}
     .help-detail{background:#08131d;border:1px solid var(--line);border-radius:13px;padding:12px 14px;margin:9px 0}.help-detail b{color:#dff6ff}.help-detail p{color:var(--muted);line-height:1.55;margin:6px 0 0}.help-close{min-height:46px}
-    @media(max-width:560px){.help-button{width:30px!important;height:30px!important;min-width:30px}.help-sheet{border-radius:20px 20px 0 0}.footer-inner{gap:5px}.footer-inner>.help-button{width:28px!important;height:28px!important;min-width:28px}.help-action>.help-button{position:absolute;right:-5px;bottom:-7px}}
+    @media(max-width:560px){.help-button{width:24px!important;height:24px!important;min-width:24px}.help-sheet{border-radius:20px 20px 0 0}.footer-inner{gap:5px}.help-action>.help-button{position:absolute;right:-5px;bottom:-7px}}
     @media(prefers-reduced-motion:reduce){.help-button,.help-sheet,.sheet-backdrop{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
     .settings-sheet{max-width:620px;margin:0 auto;width:100%;}
     .settings-group{border:1px solid var(--line);border-radius:14px;background:#08131d;padding:0 13px;margin-bottom:11px}
