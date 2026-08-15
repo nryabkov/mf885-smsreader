@@ -2,6 +2,17 @@
 
 Stage 0 is deliberately a safety contract, not a generic firmware uploader.
 
+## Physical flash evidence
+
+High-resolution teardown photographs identify the external firmware storage as Macronix `MX25U25635FZ4I-10G`: 256 Mbit (32 MiB) 1.8 V Serial NOR in an 8-WSON package. This supersedes the earlier working assumption that the main external firmware store was NAND.
+
+Consequences for the safety model:
+
+- a full physical dump should cover the complete 32 MiB Serial NOR address space, not just the 8,323,644-byte BackupFw container;
+- direct 3.3 V/5 V programming equipment must not be attached to this 1.8 V part;
+- an ordinary SOIC-8 clip is not assumed to fit the WSON package; test pads or a WSON-specific fixture must be mapped first;
+- previous `NAND`/`BBT` labels in reverse-engineering notes are now gated until we prove what storage layer those routines actually describe. They must not be treated as evidence that this physical boot flash is NAND.
+
 ## Scope
 
 The initial implementation allowlists only two exact 8,323,644-byte ZIMI images:
