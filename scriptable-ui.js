@@ -158,6 +158,8 @@ function webPollPayload(model) {
     trafficDown: formatBytes(traffic.download),
     trafficUp: formatBytes(traffic.upload),
     connectionTime: formatDuration(traffic.sessionSeconds),
+    pollSeconds: Number(model.pollSeconds) || POLL_SECONDS,
+    powerControls: model.powerControls || { available:false, reason:"Power controls are unavailable for this live device identity.", actions:{} },
     cellularDiagnostics: model.cellularDiagnostics || {},
     errors: model.errors || {}
   };

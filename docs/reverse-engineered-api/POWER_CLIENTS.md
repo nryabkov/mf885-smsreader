@@ -7,7 +7,7 @@ This note separates four different claims that are easy to conflate when reverse
 3. the HTTP request shape used by a stock-family client;
 4. the observed side effect on a live router.
 
-The first three are established for reboot, power-off and factory reset on the MF885 / MF96 Ver.D generation. Project runtime support is implemented for reboot and power-off; live execution on the exact 2.5.94 device remains a separate evidence level.
+The first three are established for reboot, power-off and factory reset on the MF885 / MF96 Ver.D generation. Project runtime support is deliberately narrower: reboot and power-off require a fresh exact LV01/MF885 2.5.94 match; live execution on the target device remains a separate evidence level.
 
 ## Evidence baseline
 
@@ -243,7 +243,7 @@ APK UI -> API call chain recovered         confirmed
 HTTP method                                GET, companion-app-confirmed
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=reset
 XML request body                           none
-project runtime support                    enabled for dedicated MF885 2.5.94 profile
+project runtime support                    exact live LV01/MF885 2.5.94 match only
 live execution on exact 2.5.94 router      separate evidence level
 ```
 
@@ -256,7 +256,7 @@ APK UI -> API call chain recovered         confirmed
 HTTP method                                GET, companion-app-confirmed
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=poweroff
 XML request body                           none
-project runtime support                    enabled for dedicated MF885 2.5.94 profile
+project runtime support                    exact live LV01/MF885 2.5.94 match only
 ```
 
 ### Factory reset
@@ -288,20 +288,17 @@ Conceptually:
   method: GET
   file: poweroff
   body: none
-
-2.5.96 retained mapping:
-  method: POST
-  file: reset | poweroff
-  body: firmware semantic XML tree
 ```
 
 The helper also fixes an independent bug: destructive calls no longer require a normal `verify` callback before submission.
 
+The runtime profile is selected only from a fresh live `status1`: model must be exactly `LV01` or `MF885`, firmware must be exactly `2.5.94_release_MF855_NZ_CP_2.129.003`, and a reported hardware revision must be Ver.D. A missing revision is accepted only with the firmware's `LV01` product label. Missing/mismatched identity otherwise disables the controls. There is no configuration override, cached fallback, MF96 activation, shortened-version match, or `2.5.96` power profile.
+
 ### Retry semantics
 
-The GET path uses the project's authenticated read transport. That transport does **not** automatically retry on a network/connection failure. It can reacquire authentication and retry once on `401` / XML `unauthorized`. `reset` and `poweroff` are not in the observed pre-session allowlist, so an authentication rejection occurs before the ordinary authenticated Duster operation is accepted; this auth-only replay is distinct from blindly replaying a command after a connection drop.
+Immediately before submission, the backend completes a fresh authenticated `status1` read and re-evaluates the exact profile. The subsequent destructive GET is configured for one HTTP attempt only: no retry after connection failure, HTTP `401`, or XML `unauthorized`. A rejected/stale session therefore fails the command instead of risking a second side effect.
 
-The operational rule remains: after an ambiguous transport drop, do not issue the power command again automatically.
+After an ambiguous transport drop, the result is `unknown`; do not issue the power command again automatically.
 
 ---
 
@@ -309,7 +306,7 @@ The operational rule remains: after an ambiguous transport drop, do not issue th
 
 The request-shape and runtime-expression gaps are closed. Remaining checks are:
 
-1. live one-shot execution on the exact MF885 2.5.94 device;
+1. first run the fixed GET-only preflight, then perform a separately approved live one-shot reboot on the exact MF885 2.5.94 device;
 2. optional stock-WebUI packet capture;
 3. exact native `reset`/`poweroff` descriptor/handler decode;
 4. `trueshutdown` research only if needed.

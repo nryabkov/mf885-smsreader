@@ -117,7 +117,7 @@ function authHeader(method, nonce, qop, nc, ha1) {
 
 - The router is normally reached over plain HTTP on the local network. Digest protects the password from being sent literally, but it does **not** encrypt traffic.
 - A `401` can mean an expired/invalid nonce or a failed session. Re-authenticate rather than blindly replaying state-changing POSTs.
-- For destructive commands, avoid automatic retry after a network error: restart/shutdown can drop the connection before the response arrives.
+- For destructive commands, disable automatic retry entirely—including after `401` or XML `unauthorized`. The project refreshes identity/session state with `status1` before the one-shot request; restart/shutdown can then drop the connection before a response arrives.
 - The project treats the exact request path `/cgi/xml_action.cgi` as part of the Digest contract. Changing the URI used in HA2 breaks authentication.
 
 **Confidence:** live-tested / project-client  

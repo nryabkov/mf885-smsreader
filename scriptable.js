@@ -10,10 +10,15 @@ let deviceAccessModule = null;
 let telnetControlModule = null;
 let cellularControlModule = null;
 let apiContractModule = null;
+let powerCompatibilityModule = null;
+let readOnlyPreflightModule = null;
 let engineerParameterModule = null;
 let cellularDiagnosticsModule = null;
+let ACTIVE_POWER_PROFILE = { id: "unavailable", supported: false, commands: {}, reason: "Live device identity has not been read." };
 if (typeof require === "function") {
   cellularDiagnosticsModule = require("./modules/cellular-diagnostics.js");
+  powerCompatibilityModule = require("./modules/power-compatibility.js");
+  readOnlyPreflightModule = require("./modules/read-only-preflight.js");
 }
 
 const XML_REQUEST_PATH = "/xml_action.cgi";
@@ -61,13 +66,22 @@ async function run(options = {}) {
   telnetControlModule = importModule(`${options.moduleDirectory}/modules/telnet-control.js`);
   cellularControlModule = importModule(`${options.moduleDirectory}/modules/cellular-control.js`);
   apiContractModule = importModule(`${options.moduleDirectory}/modules/api-contract.js`);
+  powerCompatibilityModule = importModule(`${options.moduleDirectory}/modules/power-compatibility.js`);
+  readOnlyPreflightModule = importModule(`${options.moduleDirectory}/modules/read-only-preflight.js`);
   engineerParameterModule = importModule(`${options.moduleDirectory}/modules/engineer-parameter.js`);
   cellularDiagnosticsModule = importModule(`${options.moduleDirectory}/modules/cellular-diagnostics.js`);
+  ACTIVE_POWER_PROFILE = powerProfileForIdentity({});
   ACTIVE_XML_REQUEST_PATH = options.xmlRequestPath || XML_REQUEST_PATH;
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+
+function powerProfileForIdentity(identity) {
+  return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
+    ? powerCompatibilityModule.resolve(identity || {})
+    : { id: "unavailable", supported: false, commands: {}, reason: "Power compatibility module is unavailable." };
+}
 
 function configureDebug(options = {}) {
   DEBUG = options.debug !== false;
@@ -231,10 +245,15 @@ function validateDashboardHtml(html) {
 }
 
 async function loadPollingSnapshot(auth, currentSms) {
-  const model={sms:currentSms||emptySms(),traffic:{},battery:{},network:{},cellularDiagnostics:{},errors:{},loadedAt:Date.now()};
+  const model={sms:currentSms||emptySms(),traffic:{},battery:{},network:{},cellularDiagnostics:{},errors:{},loadedAt:Date.now(),pollSeconds:POLL_SECONDS,powerControls:powerCompatibilityModule&&powerCompatibilityModule.publicState?powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE):{available:false,reason:"Power compatibility module is unavailable.",actions:{}}};
   let status = null;
-  try { status=await getStatus(auth); model.traffic=parseTraffic(status); model.battery=parseBattery(status); model.network=parseNetwork(status); }
-  catch(error){ model.errors.status=cleanError(error); }
+  try {
+    status=await getStatus(auth);
+    model.traffic=parseTraffic(status); model.battery=parseBattery(status); model.network=parseNetwork(status);
+    ACTIVE_POWER_PROFILE=powerProfileForIdentity({model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status)});
+    model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE);
+  }
+  catch(error){ ACTIVE_POWER_PROFILE=powerProfileForIdentity({}); model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE); model.errors.status=cleanError(error); }
   model.cellularDiagnostics = await loadCellularDiagnostics(auth, status);
   if (status && model.cellularDiagnostics.values) model.network=parseNetwork(model.cellularDiagnostics);
   try { const edges=await inspectSmsEdges(auth); if(!unchangedSms(currentSms,edges)) model.sms=await loadAllSms(auth); }
@@ -274,15 +293,19 @@ function webPollPayload(model) {
     trafficDown: formatBytes(model.traffic && model.traffic.download),
     trafficUp: formatBytes(model.traffic && model.traffic.upload),
     connectionTime: formatDuration(model.traffic && model.traffic.sessionSeconds),
+    pollSeconds: Number(model.pollSeconds) || POLL_SECONDS,
+    powerControls: model.powerControls || (powerCompatibilityModule && powerCompatibilityModule.publicState ? powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE) : { available:false, reason:"Power compatibility module is unavailable.", actions:{} }),
     cellularDiagnostics: model.cellularDiagnostics || {},
     errors: model.errors || {}
   };
 }
 
 async function loadModel(auth) {
+  ACTIVE_POWER_PROFILE = powerProfileForIdentity({});
   const model = {
     sms: emptySms(), traffic: {}, battery: {}, network: {}, cellularDiagnostics: {}, ussd: {}, deviceAccess: {}, cellularControl: {},
-    errors: {}, notice: "", tab: "sms", loadedAt: Date.now(), softwareVersion: SOFTWARE_VERSION
+    errors: {}, notice: "", tab: "sms", loadedAt: Date.now(), softwareVersion: SOFTWARE_VERSION, pollSeconds: POLL_SECONDS,
+    powerControls: powerCompatibilityModule && powerCompatibilityModule.publicState ? powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE) : { available:false, reason:ACTIVE_POWER_PROFILE.reason, actions:{} }
   };
   let status = null;
   const initial = await Promise.allSettled([getStatus(auth), getSmsPage(auth, 1)]);
@@ -296,6 +319,8 @@ async function loadModel(auth) {
     model.actualFirmwareVersion=firmwareUserVersion(actualFirmware);
     model.actualModel=actualModel;
     model.actualRevision=hardwareRevision(status);
+    ACTIVE_POWER_PROFILE=powerProfileForIdentity({model:actualModel,hardware:model.actualRevision,firmware:actualFirmware});
+    model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE);
     model.traffic = sectionWithError(parseTraffic(status), "trafficError", "status1 has no WanStatistics data");
     model.battery = sectionWithError(parseBattery(status), "batteryError", "status1 has no batteryinfo data");
     model.network = sectionWithError(parseNetwork(status), "networkError", "status1 has no cellular network data");
@@ -406,17 +431,13 @@ async function resetTrafficFlow(auth) {
 
 async function powerFlow(auth, kind) {
   if (String(QUERY.confirm || "") !== "1") return dashboardFlow(auth, warningNotice(kind === "reboot" ? "Confirm router reboot." : "Confirm router shutdown."), "router");
-  const operation = kind === "reboot" ? "reset" : kind === "trueShutdown" ? "trueshutdown" : "poweroff";
-  return dashboardFlow(auth, warningNotice("This destructive operation is unavailable because no universal command contract is confirmed."), "router");
-  /* istanbul ignore next */
-  const spec = null;
-  const xml = `<RGW><${spec.tree}></${spec.tree}></RGW>`;
   try {
-    const result = await writeThenVerify(auth, { model:spec.file, xml, destructive:true });
+    if (kind !== "reboot" && kind !== "powerOff") throw new Error("Unsupported power action.");
+    const result = await executePowerCommand(auth, kind);
     const text=result.outcome==="submitted"?"Router command was submitted; the router response was received.":"Command was sent; the connection was lost before confirmation was received.";
-    return dashboardFlow(auth, warningNotice(text, powerDiagnostics(result.method,operation,spec.file,result.error)), "router");
+    return dashboardFlow(auth, warningNotice(text, result.diagnostics), "router");
   } catch(error) {
-    return dashboardFlow(auth, errorNotice("Router command failed.", powerDiagnostics(null,operation,spec.file,error)), "router");
+    return dashboardFlow(auth, errorNotice("Router command failed.", error.diagnostics || cleanError(error)), "router");
   }
 }
 
@@ -425,7 +446,7 @@ function statisticsResetMatches(before, after) { return !!before && !!after && b
 async function writeThenVerify(auth, operation) {
   const helper = apiContractModule && apiContractModule.writeThenVerify;
   if (!helper) throw new Error("Write verification helper is unavailable");
-  return helper({ ...operation, post:(model,xml,opts)=>xmlRequest(auth,"POST",model,xml,opts.retry401 !== false), get:model=>xmlRequest(auth,"GET",model), pollAvailability:async()=>{ for(let i=0;i<3;i++){ await sleep(1000); try { await getStatus(auth); return true; } catch (_) {} } return false; } });
+  return helper({ ...operation, post:(model,xml,opts)=>xmlRequest(auth,"POST",model,xml,opts.retry401 !== false), get:model=>xmlRequest(auth,"GET",model,null,operation.destructive !== true), pollAvailability:async()=>{ for(let i=0;i<3;i++){ await sleep(1000); try { await getStatus(auth); return true; } catch (_) {} } return false; } });
 }
 
 function sanitizeDiagnostics(value) {
@@ -1033,7 +1054,7 @@ function createInFlightGuard() {
   let active = null;
   return { get active(){return !!active;}, run(task){ if(active)return active; active=Promise.resolve().then(task).finally(()=>{active=null;}); return active; } };
 }
-const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
+const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
 const DANGEROUS_ACTIONS = new Set(["cellularReconnect","cellularMode","deviceAccess","resetTraffic","reboot","powerOff"]);
 function validateWebViewCommand(input) {
   if (!input || typeof input!=="object" || typeof input.id!=="string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(input.id)) throw new Error("Invalid command id");
@@ -1087,7 +1108,7 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     await Promise.all(probes.map(async(probe,i)=>{const kind=kinds[i];let value;try{const found=await probe();value={...found,state:found&&found.supported===true?"available":"unavailable"};}catch(error){value={state:"error",supported:false,detail:cleanError(error)};}results[kind]=value;model[kind]=value;writeCapabilityCache(kind,value);completed++;await applyWebView(web,"zmiApplyCapability",{kind,value,progress:{completed,total:kinds.length}});}));
     return {results,completed,total:kinds.length,failed:kinds.filter(kind=>results[kind].state==="error")};
   };
-  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,
+  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,safePreflight:()=>runReadOnlyPreflight(auth),
     copySms:async p=>{pasteboard.copyString(p.text);return {copied:true};},
     shareSms:async p=>{
       if(shareSheet&&typeof shareSheet.present==="function"){
@@ -1108,7 +1129,36 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
   return createWebViewDispatcher(handlers,response=>applyWebView(web,"zmiApplyActionResult",response));
 }
 function powerDiagnostics(method,operation,file,error){const descriptor=apiContractModule&&apiContractModule.normalizeModelDescriptor?apiContractModule.normalizeModelDescriptor(file):(typeof file==="string"?{name:file,method:"POST"}:file||{});return sanitizeDiagnostics(`method=${method||descriptor.method||"unknown"}; model=${operation}; endpoint=${ACTIVE_XML_REQUEST_PATH}; error=${error?cleanError(error):"none"}`);}
-async function executePowerCommand(){ throw new Error("Power commands are unavailable because no universal command contract is confirmed"); }
+async function executePowerCommand(auth,kind,options={}) {
+  const compatibility=options.compatibility||powerCompatibilityModule;
+  if(!compatibility||typeof compatibility.command!=="function")throw new Error("Power compatibility module is unavailable");
+  let profile=options.profile;
+  if(!profile){
+    const readStatus=options.getStatus||getStatus;
+    const status=await readStatus(auth);
+    profile=powerProfileForIdentity({model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status)});
+    ACTIVE_POWER_PROFILE=profile;
+  }
+  const spec=compatibility.command(profile,kind);
+  const submit=options.writeThenVerify||((operation)=>writeThenVerify(auth,operation));
+  try {
+    const result=await submit({model:spec.file,xml:`<RGW><${spec.tree}></${spec.tree}></RGW>`,destructive:true});
+    if(result.error&&!result.connectionLost)throw result.error;
+    if(result.outcome!=="submitted"&&result.outcome!=="unknown")throw new Error(`Unexpected destructive command outcome: ${result.outcome}`);
+    return {...result,message:result.outcome==="submitted"?"Command submitted; router response received.":"Command sent once; connection lost before confirmation.",diagnostics:powerDiagnostics(result.method,spec.operation,spec.file,result.error)};
+  } catch(error) {
+    error.diagnostics=powerDiagnostics(null,spec.operation,spec.file,error);
+    throw error;
+  }
+}
+
+async function runReadOnlyPreflight(auth,options={}) {
+  const module=options.module||readOnlyPreflightModule;
+  if(!module||typeof module.collect!=="function")throw new Error("Read-only preflight module is unavailable");
+  const get=options.get||((endpoint)=>xmlRequest(auth,"GET",endpoint,null,true,10));
+  const report=await module.collect({get},{now:options.now||Date.now()});
+  return {report,text:module.format(report)};
+}
 
 // WebView rendering
 function buildHtml(model) {
@@ -1169,9 +1219,11 @@ function buildHtml(model) {
   const cellularReconnect = controlsDisabled ? "" : `<button class="danger buttonlike" type="button" data-cellular-action="reconnect">Reconnect cellular network</button>`;
   const resetTrafficConfirm = "";
   const powerConfirmCard = `<div class="warning" data-power-confirm hidden></div>`;
-  const powerAvailable = false;
-  const powerDisabled = ` disabled aria-disabled="true" title="Power commands are unavailable because no universal command contract is confirmed"`;
-  const powerUnavailable = `<p class="warning" data-power-unavailable>Power commands are unavailable because no universal command contract is confirmed.</p>`;
+  const powerControls = model.powerControls || { available:false, reason:"Power commands are disabled until the exact live device profile is confirmed.", actions:{} };
+  const powerAvailable = powerControls.available === true && powerControls.actions && powerControls.actions.reboot && powerControls.actions.powerOff;
+  const powerDisabled = powerAvailable ? "" : ` disabled aria-disabled="true" title="${escapeHtml(powerControls.reason)}"`;
+  const powerUnavailable = powerAvailable ? "" : `<p class="warning" data-power-unavailable>${escapeHtml(powerControls.reason)}</p>`;
+  const resetTrafficDisabled = ` disabled aria-disabled="true" title="WAN traffic reset has no confirmed write contract"`;
   const connectionTime = formatDuration(traffic.sessionSeconds);
   const activeTab = model.tab === "router" ? "router" : "sms";
   const deviceModel = String(model.actualModel || "").trim() || "unknown";
@@ -1203,7 +1255,7 @@ function buildHtml(model) {
         <li data-device-access-section><h3><span data-capability-name>${CAPABILITY_NAMES.deviceAccess}</span>: <span data-capability-status>${stateLabel(model.deviceAccess)}</span></h3><p>${escapeHtml(model.errors.deviceAccess || model.deviceAccess.detail || "")}</p><div class="inline-toolbar" data-capability-actions>${deviceActions}</div>${deviceConfirm}</li>
       </ul>
     </article>
-    <article class="card" data-power-control><small>System</small><h2>System commands</h2><button class="danger buttonlike" type="button" data-power-action="resetTraffic">Reset traffic</button> <button class="buttonlike" type="button" data-power-action="reboot"${powerDisabled}>Restart</button> <button class="danger buttonlike" type="button" data-power-action="powerOff"${powerDisabled}>Power off</button>${powerUnavailable}${powerConfirmCard}</article></section></main>
+    <article class="card" data-power-control><small>System</small><h2>System commands</h2><button class="danger buttonlike" type="button" data-power-action="resetTraffic"${resetTrafficDisabled}>Reset traffic</button> <button class="buttonlike" type="button" data-power-action="reboot"${powerDisabled}>Restart</button> <button class="danger buttonlike" type="button" data-power-action="powerOff"${powerDisabled}>Power off</button>${powerUnavailable}${powerConfirmCard}</article></section></main>
   <script>${clientScript(model)}</script></body></html>`;
 }
 
