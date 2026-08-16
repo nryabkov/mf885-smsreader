@@ -1,63 +1,258 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const stage0 = require('../modules/firmware-stage0.js');
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const stage0 = require("../modules/firmware-stage0.js");
 
-const device = {
-  model: 'MF885',
-  hardware: 'Ver.D',
-  firmware: stage0.REQUIRED_FIRMWARE
-};
-const power = { batteryPercent: 80, chargerConnected: true };
+const NOW = 1_000_000;
 
-function imageMeta(image) {
-  return { size: image.size, sha256: image.sha256 };
+function imageEvidence(image, overrides = {}) {
+  return {
+    size: image.size,
+    sha256: image.sha256,
+    byteLength: image.size,
+    computedSha256: image.sha256,
+    verification: "computed-from-bytes",
+    verifiedAt: NOW,
+    ...overrides
+  };
 }
 
-test('allows only exact golden and WEBUI canary SHA-256 values', () => {
-  assert.equal(stage0.validateImage(imageMeta(stage0.GOLDEN_IMAGE)).ok, true);
-  assert.equal(stage0.validateImage(imageMeta(stage0.WEBUI_CANARY_R3)).ok, true);
-  assert.equal(stage0.validateImage({ size: 8323644, sha256: '0'.repeat(64) }).ok, false);
+function deviceEvidence(overrides = {}) {
+  return {
+    model: "MF885",
+    hardware: "Ver.D",
+    firmware: stage0.REQUIRED_FIRMWARE,
+    source: "status1-live",
+    observedAt: NOW,
+    ...overrides
+  };
+}
+
+function powerEvidence(overrides = {}) {
+  return {
+    batteryPercent: 80,
+    chargerConnected: true,
+    source: "status1-live",
+    observedAt: NOW,
+    ...overrides
+  };
+}
+
+function transportEvidence(overrides = {}) {
+  return {
+    contractId: "unverified-capture",
+    firmware: stage0.REQUIRED_FIRMWARE,
+    restoreMethod: "RestoreFw",
+    httpMethod: "POST",
+    requestPath: "/xml_action.cgi",
+    digestUri: "/cgi/xml_action.cgi",
+    multipartField: "firmware",
+    statusModel: "GetRestoreStatus",
+    captureSha256: "a".repeat(64),
+    verifiedAt: NOW,
+    ...overrides
+  };
+}
+
+function transactionFixture(overrides = {}) {
+  return {
+    schema: stage0.JOURNAL_SCHEMA,
+    transactionId: "stage0-test",
+    revision: 0,
+    startedAt: 1,
+    updatedAt: 1,
+    state: stage0.TRANSACTION_STATES.PRECHECK_OK,
+    imageId: stage0.GOLDEN_IMAGE.id,
+    imageSha256: stage0.GOLDEN_IMAGE.sha256,
+    preflightFingerprint: "fixture",
+    destructivePostCount: 0,
+    events: [{ at: 1, event: "PRECHECK_OK" }],
+    ...overrides
+  };
+}
+
+test("allows only exact golden and WEBUI canary SHA-256 values", () => {
+  assert.equal(stage0.validateImage(imageEvidence(stage0.GOLDEN_IMAGE)).ok, true);
+  assert.equal(stage0.validateImage(imageEvidence(stage0.WEBUI_CANARY_R3)).ok, true);
+  assert.equal(stage0.validateImage({ size: 8323644, sha256: "0".repeat(64) }).ok, false);
   assert.equal(stage0.validateImage({ size: 8323643, sha256: stage0.GOLDEN_IMAGE.sha256 }).ok, false);
 });
 
-test('requires exact MF885 Ver.D and exact 2.5.94 base firmware', () => {
-  assert.equal(stage0.validateDevice(device).ok, true);
-  assert.equal(stage0.validateDevice({ ...device, model: 'MF855' }).ok, false);
-  assert.equal(stage0.validateDevice({ ...device, hardware: 'Ver.C' }).ok, false);
-  assert.equal(stage0.validateDevice({ ...device, firmware: '2.5.96' }).ok, false);
+test("Stage 0 computes SHA-256 from byte arrays and Scriptable Data", () => {
+  assert.equal(stage0.sha256Hex([]), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  assert.equal(stage0.sha256Hex([97, 98, 99]), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  assert.equal(stage0.sha256Hex({ getBytes: () => [97, 98, 99] }), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  const evidence = stage0.createImageEvidence([97, 98, 99], NOW);
+  assert.equal(evidence.computedSha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  assert.equal(evidence.byteLength, 3);
 });
 
-test('requires external power and at least 50 percent battery', () => {
-  assert.equal(stage0.validatePower(power).ok, true);
-  assert.equal(stage0.validatePower({ batteryPercent: 49, chargerConnected: true }).ok, false);
-  assert.equal(stage0.validatePower({ batteryPercent: 80, chargerConnected: false }).ok, false);
+test("image metadata that bypasses the Stage 0 byte hasher is rejected", () => {
+  const forged = imageEvidence(stage0.GOLDEN_IMAGE);
+  const result = stage0.validateImageEvidence(forged, NOW);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /not produced by the Stage 0 byte hasher/i);
+  assert.equal(stage0.validateImageEvidence(imageEvidence(stage0.GOLDEN_IMAGE, { verification: "metadata-only" }), NOW).ok, false);
+  assert.equal(stage0.validateImageEvidence(imageEvidence(stage0.GOLDEN_IMAGE, { computedSha256: "b".repeat(64) }), NOW).ok, false);
+  assert.equal(stage0.validateImageEvidence(imageEvidence(stage0.GOLDEN_IMAGE, { verifiedAt: NOW - stage0.MAX_IMAGE_EVIDENCE_AGE_MS - 1 }), NOW).ok, false);
 });
 
-test('destructive gate stays locked until RestoreFw transport is live-verified', () => {
-  const locked = stage0.preflight({ image: imageMeta(stage0.GOLDEN_IMAGE), device, power, restoreTransportVerified: false });
-  assert.equal(locked.destructiveAllowed, false);
-  assert.match(locked.errors.join(' '), /transport is not live-verified/i);
-
-  const unlocked = stage0.preflight({ image: imageMeta(stage0.GOLDEN_IMAGE), device, power, restoreTransportVerified: true });
-  assert.equal(unlocked.destructiveAllowed, true);
+test("requires fresh live MF885 Ver.D identity on the exact 2.5.94 build", () => {
+  assert.equal(stage0.validateDevice(deviceEvidence(), NOW).ok, true);
+  assert.equal(stage0.validateDevice(deviceEvidence({ model: "MF855" }), NOW).ok, false);
+  assert.equal(stage0.validateDevice(deviceEvidence({ hardware: "Ver.C" }), NOW).ok, false);
+  assert.equal(stage0.validateDevice(deviceEvidence({ firmware: "2.5.96" }), NOW).ok, false);
+  assert.equal(stage0.validateDevice(deviceEvidence({ source: "cached" }), NOW).ok, false);
+  assert.equal(stage0.validateDevice(deviceEvidence({ observedAt: NOW - stage0.MAX_LIVE_EVIDENCE_AGE_MS - 1 }), NOW).ok, false);
 });
 
-test('restore status parser reads status, progress and fail cause', () => {
-  const parsed = stage0.parseRestoreStatus('<RGW><upgrade_firmware><restore_status>2</restore_status><restore_progress>47</restore_progress><restore_fail_cause>0</restore_fail_cause></upgrade_firmware></RGW>');
-  assert.deepEqual(parsed, { status: '2', progress: '47', failCause: '0' });
+test("requires fresh external-power evidence and at least 50 percent battery", () => {
+  assert.equal(stage0.validatePower(powerEvidence(), NOW).ok, true);
+  assert.equal(stage0.validatePower(powerEvidence({ batteryPercent: 49 }), NOW).ok, false);
+  assert.equal(stage0.validatePower(powerEvidence({ chargerConnected: false }), NOW).ok, false);
+  assert.equal(stage0.validatePower(powerEvidence({ observedAt: NOW - stage0.MAX_LIVE_EVIDENCE_AGE_MS - 1 }), NOW).ok, false);
 });
 
-test('transaction state machine permits exactly one destructive POST', () => {
-  const report = stage0.preflight({ image: imageMeta(stage0.WEBUI_CANARY_R3), device, power, restoreTransportVerified: true });
-  let tx = stage0.createTransaction(report, 1);
+test("caller booleans and arbitrary transport evidence cannot unlock RestoreFw", () => {
+  const input = {
+    image: imageEvidence(stage0.GOLDEN_IMAGE),
+    device: deviceEvidence(),
+    power: powerEvidence(),
+    restoreTransportVerified: true,
+    restoreTransportEvidence: transportEvidence()
+  };
+  const report = stage0.preflight(input, NOW);
+  assert.equal(report.destructiveAllowed, false);
+  assert.match(report.errors.join(" "), /boolean cannot unlock|ignored/i);
+  assert.match(report.errors.join(" "), /No matching RestoreFw transport contract/i);
+  assert.equal(stage0.VERIFIED_RESTORE_TRANSPORTS.length, 0);
+});
+
+test("a forged preflight report cannot create a transaction", () => {
+  assert.throws(() => stage0.createTransaction({
+    destructiveAllowed: true,
+    image: stage0.GOLDEN_IMAGE,
+    device: deviceEvidence(),
+    restoreTransportEvidence: transportEvidence()
+  }, NOW), /cannot start before all destructive gates pass/i);
+});
+
+test("restore status parser reads status, progress and fail cause", () => {
+  const parsed = stage0.parseRestoreStatus("<RGW><upgrade_firmware><restore_status>2</restore_status><restore_progress>47</restore_progress><restore_fail_cause>0</restore_fail_cause></upgrade_firmware></RGW>");
+  assert.deepEqual(parsed, { status: "2", progress: "47", failCause: "0" });
+});
+
+test("strict state machine consumes the send allowance before network submission", () => {
+  let tx = transactionFixture();
   assert.equal(stage0.canSendRestore(tx), true);
-  tx = stage0.transition(tx, 'POST_SENT', '', 2);
-  assert.equal(stage0.canSendRestore(tx), false);
+  assert.throws(() => stage0.transition(tx, "POST_SENT", "", 2), /Invalid Stage 0 transition/i);
+
+  tx = stage0.transition(tx, "POST_ARMED", "", 2);
+  assert.equal(tx.state, stage0.TRANSACTION_STATES.POST_ARMED);
   assert.equal(tx.destructivePostCount, 1);
-  assert.throws(() => stage0.transition(tx, 'POST_SENT', '', 3), /must never be retried/i);
-  tx = stage0.transition(tx, 'RESTORING', 'progress=47', 4);
-  tx = stage0.transition(tx, 'REBOOT_WAIT', '', 5);
-  tx = stage0.transition(tx, 'BOOT_VERIFIED', '', 6);
+  assert.equal(stage0.canSendRestore(tx), false);
+  assert.throws(() => stage0.transition(tx, "POST_ARMED", "", 3), /Invalid Stage 0 transition/i);
+
+  tx = stage0.transition(tx, "POST_SENT", "", 3);
+  tx = stage0.transition(tx, "RESTORING", "progress=47", 4);
+  tx = stage0.transition(tx, "RESTORING", "progress=80", 5);
+  tx = stage0.transition(tx, "REBOOT_WAIT", "", 6);
+
+  assert.throws(() => stage0.transition(tx, "BOOT_VERIFIED", {}, 7), /not bound|check failed/i);
+  const verification = {
+    transactionId: tx.transactionId,
+    imageSha256: tx.imageSha256,
+    observedAt: 7,
+    device: deviceEvidence({ observedAt: 7 }),
+    checks: {
+      status1Reachable: true,
+      wifiReachable: true,
+      smsApiReachable: true,
+      mobileDataConnected: true
+    }
+  };
+  tx = stage0.transition(tx, "BOOT_VERIFIED", verification, 7);
   assert.equal(tx.state, stage0.TRANSACTION_STATES.BOOT_VERIFIED);
   assert.equal(tx.destructivePostCount, 1);
+  assert.throws(() => stage0.transition(tx, "FAILED", "", 8), /Invalid Stage 0 transition/i);
+});
+
+test("WEBUI canary boot verification requires the canary marker", () => {
+  const tx = transactionFixture({
+    state: stage0.TRANSACTION_STATES.REBOOT_WAIT,
+    imageId: stage0.WEBUI_CANARY_R3.id,
+    imageSha256: stage0.WEBUI_CANARY_R3.sha256,
+    destructivePostCount: 1
+  });
+  const verification = {
+    transactionId: tx.transactionId,
+    imageSha256: tx.imageSha256,
+    observedAt: 2,
+    device: deviceEvidence({ observedAt: 2 }),
+    checks: { status1Reachable: true, wifiReachable: true, smsApiReachable: true, mobileDataConnected: true }
+  };
+  assert.throws(() => stage0.transition(tx, "BOOT_VERIFIED", verification, 2), /canary marker/i);
+  const verified = stage0.transition(tx, "BOOT_VERIFIED", { ...verification, webuiMarker: stage0.WEBUI_CANARY_R3.id }, 2);
+  assert.equal(verified.state, stage0.TRANSACTION_STATES.BOOT_VERIFIED);
+});
+
+test("persistent journal is verified before the one-shot send can begin", async () => {
+  const journal = stage0.createMemoryJournal();
+  const initial = transactionFixture();
+  await stage0.saveJournal(journal, initial);
+  const armed = await stage0.armPersistentRestore(journal, initial, 2);
+  const persisted = await stage0.loadJournal(journal);
+  assert.equal(armed.state, stage0.TRANSACTION_STATES.POST_ARMED);
+  assert.equal(persisted.state, stage0.TRANSACTION_STATES.POST_ARMED);
+  assert.equal(persisted.destructivePostCount, 1);
+  assert.equal(stage0.canSendRestore(persisted), false);
+
+  await assert.rejects(stage0.persistTransition(journal, initial, "POST_ARMED", "", 3), /changed concurrently/i);
+});
+
+test("restart after arming becomes terminal UNKNOWN and can never be cleared automatically", async () => {
+  const journal = stage0.createMemoryJournal(transactionFixture({
+    state: stage0.TRANSACTION_STATES.POST_ARMED,
+    destructivePostCount: 1,
+    revision: 1,
+    updatedAt: 2,
+    events: [{ at: 1, event: "PRECHECK_OK" }, { at: 2, event: "POST_ARMED" }]
+  }));
+  const recovered = await stage0.recoverPersistentTransaction(journal, 3);
+  assert.equal(recovered.state, stage0.TRANSACTION_STATES.UNKNOWN);
+  assert.equal(stage0.canSendRestore(recovered), false);
+  await assert.rejects(stage0.clearCompletedJournal(journal, recovered.transactionId), /UNKNOWN requires manual recovery evidence/i);
+});
+
+test("restart before arming invalidates preflight without consuming a send", async () => {
+  const journal = stage0.createMemoryJournal(transactionFixture());
+  const recovered = await stage0.recoverPersistentTransaction(journal, 2);
+  assert.equal(recovered.state, stage0.TRANSACTION_STATES.FAILED);
+  assert.equal(recovered.destructivePostCount, 0);
+  assert.equal(await stage0.clearCompletedJournal(journal, recovered.transactionId), true);
+  assert.equal(await stage0.loadJournal(journal), null);
+});
+
+test("corrupt or unverifiable persistent storage fails closed", async () => {
+  const corrupt = { async load() { return "{"; }, async save() {}, async clear() {} };
+  await assert.rejects(stage0.loadJournal(corrupt), /journal is corrupt/i);
+
+  const dropsWrites = { async load() { return null; }, async save() {}, async clear() {} };
+  await assert.rejects(stage0.saveJournal(dropsWrites, transactionFixture()), /write could not be verified/i);
+});
+
+test("Keychain journal persists and reads a transaction", async () => {
+  const values = new Map();
+  const keychain = {
+    contains: key => values.has(key),
+    get: key => values.get(key),
+    set: (key, value) => values.set(key, value),
+    remove: key => values.delete(key)
+  };
+  const journal = stage0.createKeychainJournal("test-key", keychain);
+  const transaction = transactionFixture();
+  await stage0.saveJournal(journal, transaction);
+  assert.deepEqual(await stage0.loadJournal(journal), transaction);
+  await stage0.clearCompletedJournal(journal, transaction.transactionId).catch(error => {
+    assert.match(error.message, /PRECHECK_OK cannot be cleared/i);
+  });
 });
