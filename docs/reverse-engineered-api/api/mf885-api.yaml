@@ -74,8 +74,12 @@ authentication:
     query_digest_uri: /cgi/protected.cgi
     header_digest_uri: /cgi/xml_action.cgi
     independent_query_and_header_proofs: true
-    request_headers: [Authorization, Expires, Cache-Control, Pragma]
-    excludes_webui_headers: [Cookie, X-Requested-With, Content-Type]
+    first_process_nonce_counts: { query: 2, login_header: 3 }
+    persist_login_authorization_for_gets: true
+    request_headers: [Authorization, Expires, Cache-Control, Pragma, optional_scoped_login_cookie]
+    excludes_webui_headers: [synthetic_platform_cookie, X-Requested-With, Content-Type]
+    redirects: reject
+    reject_response_classes: [redirect, html, unexpected_text]
     pre_command_probe: status1
     retry: false
     auth_failure_states: [UNAUTHORIZED, TIMEOUT, KICKOFF]

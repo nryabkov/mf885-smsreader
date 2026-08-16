@@ -50,3 +50,13 @@ test("client uses configured poll interval and renders a copyable redacted prefl
   assert.match(html, /command\('safePreflight',\{\}\)/);
   assert.match(html, /Writes attempted: 0\. Flash allowed: false\./);
 });
+
+test("power result keeps redacted diagnostics visible and copyable", () => {
+  const html = ui.buildHtml(model({ available: true, reason: "Exact profile matched", actions: { reboot:true, powerOff:true } }));
+  assert.match(html, /error\.diagnostics=String\(r\.diagnostics\|\|""\)/);
+  assert.match(html, /function powerReport\(/);
+  assert.match(html, /id="powerReport"/);
+  assert.match(html, /id="copyPowerReport"/);
+  assert.match(html, /result&&result\.diagnostics/);
+  assert.match(html, /e&&e\.diagnostics/);
+});

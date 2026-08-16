@@ -77,7 +77,7 @@ login query carries client=APP
 XML Digest Authorization ends with client=APP
 ```
 
-The APP login uses two independent proofs: the query hashes `/cgi/protected.cgi` with one nonce count/`cnonce`, while the Authorization header hashes `/cgi/xml_action.cgi` with the next nonce count and a different `cnonce`. Power GETs use only Authorization plus the no-cache headers; the project does not add its WebUI `Cookie`, `X-Requested-With`, or GET `Content-Type` headers to this scoped transport.
+The APP login uses two independent proofs: the query hashes `/cgi/protected.cgi` with one nonce count/`cnonce`, while the Authorization header hashes `/cgi/xml_action.cgi` with the next nonce count and a different `cnonce`. The first process pair is `2/3`. The shared client then repeats that exact login Authorization header for power GETs instead of generating new proofs. It also retains only cookies actually issued by APP login. The project does not synthesize its WebUI `locale/platform` cookie and does not add `X-Requested-With` or GET `Content-Type` to this scoped transport.
 
 ---
 
@@ -247,9 +247,10 @@ APK UI -> API call chain recovered         confirmed
 HTTP method                                GET, companion-app-confirmed
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=reset
 XML request body                           none
-project runtime support                    fresh client=APP session + exact live LV01/MF885 2.5.94 match
-old project flow live observation          response returned; user observed no reboot effect
-corrected APP-session live effect           pending next one-shot test
+project runtime support                    persisted-header client=APP session + exact live LV01/MF885 2.5.94 match
+old WebUI-style flow live observation      response returned; user observed no reboot effect
+regenerating APP-header flow observation   response returned; user observed no reboot effect
+persisted-header APP live effect           pending next one-shot test
 ```
 
 ### Power off
@@ -261,7 +262,7 @@ APK UI -> API call chain recovered         confirmed
 HTTP method                                GET, companion-app-confirmed
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=poweroff
 XML request body                           none
-project runtime support                    fresh client=APP session + exact live LV01/MF885 2.5.94 match
+project runtime support                    persisted-header client=APP session + exact live LV01/MF885 2.5.94 match
 ```
 
 ### Factory reset
@@ -301,9 +302,9 @@ The runtime profile is selected only from a fresh live `status1`: model must be 
 
 ### Retry semantics
 
-Immediately before submission, the backend obtains a fresh challenge, completes the recovered `client=APP` login, performs a harmless APP-authenticated `status1` read, and re-evaluates the exact profile. The subsequent destructive GET is configured for one HTTP attempt only: no retry after connection failure, HTTP `401`, or XML `login_status` values `UNAUTHORIZED`, `TIMEOUT`, or `KICKOFF`. A rejected/stale session therefore fails the command instead of risking a second side effect.
+Immediately before submission, the backend obtains a fresh challenge, completes the recovered `client=APP` login, persists its exact Authorization header plus any in-scope login cookie, performs a harmless APP-authenticated `status1` read with that same header, and re-evaluates the exact profile. The subsequent destructive GET repeats the same header and is configured for one HTTP attempt only. Redirects are disabled; redirects, HTML, unexpected text, HTTP `401`, and XML `login_status` values `UNAUTHORIZED`, `TIMEOUT`, or `KICKOFF` fail closed. A rejected/stale session therefore fails the command instead of risking a second side effect.
 
-HTTP 2xx produces `request-accepted` with `effectConfirmed: false`; even a returned schema tree is not proof of a reboot or shutdown. An ambiguous transport drop produces `delivery-unknown`. Neither result causes an automatic replay.
+HTTP 2xx with an expected empty/XML response produces `request-accepted` with `effectConfirmed: false`; even a returned schema tree is not proof of a reboot or shutdown. An ambiguous transport drop produces `delivery-unknown`. Neither result causes an automatic replay. Every outcome provides a copyable redacted transport report without Digest or cookie values.
 
 ---
 
@@ -311,7 +312,7 @@ HTTP 2xx produces `request-accepted` with `effectConfirmed: false`; even a retur
 
 The request-shape and runtime-expression gaps are closed. Remaining checks are:
 
-1. update the loader/application once with normal Internet access, return to MF885 Wi-Fi, run the fixed GET-only preflight, then perform one corrected APP-session reboot on the exact MF885 2.5.94 device;
+1. update the loader/application once with normal Internet access, return to MF885 Wi-Fi, then perform one persisted-header APP-session reboot on the exact MF885 2.5.94 device and retain the redacted report;
 2. optional stock-WebUI packet capture;
 3. exact native `reset`/`poweroff` descriptor/handler decode;
 4. `trueshutdown` research only if needed.

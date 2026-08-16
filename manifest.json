@@ -1,5 +1,5 @@
 {
-  "version": "3.1.6-ui2",
+  "version": "3.1.7-ui2",
   "loaderProtocol": 2,
   "minimumLoaderProtocol": 2,
   "loader": "loader.js",

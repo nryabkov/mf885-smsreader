@@ -9,7 +9,7 @@ writes use a single POST followed by a control GET. A successful HTTP response a
 is not treated as proof that a setting changed.
 
 
-Unknown enum values are displayed with their raw vendor value. Firmware-dependent writes remain disabled unless a concrete contract is confirmed for the exact live device identity; the application never probes write values. Power controls create a fresh APK-compatible `client=APP` Digest session, perform a harmless `status1` read, require model `LV01`/`MF885` and the full firmware string `2.5.94_release_MF855_NZ_CP_2.129.003`, and then make exactly one destructive GET with no automatic retry. An HTTP response means only that the request was accepted; it is not reported as proof that reboot or shutdown occurred. There is no manual override or family-wide fallback.
+Unknown enum values are displayed with their raw vendor value. Firmware-dependent writes remain disabled unless a concrete contract is confirmed for the exact live device identity; the application never probes write values. Power controls create a fresh APK-compatible `client=APP` Digest session, repeat the login Authorization header and any scoped login-session cookie exactly as the recovered client does, perform a harmless `status1` read, require model `LV01`/`MF885` and the full firmware string `2.5.94_release_MF855_NZ_CP_2.129.003`, and then make exactly one destructive GET with no automatic retry. APP redirects, HTML login pages, and unexpected text responses fail closed. An HTTP response means only that the request was accepted; it is not reported as proof that reboot or shutdown occurred. There is no manual override or family-wide fallback.
 
 WAN byte totals are parsed as unsigned decimal `BigInt` values. Download is
 `rx_byte_all`, upload is `tx_byte_all`, and total is their sum; LAN/WLAN, device, and
@@ -121,7 +121,7 @@ The WebView contains a reusable action status panel for copy, system sharing, tr
 
 Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. If the screen closes during refresh, open the Scriptable script again.
 
-Dangerous router actions use an inline WebView confirmation before submission. The first tap on **Restart**, **Power off**, **Reconnect cellular network**, or a cellular mode button only expands a local warning; the backend also requires the command-channel confirmation flag. Restart and power-off use a separate fresh `client=APP` session matching the recovered ZMI companion client. The destructive request is never replayed; a response is labelled **accepted, effect unconfirmed**, while connection loss is labelled **delivery unknown**. **Reset traffic** is visible but disabled because no verified write contract is available.
+Dangerous router actions use an inline WebView confirmation before submission. The first tap on **Restart**, **Power off**, **Reconnect cellular network**, or a cellular mode button only expands a local warning; the backend also requires the command-channel confirmation flag. Restart and power-off use a separate fresh `client=APP` session matching the recovered ZMI companion client, including its persisted login header and login cookie store. The destructive request is never replayed; a response is labelled **accepted, effect unconfirmed**, while connection loss is labelled **delivery unknown**. **Reset traffic** is visible but disabled because no verified write contract is available.
 
 ### Experimental cellular controls
 
@@ -139,9 +139,9 @@ The preflight code has an explicit denylist for `RestoreFw`, `BackupFwStart`, `R
 
 ### Power endpoint diagnostics
 
-Power-off and restart commands vary across MF855/MF885-family firmware builds. The dashboard enables them only after a live `status1` response exactly matches `LV01`/`MF885` plus `2.5.94_release_MF855_NZ_CP_2.129.003`; a reported hardware revision must be Ver.D, and a missing revision is accepted only for the `LV01` product label. The backend repeats that identity read immediately before submitting exactly one APK-confirmed command-on-read request: `GET file=reset` or `GET file=poweroff`, with no body and no automatic replay—not even after an authentication failure. A connection loss produces an `unknown` outcome and requires human review before any later attempt.
+Power-off and restart commands vary across MF855/MF885-family firmware builds. The dashboard enables them only after a live `status1` response exactly matches `LV01`/`MF885` plus `2.5.94_release_MF855_NZ_CP_2.129.003`; a reported hardware revision must be Ver.D, and a missing revision is accepted only for the `LV01` product label. The backend repeats that identity read immediately before submitting exactly one APK-confirmed command-on-read request: `GET file=reset` or `GET file=poweroff`, with no body and no automatic replay—not even after an authentication failure. A connection loss produces a `delivery-unknown` outcome and requires human review before any later attempt.
 
-If a power command is rejected or the router stops responding, the dashboard shows redacted diagnostics containing only the HTTP method, operation/model name, endpoint path, and sanitized error. Never report passwords, Digest material, identifiers, raw configuration, or SMS data.
+After every accepted, rejected, or connection-lost power attempt, the dashboard opens a copyable redacted JSON report. It contains only HTTP status/size/timing/classification, a command-response fingerprint, boolean session/header/cookie facts, and the one-shot safety counters. It never contains passwords, Digest material, cookie values, identifiers, raw XML/configuration, or SMS data.
 
 ## Run instructions
 
