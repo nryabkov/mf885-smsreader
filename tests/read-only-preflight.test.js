@@ -4,7 +4,7 @@ const preflight = require("../modules/read-only-preflight.js");
 const app = require("../scriptable.js");
 
 const fixtures = {
-  status1: "<RGW><model>LV01</model><version_num>2.5.94_release_MF855_NZ_CP_2.129.003</version_num><Battery_percent>81</Battery_percent><Battery_status>1</Battery_status><Charger_status>4</Charger_status><IMEI>123456789012345</IMEI></RGW>",
+  status1: "<RGW><model>LV01</model><version_num>2.5.94_release_MF855_NZ_CP_2.129.003</version_num><batteryinfo><Battery_percent>81</Battery_percent><Battery_status>1</Battery_status><Battery_level>4</Battery_level><Charger_status>0</Charger_status><Output_current>0</Output_current></batteryinfo><IMEI>123456789012345</IMEI></RGW>",
   wan: "<RGW><wan><lte_apn>private.enterprise.apn</lte_apn><username>secret-user</username><password>secret-password</password><operator>Carrier</operator></wan></RGW>",
   Engineer_parameter: "<RGW><RSRP>-91</RSRP><RSRQ>-9</RSRQ><SINR>12</SINR></RGW>",
   miautosleep: "<RGW><autosleep_mi><autosleep_status>1</autosleep_status><wpsbtneffect>2</wpsbtneffect></autosleep_mi></RGW>",
@@ -37,10 +37,40 @@ test("report extracts sleep/reboot evidence but never returns raw secrets", asyn
   assert.equal(report.sleep.wifiSleepAction, "1");
   assert.equal(report.autoReboot.time, "03:00");
   assert.equal(report.network.apnPresent, true);
+  assert.equal(report.power.inputConnected, true);
+  assert.equal(report.power.state, "charging");
+  assert.equal(report.power.powerStatus, "charging");
+  assert.equal(report.power.chargeHealth, "normal");
+  assert.equal(report.power.interpretation, "zmi-apk-1.2.42");
+  assert.equal(report.power.fieldsPresent.chargerStatus, true);
+  assert.equal(report.power.fieldsPresent.chargerCurrent, false);
+  assert.equal(report.power.outputCurrent, "0");
   const text = preflight.format(report);
   for (const secret of ["123456789012345", "private.enterprise.apn", "secret-user", "secret-password"]) {
     assert.doesNotMatch(text, new RegExp(secret));
   }
+});
+
+test("power report distinguishes a missing field from zero and never aliases CDetectStatus to Charger_status", async () => {
+  const status1 = "<RGW><model>LV01</model><version_num>2.5.94_release_MF855_NZ_CP_2.129.003</version_num><batteryinfo><Battery_status>3</Battery_status><CDetectStatus>0</CDetectStatus><Output_current>0</Output_current></batteryinfo></RGW>";
+  const report = await preflight.collect({ get: async endpoint => endpoint === "status1" ? status1 : fixtures[endpoint] });
+  assert.equal(report.power.chargerStatus, "");
+  assert.equal(report.power.cDetectStatus, "0");
+  assert.equal(report.power.fieldsPresent.chargerStatus, false);
+  assert.equal(report.power.fieldsPresent.cDetectStatus, true);
+  assert.equal(report.power.fieldsPresent.outputCurrent, true);
+  assert.equal(report.power.inputConnected, false);
+  assert.equal(report.power.usbOutputActive, false);
+  assert.equal(report.power.state, "normal");
+  assert.equal(report.power.powerStatus, "not-charging");
+});
+
+test("power interpretation fails closed when the exact firmware identity is absent", async () => {
+  const status1 = "<RGW><model>LV01</model><batteryinfo><Battery_status>1</Battery_status><Charger_status>0</Charger_status></batteryinfo></RGW>";
+  const report = await preflight.collect({ get: async endpoint => endpoint === "status1" ? status1 : fixtures[endpoint] });
+  assert.equal(report.identity.exactFirmware, false);
+  assert.equal(report.power.interpretation, "unconfirmed");
+  assert.equal(report.power.inputConnected, null);
 });
 
 test("endpoint summaries never copy response field values", async () => {

@@ -9,7 +9,7 @@ writes use a single POST followed by a control GET. A successful HTTP response a
 is not treated as proof that a setting changed.
 
 
-Unknown enum values are displayed with their raw vendor value. Firmware-dependent writes remain disabled unless a concrete contract is confirmed for the exact live device identity; the application never probes write values. Power controls require a fresh `status1` match for model `LV01`/`MF885` and the full firmware string `2.5.94_release_MF855_NZ_CP_2.129.003`. There is no manual override or family-wide fallback.
+Unknown enum values are displayed with their raw vendor value. Firmware-dependent writes remain disabled unless a concrete contract is confirmed for the exact live device identity; the application never probes write values. Power controls create a fresh APK-compatible `client=APP` Digest session, perform a harmless `status1` read, require model `LV01`/`MF885` and the full firmware string `2.5.94_release_MF855_NZ_CP_2.129.003`, and then make exactly one destructive GET with no automatic retry. An HTTP response means only that the request was accepted; it is not reported as proof that reboot or shutdown occurred. There is no manual override or family-wide fallback.
 
 WAN byte totals are parsed as unsigned decimal `BigInt` values. Download is
 `rx_byte_all`, upload is `tx_byte_all`, and total is their sum; LAN/WLAN, device, and
@@ -62,6 +62,7 @@ The repository keeps the updater, manifest, application, and feature modules sid
 - `modules/ussd.js` contains the firmware-specific USSD probing and request variants.
 - `modules/cellular-control.js` isolates experimental mobile-WAN reconnect and network-mode commands from the dashboard UI.
 - `modules/power-compatibility.js` fail-closes power controls against the exact live model, firmware, and reported hardware revision.
+- `modules/power-status.js` implements the companion-app-confirmed LV01 battery enum (`1` charging, `2` USB feeding, `3` normal battery operation).
 - `modules/read-only-preflight.js` implements the fixed GET-only diagnostic allowlist and redacted report.
 
 1. Copy `loader.js` into a new script in the Scriptable iOS app.
@@ -101,7 +102,7 @@ Synchronization state lives beside the application directory as `mf885-smsreader
 
 An installation containing only `mf885-smsreader/installed-version.txt` has no trustworthy commit identity: for example, version `2.0.0` corresponds to multiple commits. The loader announces migration and performs one complete synchronization. It removes the legacy file only after activation succeeds; failure retains the old application and legacy evidence.
 
-GitHub commit lookup, rate-limit, malformed response, manifest, download, staging, loader self-update, and persistence errors are reported as **`[Sync warning]`** and the last complete local application is launched when one exists. Long synchronization runs also log progress before branch lookup, manifest loading, loader loading, and each application-file download. A fatal installation error occurs only if no usable local entry exists. These messages are separate from **`[Router/startup error]`** failures such as `No authentication challenge`, which usually mean the phone is off the router Wi-Fi, the address is wrong, or router authentication failed.
+GitHub commit lookup, rate-limit, malformed response, manifest, download, staging, loader self-update, and persistence errors are reported as **`[Sync warning]`** and the last complete local application is launched when one exists. Each GitHub request is attempted once with a five-second Scriptable idle timeout; there are no updater retries. A normal artifact may take longer than five seconds while data continues to arrive, but a black-holed route fails fast. A clean first installation still needs a stable Internet connection because it has no local fallback; an already-installed copy keeps launching its last complete snapshot after a failed check. The shorter timeout itself takes effect after the old loader completes one successful online self-update. Long synchronization runs also log progress before branch lookup, manifest loading, loader loading, and each application-file download. A fatal installation error occurs only if no usable local entry exists. These messages are separate from **`[Router/startup error]`** failures such as `No authentication challenge`, which usually mean the phone is off the router Wi-Fi, the address is wrong, or router authentication failed.
 
 Recovery procedures:
 
@@ -120,7 +121,7 @@ The WebView contains a reusable action status panel for copy, system sharing, tr
 
 Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. If the screen closes during refresh, open the Scriptable script again.
 
-Dangerous router actions use an inline WebView confirmation before submission. The first tap on **Restart**, **Power off**, **Reconnect cellular network**, or a cellular mode button only expands a local warning; the backend also requires the command-channel confirmation flag. **Reset traffic** is visible but disabled because no verified write contract is available.
+Dangerous router actions use an inline WebView confirmation before submission. The first tap on **Restart**, **Power off**, **Reconnect cellular network**, or a cellular mode button only expands a local warning; the backend also requires the command-channel confirmation flag. Restart and power-off use a separate fresh `client=APP` session matching the recovered ZMI companion client. The destructive request is never replayed; a response is labelled **accepted, effect unconfirmed**, while connection loss is labelled **delivery unknown**. **Reset traffic** is visible but disabled because no verified write contract is available.
 
 ### Experimental cellular controls
 

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 global.Script = { name: () => 'MF885 Test' };
 const app = require('../scriptable.js');
+const uiAdapter = require('../scriptable-ui.js');
 
 function model(tab='sms') { return {tab,loadedAt:Date.now(),sms:{messages:[{id:'1',phone:'+1',date:'now',content:'hello'}],loading:true},errors:{},network:{},battery:{},traffic:{},cellularDiagnostics:{},ussd:{state:'unchecked',detail:'Not checked'},deviceAccess:{state:'unchecked',detail:'Not checked',capabilities:[]},cellularControl:{state:'unchecked',detail:'Not checked'}}; }
 
@@ -502,7 +503,8 @@ test('dispatcher reports a failed power command and preserves safe diagnostics',
   assert.equal(result.error,'Authorization failed');
   assert.match(result.diagnostics,/method=POST; model=poweroff; endpoint=\/xml_action.cgi/);
   assert.doesNotMatch(result.diagnostics,/secret/);
-  assert.match(app.clientScript(model()),/Sent · unconfirmed/);
+  assert.match(app.clientScript(model()),/Delivery unknown/);
+  assert.match(app.clientScript(model()),/Accepted · effect unconfirmed/);
   assert.match(app.clientScript(model()),/Failed/);
 });
 
@@ -528,6 +530,42 @@ test('battery power parsing keeps charger input and USB output independent',()=>
   }
 });
 
+test('exact LV01 battery enum follows the recovered ZMI companion app',()=>{
+  const identity={model:'LV01',firmware:'2.5.94_release_MF855_NZ_CP_2.129.003'};
+  const cases=[
+    ['<Battery_status>1</Battery_status><Charger_status>0</Charger_status>','charging',true,false,'normal'],
+    ['<Battery_status>1</Battery_status><Charger_status>4</Charger_status>','full',true,false,'full'],
+    ['<Battery_status>1</Battery_status><Charger_status>5</Charger_status>','charging-error',true,false,'abnormal'],
+    ['<Battery_status>2</Battery_status><Charger_status>0</Charger_status>','powering-usb',false,true,'not-charging'],
+    ['<Battery_status>3</Battery_status><Charger_status>0</Charger_status>','not-charging',false,false,'not-charging'],
+    ['<Charger_status>4</Charger_status>','unknown',false,false,'unknown'],
+    ['<Battery_status>3</Battery_status><CDetectStatus>4</CDetectStatus>','not-charging',false,false,'not-charging']
+  ];
+  for(const [body,state,input,output,health] of cases){
+    const battery=app.parseBattery(`<batteryinfo>${body}</batteryinfo>`,identity);
+    assert.equal(battery.profileConfirmed,true);
+    assert.equal(battery.state,state);
+    assert.equal(battery.inputConnected,input);
+    assert.equal(battery.usbOutputActive,output);
+    assert.equal(battery.chargeHealth,health);
+  }
+});
+
+test('LV01 numeric battery enum fails closed end-to-end without the exact firmware',()=>{
+  for(const firmware of ['', '2.5.96']){
+    const identity={model:'LV01',firmware};
+    for(const status of ['1','2','3']){
+      const parsed=app.parseBattery(`<batteryinfo><Battery_status>${status}</Battery_status><Charger_status>0</Charger_status></batteryinfo>`,identity);
+      const normalized=uiAdapter.normalizeUiBattery(parsed,{actualModel:'LV01',actualFirmware:firmware});
+      assert.equal(parsed.profileConfirmed,false);
+      assert.equal(parsed.state,'unknown');
+      assert.equal(parsed.inputConnected,false);
+      assert.equal(parsed.usbOutputActive,false);
+      assert.equal(normalized.powerStatus,'unknown');
+    }
+  }
+});
+
 test('v2 initial HTML and polling updates share complete accessible power status',()=>{
   const ui=require('../modules/ui-v2.js'), fixture=model();
   fixture.battery=app.parseBattery('<batteryinfo><Battery_percent>61</Battery_percent><Charger_status>1</Charger_status><Charger_current>220</Charger_current><Output_current>90</Output_current></batteryinfo>');
@@ -539,6 +577,7 @@ test('v2 initial HTML and polling updates share complete accessible power status
   assert.match(script,/const power=powerState\(p\)/); assert.match(script,/chargingText'\)\.textContent=power\.label/);
   assert.match(script,/batteryTrack'\)\.style\.width/); assert.match(script,/card\.className=`card battery-card \$\{power\.status\}`/);
   assert.match(script,/updatePanel\(p\)/);
+  assert.match(script,/v===null\|\|v===undefined\|\|String\(v\)\.trim\(\)===''\)return '—'/);
   assert.match(script,/id="batteryLed"[^>]*transform="translate\(302 75\)"/);
   assert.deepEqual(ui.powerState({chargerConnected:true,usbHostActive:true,batteryPowerStatus:'charging-and-powering-usb'}),{input:true,output:true,full:false,label:'Charging · Powering USB device',status:'charging-and-powering-usb'});
 });

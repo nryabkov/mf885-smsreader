@@ -18,6 +18,9 @@ const FORBIDDEN_ENDPOINTS = Object.freeze([
   "debugmodeon"
 ]);
 
+let defaultPowerDecoder = null;
+if (typeof require === "function") defaultPowerDecoder = require("./power-status.js");
+
 function cleanError(error) {
   const source = String(error && error.message || error || "");
   const http = source.match(/\bHTTP\s+(\d{3})\b/i);
@@ -39,6 +42,11 @@ function firstText(xml, names) {
 
 function present(xml, names) {
   return names.some(name => new RegExp(`<${name}\\b`, "i").test(String(xml || "")));
+}
+
+function firstSection(xml, name) {
+  const match = String(xml || "").match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, "i"));
+  return match ? match[0] : "";
 }
 
 function endpointSummary(xml) {
@@ -105,9 +113,19 @@ async function collect(api, options = {}) {
   const rawModel = firstText(status, ["model", "model_name", "product_name"]);
   const firmware = firstText(status, ["version_num"]);
   const hardware = firstText(status, ["revision", "hardware_version", "hardware_ver", "hw_version"]);
-  const batteryPercent = firstText(status, ["Battery_percent", "battery_percent"]);
-  const batteryStatus = firstText(status, ["Battery_status", "battery_status"]);
-  const chargerStatus = firstText(status, ["Charger_status", "charger_status", "CDetectStatus"]);
+  const batterySource = firstSection(status, "batteryinfo") || status;
+  const batteryPercent = firstText(batterySource, ["Battery_percent", "battery_percent"]);
+  const batteryStatus = firstText(batterySource, ["Battery_status", "battery_status"]);
+  const batteryLevel = firstText(batterySource, ["Battery_level", "battery_level"]);
+  const chargerStatus = firstText(batterySource, ["Charger_status", "charger_status"]);
+  const chargerCurrent = firstText(batterySource, ["Charger_current", "charger_current"]);
+  const outputCurrent = firstText(batterySource, ["Output_current", "output_current"]);
+  const cDetectStatus = firstText(batterySource, ["CDetectStatus", "c_detect_status"]);
+  const identity = { model: normalizeModel(rawModel), rawModel, hardware, firmware };
+  const decoder = options.powerDecoder || defaultPowerDecoder;
+  const decodedPower = decoder && typeof decoder.decode === "function"
+    ? decoder.decode({ batteryStatus, chargerStatus, batteryLevel, chargerCurrent, outputCurrent, cDetectStatus }, identity)
+    : { confirmed:false, state:"unknown", firmwareState:"unknown" };
   const operatorPresent = present(status + wan, ["network_name", "ISP_name", "operator"]);
   const apnPresent = present(status + wan, ["lte_apn", "configured_apn", "active_apn", "APN"]);
 
@@ -122,7 +140,30 @@ async function collect(api, options = {}) {
       firmware,
       exactFirmware: firmware === "2.5.94_release_MF855_NZ_CP_2.129.003"
     },
-    power: { batteryPercent, batteryStatus, chargerStatus },
+    power: {
+      batteryPercent,
+      batteryStatus,
+      batteryLevel,
+      chargerStatus,
+      chargerCurrent,
+      outputCurrent,
+      cDetectStatus,
+      state: decodedPower.firmwareState || "unknown",
+      powerStatus: decodedPower.state || "unknown",
+      inputConnected: decodedPower.confirmed ? decodedPower.inputConnected : null,
+      usbOutputActive: decodedPower.confirmed ? decodedPower.usbOutputActive : null,
+      chargeHealth: decodedPower.chargeHealth || "unknown",
+      interpretation: decodedPower.confirmed ? "zmi-apk-1.2.42" : "unconfirmed",
+      fieldsPresent: {
+        batteryPercent: present(batterySource, ["Battery_percent", "battery_percent"]),
+        batteryStatus: present(batterySource, ["Battery_status", "battery_status"]),
+        batteryLevel: present(batterySource, ["Battery_level", "battery_level"]),
+        chargerStatus: present(batterySource, ["Charger_status", "charger_status"]),
+        chargerCurrent: present(batterySource, ["Charger_current", "charger_current"]),
+        outputCurrent: present(batterySource, ["Output_current", "output_current"]),
+        cDetectStatus: present(batterySource, ["CDetectStatus", "c_detect_status"])
+      }
+    },
     network: { operatorPresent, apnPresent },
     sleep: sleepSettings(responses),
     autoReboot: rebootSettings(responses.autoreboot || ""),
@@ -147,6 +188,7 @@ module.exports = {
   FORBIDDEN_ENDPOINTS,
   cleanError,
   firstText,
+  firstSection,
   collect,
   format
 };

@@ -107,6 +107,19 @@ proto
 
 Values can be empty, `NA`, stale during transitions, or firmware-specific numeric enums.
 
+For the exact LV01/MF885 2.5.94 profile, the recovered ZMI 1.2.42 UI confirms:
+
+```text
+Battery_status=1  charging through the micro-USB input
+  Charger_status=4  full
+  Charger_status=5  abnormal charging
+  any other value   normal charging (including Charger_status=0)
+Battery_status=2  feeding a device through USB-A
+Battery_status=3  normal battery operation / not charging
+```
+
+`Charger_status` is a charging substatus, not a cable-present flag. `CDetectStatus` is a separate field and must not be substituted for it.
+
 ---
 
 ## `wan`
@@ -272,7 +285,9 @@ RouterRebootActivity
  -> GET file=reset
 ```
 
-Immediately before submission the app re-reads `status1` and revalidates the complete identity. The destructive GET itself has one HTTP attempt: it is not retried after connection loss, HTTP `401`, or XML `unauthorized`. After submission the app may poll for availability, but polling cannot submit a second command.
+Immediately before submission the project creates a fresh companion-app-compatible Digest session: the login query and Authorization header both carry `client=APP`, the query hashes `/cgi/protected.cgi`, and the header hashes `/cgi/xml_action.cgi` using a separate nonce count and `cnonce`. A harmless APP-authenticated `status1` GET revalidates the complete identity, then the destructive GET gets exactly one HTTP attempt. It is not retried after connection loss, HTTP `401`, or XML `login_status` values `UNAUTHORIZED`, `TIMEOUT`, or `KICKOFF`.
+
+HTTP 2xx, including a returned `<reboot/>` schema tree, is classified only as `request-accepted`; it does not prove the reboot effect. Connection loss is `delivery-unknown`. The corrected APP-session flow is code-tested against the recovered APK contract and awaits the next live effect test.
 
 `reset` is **not factory reset**.
 
@@ -317,7 +332,7 @@ RouterShutdownActivity
 
 The normal shutdown UI uses `poweroff`; no recovered path here uses `trueshutdown`.
 
-Do not replay this command after timeout/connection loss. The project disables automatic retry for the destructive GET itself.
+Power-off uses the same fresh `client=APP` login, harmless exact-identity probe, and one-shot transport as reboot. Do not replay it after timeout/connection loss. HTTP acceptance is not labelled as proof that shutdown occurred.
 
 ---
 
