@@ -473,7 +473,7 @@ The same DEX contains normal POST/SET routes for settings such as `wan`, `admin`
 9. Keep firmware enum mappings scoped to the exact build.
 10. Select destructive power transport only from a fresh live identity: `LV01`/`MF885`, exact full 2.5.94 firmware string, and Ver.D if a revision is reported; accept a missing revision only for the `LV01` product label.
 11. Do not provide configuration overrides or family/short-version fallbacks for that profile.
-10. Redact credentials, Digest material and device identifiers from diagnostics.
+12. Redact credentials, Digest material and device identifiers from diagnostics.
 
 ## Runtime note for this project
 
