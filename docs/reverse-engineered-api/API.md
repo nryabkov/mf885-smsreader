@@ -285,9 +285,9 @@ RouterRebootActivity
  -> GET file=reset
 ```
 
-Immediately before submission the project creates a fresh companion-app-compatible Digest session: the login query and Authorization header both carry `client=APP`, the query hashes `/cgi/protected.cgi`, and the header hashes `/cgi/xml_action.cgi` using a separate nonce count and `cnonce`. A harmless APP-authenticated `status1` GET revalidates the complete identity, then the destructive GET gets exactly one HTTP attempt. It is not retried after connection loss, HTTP `401`, or XML `login_status` values `UNAUTHORIZED`, `TIMEOUT`, or `KICKOFF`.
+Immediately before submission the project creates a fresh companion-app-compatible Digest session. The first login query/header proofs use the recovered process sequence `nc=2/3`, both carry `client=APP`, the query hashes `/cgi/protected.cgi`, and the header hashes `/cgi/xml_action.cgi` with a separate `cnonce`. The login Authorization header is then retained byte-for-byte for both the harmless `status1` identity probe and the destructive GET; a scoped cookie actually issued by APP login is retained too. Redirects are disabled. The command gets exactly one HTTP attempt and is not retried after connection loss, HTTP `401`, or XML `login_status` values `UNAUTHORIZED`, `TIMEOUT`, or `KICKOFF`.
 
-HTTP 2xx, including a returned `<reboot/>` schema tree, is classified only as `request-accepted`; it does not prove the reboot effect. Connection loss is `delivery-unknown`. The corrected APP-session flow is code-tested against the recovered APK contract and awaits the next live effect test.
+HTTP 2xx with an expected empty/XML response, including a returned `<reboot/>` schema tree, is classified only as `request-accepted`; it does not prove the reboot effect. Redirects, HTML, and unexpected text fail closed. Connection loss is `delivery-unknown`. The earlier regenerating-header APP flow was live-tested without a reboot effect; the corrected persisted-header flow is code-tested against the recovered APK contract and awaits its one-shot live effect test.
 
 `reset` is **not factory reset**.
 

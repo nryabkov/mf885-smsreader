@@ -26,6 +26,7 @@ if (typeof require === "function") {
 const XML_REQUEST_PATH = "/xml_action.cgi";
 const XML_DIGEST_URI = "/cgi/xml_action.cgi";
 const APP_CLIENT = "APP";
+let APP_NONCE_COUNT = 2;
 let ACTIVE_XML_REQUEST_PATH = XML_REQUEST_PATH;
 
 let POLL_SECONDS = 30;
@@ -79,7 +80,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -465,13 +466,22 @@ function sanitizeDiagnostics(value) {
 }
 
 // Digest authentication and router API
-async function getAuthChallenge() {
+function rejectRedirects(req) {
+  const state={count:0};
+  req.onRedirect=redirected=>{state.count++;return null;};
+  req._zmiRedirectState=state;
+  return state;
+}
+
+async function getAuthChallenge(options = {}) {
   const req = new Request(`http://${ROUTER_HOST}/login.cgi`);
   req.method = "GET";
   req.headers = baseHeaders();
+  const redirectState=options.rejectRedirects===true?rejectRedirects(req):null;
   debugLog("auth:challenge", { stage:"request", url:`http://${ROUTER_HOST}/login.cgi` });
   try { await req.loadString(); } catch (error) { debugLog("auth:challenge", { stage:"exception", error:cleanError(error) }); }
   const headers = req.response ? req.response.headers : {};
+  if (redirectState&&redirectState.count) throw new Error("Authentication challenge was redirected");
   const challengeKey = Object.keys(headers).find(key => key.toLowerCase() === "www-authenticate");
   const challenge = challengeKey ? headers[challengeKey] : undefined;
   debugLog("auth:challenge", { stage:"response", status:req.response&&req.response.statusCode, wwwAuthenticate:!!challenge });
@@ -511,7 +521,9 @@ function digestProof(auth, method, uri, ncNumber, cnonce) {
 }
 
 function appDigestHeader(auth, proof) {
-  return `${digestAuthorization(auth, proof.method, proof.uri, proof.nc, proof.cnonce, proof.response)}, client=${APP_CLIENT}`;
+  // The recovered APP does not copy an optional challenge `opaque` value into
+  // this vendor-specific header. Keep the wire shape byte-for-byte compatible.
+  return `Digest username="${USERNAME}", realm="${auth.realm}", nonce="${auth.nonce}", uri="${proof.uri}", response="${proof.response}", qop=${auth.qop}, nc=${proof.nc}, cnonce="${proof.cnonce}", client=${APP_CLIENT}`;
 }
 
 function buildAppLogin(auth, options = {}) {
@@ -522,13 +534,13 @@ function buildAppLogin(auth, options = {}) {
   const queryProof = digestProof(auth, "GET", "/cgi/protected.cgi", start, queryCnonce);
   const headerProof = digestProof(auth, "GET", XML_DIGEST_URI, start + 1, headerCnonce);
   const query = formEncode({
+    Action: "Digest",
+    username: USERNAME,
     realm: auth.realm,
     nonce: auth.nonce,
     response: queryProof.response,
     qop: auth.qop,
     cnonce: queryProof.cnonce,
-    Action: "Digest",
-    username: USERNAME,
     temp: "marvell",
     client: APP_CLIENT
   });
@@ -541,12 +553,43 @@ function buildAppLogin(auth, options = {}) {
   };
 }
 
-function appAuthorization(auth, method, cnonce = randomCnonce()) {
-  return appDigestHeader(auth, digestProof(auth, method, XML_DIGEST_URI, auth.nc, cnonce));
+function appAuthorization(auth, method) {
+  if (String(method || "").toUpperCase() !== "GET") throw new Error("The recovered APP session header is GET-only");
+  const value = String(auth && auth.appAuthorization || "");
+  if (!value || !/, client=APP$/.test(value) || /[\r\n]/.test(value)) throw new Error("The persisted APP Authorization header is unavailable");
+  return value;
 }
 
-function appRequestHeaders(auth, method, cnonce) {
-  return Object.assign({}, baseHeaders(), { Authorization:appAuthorization(auth, method, cnonce) });
+function appRequestHeaders(auth, method) {
+  const headers = Object.assign({}, baseHeaders(), { Authorization:appAuthorization(auth, method) });
+  if (auth && auth.appCookie) headers.Cookie = auth.appCookie;
+  return headers;
+}
+
+function responseCookieHeader(response, options = {}) {
+  const pairs = [];
+  const seen = new Set();
+  const host=String(options.host||ROUTER_HOST).toLowerCase(),targetPath=String(options.path||XML_REQUEST_PATH),secure=options.secure===true;
+  const inScope = cookie => {
+    const domain=String(cookie&&cookie.domain||host).toLowerCase().replace(/^\./,""),path=String(cookie&&cookie.path||"/");
+    const domainMatch=host===domain||host.endsWith(`.${domain}`),pathMatch=targetPath===path||targetPath.startsWith(path.endsWith("/")?path:`${path}/`);
+    return domainMatch&&pathMatch&&(secure||cookie&&cookie.secure!==true);
+  };
+  const add = (name, value) => {
+    const key=String(name||"").trim(), item=String(value===undefined||value===null?"":value).trim();
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(key) || /[;\r\n]/.test(item) || seen.has(key)) return;
+    seen.add(key); pairs.push(`${key}=${item}`);
+  };
+  const hasCookieApi=!!(response&&Array.isArray(response.cookies)),cookies=hasCookieApi?response.cookies:[];
+  cookies.filter(inScope).forEach(cookie=>add(cookie&&cookie.name,cookie&&cookie.value));
+  if (!hasCookieApi) {
+    const headers=response&&response.headers||{};
+    const key=Object.keys(headers).find(name=>name.toLowerCase()==="set-cookie");
+    const raw=key?headers[key]:"";
+    const values=Array.isArray(raw)?raw:String(raw||"").split(/\r?\n|,(?=\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+=)/);
+    values.forEach(value=>{const parts=String(value||"").split(";"),pair=parts.shift()||"",separator=pair.indexOf("=");if(separator<=0)return;const cookie={name:pair.slice(0,separator).trim(),value:pair.slice(separator+1).trim(),domain:host,path:"/",secure:false};parts.forEach(part=>{const index=part.indexOf("="),name=(index<0?part:part.slice(0,index)).trim().toLowerCase(),item=index<0?"":part.slice(index+1).trim();if(name==="domain")cookie.domain=item;if(name==="path")cookie.path=item||"/";if(name==="secure")cookie.secure=true;});if(inScope(cookie))add(cookie.name,cookie.value);});
+  }
+  return pairs.join("; ");
 }
 
 function classifyControlResponse(value) {
@@ -554,12 +597,14 @@ function classifyControlResponse(value) {
   const loginStatus = firstText(text, ["login_status"]).toUpperCase();
   if (["UNAUTHORIZED", "TIMEOUT", "KICKOFF"].includes(loginStatus)) return `auth-${loginStatus.toLowerCase()}`;
   if (!text.trim()) return "empty";
+  if (/^\s*<!doctype\s+html\b|^\s*<html\b/i.test(text)) return "html-response";
   if (/<(?:reboot|shutdown)\b/i.test(text)) return "model-schema";
   if (/^\s*<\?xml\b|^\s*<[A-Za-z_][^>]*>/i.test(text)) return "xml-response";
   return "text-response";
 }
 
 function assertAppResponse(result, operation) {
+  if (Number(result&&result.redirectCount)>0) throw new Error(`${operation} request was redirected`);
   const status = result.response && Number(result.response.statusCode);
   if (!Number.isFinite(status)) {
     if (result.exception) throw result.exception;
@@ -568,6 +613,7 @@ function assertAppResponse(result, operation) {
   if (Number.isFinite(status) && (status < 200 || status > 299)) throw new Error(`${operation} request failed: HTTP ${status} from /xml_action.cgi`);
   const responseClass = classifyControlResponse(result.text);
   if (responseClass.startsWith("auth-")) throw new Error(`Authorization failed for ${operation}: ${responseClass.slice(5)}`);
+  if (responseClass==="html-response"||responseClass==="text-response") throw new Error(`${operation} returned an unexpected ${responseClass}`);
   if (result.exception) throw result.exception;
   return { responseClass, statusCode:Number.isFinite(status)?status:null };
 }
@@ -578,15 +624,26 @@ async function appLogin(auth) {
   req.method = "GET";
   req.headers = Object.assign({}, baseHeaders(), { Authorization:built.authorization });
   req.timeoutInterval = 10;
+  rejectRedirects(req);
   const startedAt = Date.now();
   const result = await loadResponse(req, { requestId:++DEBUG_REQUEST_SEQUENCE, operation:"APP login", attempt:1, startedAt });
-  const checked = assertAppResponse(result, "APP login");
+  let checked;
+  try { checked=assertAppResponse(result, "APP login"); }
+  catch(error){error.appStage={...powerDiagnosticStage(result),responseClass:classifyControlResponse(result.text),redirectCount:Number(result.redirectCount)||0};throw error;}
+  auth.appAuthorization = built.authorization;
+  auth.appCookie = responseCookieHeader(result.response);
   auth.nc = built.nextNc;
-  return { ...checked, bytes:String(result.text||"").length, durationMs:Date.now()-startedAt, queryClientApp:true, authClientApp:true };
+  return { ...checked, bytes:String(result.text||"").length, durationMs:Date.now()-startedAt, queryClientApp:true, authClientApp:true, queryNonceCount:Number(built.queryProof.nc), loginHeaderNonceCount:Number(built.headerProof.nc), authHeaderPersisted:true, sessionCookieReceived:!!auth.appCookie };
 }
 
 async function createAppSession() {
-  const auth = await getAuthChallenge();
+  const auth = await getAuthChallenge({rejectRedirects:true});
+  // ZMI MiFi 1.2.42 initializes its process counter at 2. The login query uses
+  // nc=2, its Authorization header uses nc=3, and that exact header is then
+  // retained by the shared HTTP client for every command-on-read GET.
+  const start=APP_NONCE_COUNT;
+  auth.nc = start;
+  APP_NONCE_COUNT = start + 2;
   auth.appLogin = await appLogin(auth);
   return auth;
 }
@@ -597,15 +654,13 @@ async function appXmlGet(auth, file, timeout = 5) {
   req.headers = appRequestHeaders(auth, "GET");
   req.timeoutInterval = timeout;
   req._zmi = { method:"GET", operation:file, timeout, body:null, appClient:true };
+  rejectRedirects(req);
   const startedAt = Date.now();
-  let result;
-  try {
-    result = await loadResponse(req, { requestId:++DEBUG_REQUEST_SEQUENCE, operation:`APP ${file}`, attempt:1, startedAt });
-  } finally {
-    auth.nc = Number(auth.nc) + 1;
-  }
-  const checked = assertAppResponse(result, file);
-  return { text:result.text, ...checked, bytes:String(result.text||"").length, durationMs:Date.now()-startedAt, method:"GET", model:file };
+  const result = await loadResponse(req, { requestId:++DEBUG_REQUEST_SEQUENCE, operation:`APP ${file}`, attempt:1, startedAt });
+  let checked;
+  try { checked=assertAppResponse(result, file); }
+  catch(error){error.appStage={...powerDiagnosticStage(result),responseClass:classifyControlResponse(result.text),redirectCount:Number(result.redirectCount)||0,authHeaderReused:true,sessionCookieSent:!!auth.appCookie,responseFingerprint:/^(?:reset|poweroff)$/.test(String(file))?md5(String(result.text||"")):null};throw error;}
+  return { text:result.text, ...checked, bytes:String(result.text||"").length, durationMs:Date.now()-startedAt, redirectCount:Number(result.redirectCount)||0, method:"GET", model:file, authHeaderReused:true, sessionCookieSent:!!auth.appCookie };
 }
 
 function expectedPowerDisconnect(error) {
@@ -622,10 +677,10 @@ async function submitAppPowerCommand(auth, descriptor, options = {}) {
   const get = options.get || ((file)=>appXmlGet(auth,file,5));
   try {
     const response = await get(normalized.name);
-    return { outcome:"request-accepted", effectConfirmed:false, responseClass:response.responseClass, statusCode:response.statusCode, bytes:response.bytes, durationMs:response.durationMs, method:"GET", model:normalized.name };
+    return { outcome:"request-accepted", effectConfirmed:false, responseClass:response.responseClass, responseFingerprint:md5(String(response.text||"")), statusCode:response.statusCode, bytes:response.bytes, durationMs:response.durationMs, redirectCount:Number(response.redirectCount)||0, method:"GET", model:normalized.name, authHeaderReused:response.authHeaderReused===true, sessionCookieSent:response.sessionCookieSent===true };
   } catch (error) {
     if (!expectedPowerDisconnect(error)) throw error;
-    return { outcome:"delivery-unknown", effectConfirmed:false, connectionLost:true, error, method:"GET", model:normalized.name };
+    return { outcome:"delivery-unknown", effectConfirmed:false, connectionLost:true, error, method:"GET", model:normalized.name, authHeaderReused:!!(auth&&auth.appAuthorization), sessionCookieSent:!!(auth&&auth.appCookie) };
   }
 }
 
@@ -673,7 +728,7 @@ async function loadResponse(req, context = {}) {
   if (req.body) debugXml(`request:${context.requestId}:${context.operation}:request-xml`, req.body);
   if (text) debugXml(`request:${context.requestId}:${context.operation}:response-xml`, text);
   if (exception) debugLog(`request:${context.requestId}:exception`, { operation:context.operation, stage:"loadResponse", error:cleanError(exception) });
-  return { text, exception, response };
+  return { text, exception, response, redirectCount:req&&req._zmiRedirectState?req._zmiRedirectState.count:0, durationMs:Date.now()-started };
 }
 
 async function authenticatedRequest(auth, makeRequest, operation, retry = true) {
@@ -1267,36 +1322,47 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     reboot:()=>executePowerCommand(auth,"reboot"),powerOff:()=>executePowerCommand(auth,"powerOff")};
   return createWebViewDispatcher(handlers,response=>applyWebView(web,"zmiApplyActionResult",response));
 }
-function powerDiagnostics(method,operation,file,error,outcome,responseClass){const descriptor=apiContractModule&&apiContractModule.normalizeModelDescriptor?apiContractModule.normalizeModelDescriptor(file):(typeof file==="string"?{name:file,method:"POST"}:file||{});return sanitizeDiagnostics(`client=APP; method=${method||descriptor.method||"unknown"}; model=${operation}; endpoint=${XML_REQUEST_PATH}; outcome=${outcome||"unknown"}; responseClass=${responseClass||"none"}; error=${error?cleanError(error):"none"}`);}
+function diagnosticNumber(value){if(value===null||value===undefined||value==="")return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:null;}
+function powerDiagnosticStage(value){if(!value||typeof value!=="object")return null;const status=value.statusCode!==undefined?value.statusCode:value.response&&value.response.statusCode,bytes=value.bytes!==undefined?value.bytes:Object.prototype.hasOwnProperty.call(value,"text")?String(value.text||"").length:null;return {statusCode:diagnosticNumber(status),bytes:diagnosticNumber(bytes),durationMs:diagnosticNumber(value.durationMs),responseClass:String(value.responseClass||"none"),redirectCount:diagnosticNumber(value.redirectCount)};}
+function powerDiagnostics(method,operation,file,error,outcome,responseClass,context={}){const descriptor=apiContractModule&&apiContractModule.normalizeModelDescriptor?apiContractModule.normalizeModelDescriptor(file):(typeof file==="string"?{name:file,method:"POST"}:file||{}),result=context.result||error&&error.appStage||{},login=context.login||{},probe=context.probe||{};const report={schema:1,mode:"power-command",client:"APP",authFlow:"zmi-apk-1.2.42-persisted-login-header",command:{method:method||descriptor.method||"unknown",operation:String(operation||""),endpoint:XML_REQUEST_PATH,file:String(descriptor.name||""),outcome:outcome||"unknown",effectConfirmed:false,responseClass:responseClass||result.responseClass||"none",response:powerDiagnosticStage(result),responseFingerprint:result.responseFingerprint||null},session:{initialNonceCount:diagnosticNumber(login.queryNonceCount),loginHeaderNonceCount:diagnosticNumber(login.loginHeaderNonceCount),login:powerDiagnosticStage(login),identityProbe:powerDiagnosticStage(probe),authorizationPersisted:login.authHeaderPersisted===true,authorizationReusedForProbeAndCommand:probe.authHeaderReused===true&&result.authHeaderReused===true,sessionCookieReceived:login.sessionCookieReceived===true,sessionCookieSent:result.sessionCookieSent===true},safety:{destructiveAttempts:context.destructiveAttempted===false?0:1,automaticRetries:0,replayed:false,requestBodyPresent:false,redirectsAllowed:false},error:error?cleanError(error):null};return sanitizeDiagnostics(JSON.stringify(report,null,2));}
 async function executePowerCommand(auth,kind,options={}) {
   const compatibility=options.compatibility||powerCompatibilityModule;
-  if(!compatibility||typeof compatibility.command!=="function")throw new Error("Power compatibility module is unavailable");
   let profile=options.profile;
   let powerAuth=options.appAuth||null;
-  if(!profile){
-    let status;
-    if(options.getStatus) status=await options.getStatus(auth);
-    else {
-      const makeSession=options.createAppSession||createAppSession;
-      powerAuth=await makeSession();
-      const readAppStatus=options.getAppStatus||((session)=>appXmlGet(session,"status1",5));
-      const probe=await readAppStatus(powerAuth);
-      status=probe&&typeof probe==="object"&&Object.prototype.hasOwnProperty.call(probe,"text")?probe.text:probe;
-    }
-    profile=powerProfileForIdentity({model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status)});
-    ACTIVE_POWER_PROFILE=profile;
-  }
-  const spec=compatibility.command(profile,kind);
-  if(!options.writeThenVerify&&!powerAuth)throw new Error("APP power session is unavailable");
-  const submit=options.writeThenVerify||((operation)=>submitAppPowerCommand(powerAuth,operation.model));
+  let appProbe=null;
+  let spec=null;
+  let destructiveAttempted=false;
+  let phase="compatibility";
   try {
+    if(!compatibility||typeof compatibility.command!=="function")throw new Error("Power compatibility module is unavailable");
+    if(!profile){
+      let status;
+      if(options.getStatus){phase="identity-probe";status=await options.getStatus(auth);}
+      else {
+        const makeSession=options.createAppSession||createAppSession;
+        phase="app-login";
+        powerAuth=await makeSession();
+        const readAppStatus=options.getAppStatus||((session)=>appXmlGet(session,"status1",5));
+        phase="identity-probe";
+        appProbe=await readAppStatus(powerAuth);
+        status=appProbe&&typeof appProbe==="object"&&Object.prototype.hasOwnProperty.call(appProbe,"text")?appProbe.text:appProbe;
+      }
+      profile=powerProfileForIdentity({model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status)});
+      ACTIVE_POWER_PROFILE=profile;
+    }
+    spec=compatibility.command(profile,kind);
+    if(!options.writeThenVerify&&!powerAuth)throw new Error("APP power session is unavailable");
+    const submit=options.writeThenVerify||((operation)=>submitAppPowerCommand(powerAuth,operation.model));
+    phase="power-command";
+    destructiveAttempted=true;
     const result=await submit({model:spec.file,xml:`<RGW><${spec.tree}></${spec.tree}></RGW>`,destructive:true});
     if(result.error&&!result.connectionLost)throw result.error;
     if(!["request-accepted","delivery-unknown","submitted","unknown"].includes(result.outcome))throw new Error(`Unexpected destructive command outcome: ${result.outcome}`);
     const accepted=result.outcome==="request-accepted"||result.outcome==="submitted";
-    return {...result,effectConfirmed:false,message:accepted?"The APP-compatible request was accepted; the reboot effect is not yet confirmed.":"The command was attempted once; delivery is unknown after connection loss.",diagnostics:powerDiagnostics(result.method,spec.operation,spec.file,result.error,result.outcome,result.responseClass)};
+    return {...result,effectConfirmed:false,message:accepted?"The APP-compatible request was accepted; the reboot effect is not yet confirmed.":"The command was attempted once; delivery is unknown after connection loss.",diagnostics:powerDiagnostics(result.method,spec.operation,spec.file,result.error,result.outcome,result.responseClass,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,result,destructiveAttempted:true})};
   } catch(error) {
-    error.diagnostics=powerDiagnostics(null,spec.operation,spec.file,error,"failed");
+    const operation=spec&&spec.operation||phase,file=spec&&spec.file||{name:phase==="identity-probe"?"status1":"login",method:"GET"};
+    error.diagnostics=powerDiagnostics(null,operation,file,error,"failed",null,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,result:error&&error.appStage,destructiveAttempted});
     throw error;
   }
 }
