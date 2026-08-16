@@ -241,7 +241,7 @@ Known fields include administrator credentials, HTTP-management settings and ses
 **Risk:** destructive / connection-dropping.  
 **Semantic confidence on MF885 2.5.94:** firmware-confirmed.  
 **Trigger confidence:** companion-app-confirmed by ZMI Android 1.2.42.  
-**Project runtime:** enabled for dedicated MF885 2.5.94 profile.  
+**Project runtime:** enabled only after a fresh exact live LV01/MF885 2.5.94 identity match.
 **Provenance:** `xml-schema`, `native-handler`, `android-apk`, `project-client`.
 
 Firmware WEBI tree:
@@ -272,7 +272,7 @@ RouterRebootActivity
  -> GET file=reset
 ```
 
-After submission the app waits/polls for the router to return. Do not automatically retry the destructive GET after connection loss.
+Immediately before submission the app re-reads `status1` and revalidates the complete identity. The destructive GET itself has one HTTP attempt: it is not retried after connection loss, HTTP `401`, or XML `unauthorized`. After submission the app may poll for availability, but polling cannot submit a second command.
 
 `reset` is **not factory reset**.
 
@@ -284,7 +284,7 @@ After submission the app waits/polls for the router to return. Do not automatica
 **Risk:** destructive / connection-dropping.  
 **Semantic confidence on MF885 2.5.94:** firmware-confirmed / strong static evidence.  
 **Trigger confidence:** companion-app-confirmed by ZMI Android 1.2.42.  
-**Project runtime:** enabled for dedicated MF885 2.5.94 profile.  
+**Project runtime:** enabled only after a fresh exact live LV01/MF885 2.5.94 identity match.
 
 Firmware WEBI tree:
 
@@ -317,7 +317,7 @@ RouterShutdownActivity
 
 The normal shutdown UI uses `poweroff`; no recovered path here uses `trueshutdown`.
 
-Do not automatically replay this command after timeout/connection loss.
+Do not replay this command after timeout/connection loss. The project disables automatic retry for the destructive GET itself.
 
 ---
 
@@ -471,6 +471,8 @@ The same DEX contains normal POST/SET routes for settings such as `wan`, `admin`
 7. Keep `restore_defaults` completely separate from reboot.
 8. Do not expose `trueshutdown` merely because its schema exists.
 9. Keep firmware enum mappings scoped to the exact build.
+10. Select destructive power transport only from a fresh live identity: `LV01`/`MF885`, exact full 2.5.94 firmware string, and Ver.D if a revision is reported; accept a missing revision only for the `LV01` product label.
+11. Do not provide configuration overrides or family/short-version fallbacks for that profile.
 10. Redact credentials, Digest material and device identifiers from diagnostics.
 
 ## Runtime note for this project
@@ -485,3 +487,5 @@ Power off -> GET method=get file=poweroff, no body
 ```
 
 The helper also no longer requires an ordinary write/read-back `verify` callback for destructive submission. This fixes the prior validation failure that could prevent a power request from being sent at all.
+
+No project runtime profile currently enables `reset` or `poweroff` for 2.5.96, MF855, MF96, an unknown model, or an identity that cannot be freshly read. WAN traffic reset, factory reset, firmware/configuration restore, debug mode, and `trueshutdown` are not part of this profile.

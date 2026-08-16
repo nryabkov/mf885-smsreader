@@ -9,7 +9,7 @@ writes use a single POST followed by a control GET. A successful HTTP response a
 is not treated as proof that a setting changed.
 
 
-Unknown enum values are displayed with their raw vendor value. Firmware-dependent writes remain disabled unless one universal contract is confirmed across all supported builds; the application never probes write values.
+Unknown enum values are displayed with their raw vendor value. Firmware-dependent writes remain disabled unless a concrete contract is confirmed for the exact live device identity; the application never probes write values. Power controls require a fresh `status1` match for model `LV01`/`MF885` and the full firmware string `2.5.94_release_MF855_NZ_CP_2.129.003`. There is no manual override or family-wide fallback.
 
 WAN byte totals are parsed as unsigned decimal `BigInt` values. Download is
 `rx_byte_all`, upload is `tx_byte_all`, and total is their sum; LAN/WLAN, device, and
@@ -38,7 +38,8 @@ The script does **not** read or send messages through Apple Messages on the iPho
 - Sends SMS messages and provides copy and system **Share** actions in a mobile-friendly WebView, including clipboard fallbacks when the relevant iOS/WebView capability is unavailable.
 - Offers SMS copy and share actions in the WebView. Sharing prepares the sender, date, and message body for Scriptable's native system share sheet; if that API is unavailable, the same contextual text is copied to the clipboard and the dashboard clearly reports the fallback. Without a configured translation endpoint, the **Translate** button is hidden. With optional `TRANSLATE_ENDPOINT` advanced setup, a LibreTranslate-compatible service enables a **Translate** button that returns the translation inline in the SMS card and reports HTTP/JSON/empty-response diagnostics in the WebView status block. The dashboard does not start automatic bulk translation when opened.
 - Deletes individual SMS messages from the router after confirmation.
-- Resets total WAN traffic and provides confirmed restart and power-off controls.
+- Keeps WAN traffic reset disabled until a verified write contract exists, and exposes restart/power-off only for the exact live MF885 2.5.94 profile.
+- Produces a copyable, redacted read-only preflight report from a fixed seven-endpoint GET allowlist before any live power or firmware experiment.
 - Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive.
 - Provides experimental, confirmed cellular controls for mobile-WAN reconnect and preferred protocol selection (Automatic, LTE only, LTE preferred where supported, 3G only, or 2G only).
 - Decodes router SMS fields that are returned as UTF-16BE hexadecimal strings.
@@ -60,6 +61,8 @@ The repository keeps the updater, manifest, application, and feature modules sid
 - `scriptable.js` is the application module downloaded by the loader.
 - `modules/ussd.js` contains the firmware-specific USSD probing and request variants.
 - `modules/cellular-control.js` isolates experimental mobile-WAN reconnect and network-mode commands from the dashboard UI.
+- `modules/power-compatibility.js` fail-closes power controls against the exact live model, firmware, and reported hardware revision.
+- `modules/read-only-preflight.js` implements the fixed GET-only diagnostic allowlist and redacted report.
 
 1. Copy `loader.js` into a new script in the Scriptable iOS app.
 2. Run it. That is sufficient when using this repository's `main` branch, Scriptable's local application storage, a router at `192.168.21.1`, and the initial router password `zimifi`. During the same run, the loader downloads and launches the application and creates `mf885-smsreader-config.json` automatically in Scriptable's **local** Documents directory.
@@ -117,7 +120,7 @@ The WebView contains a reusable action status panel for copy, system sharing, tr
 
 Dashboard refreshes use Scriptable's `scriptable:///run` callback URL, which can close and relaunch the running script. Before manual or automatic refresh, the UI warns that Scriptable is restarting the script and prevents repeated rapid taps/navigation while the transition is in progress, avoiding refresh loops that can look like the app is blinking. If the screen closes during refresh, open the Scriptable script again.
 
-Dangerous router actions now use an inline WebView confirmation before any callback URL is opened. The first tap on **Reset traffic**, **Restart**, **Power off**, **Reconnect cellular network**, or a cellular mode button only expands a local warning in the current WebView; Scriptable relaunches the script only after the final confirmation button executes the command with `confirm=1`. The application still keeps server-side `confirm=1` checks for these flows as a safety guard.
+Dangerous router actions use an inline WebView confirmation before submission. The first tap on **Restart**, **Power off**, **Reconnect cellular network**, or a cellular mode button only expands a local warning; the backend also requires the command-channel confirmation flag. **Reset traffic** is visible but disabled because no verified write contract is available.
 
 ### Experimental cellular controls
 
@@ -127,9 +130,17 @@ The dashboard has one **Detect experimental features** button for USSD, device-a
 
 These controls are firmware-dependent and may be ignored or rejected on some builds. They use only safe GET probes during detection, but confirmed actions can temporarily drop mobile internet while the modem disconnects, reconnects, or changes radio access technology. If your firmware is not supported, please send the copyable diagnostics from the notice/details area with your report. Diagnostics include endpoint/file names, XML root/field names, `routerCall` object path/method pairs, compact responses/errors, and verification results, while redacting passwords, Digest nonces/responses, and sensitive headers.
 
+### Read-only preflight
+
+The **Run read-only preflight** button reads only this fixed allowlist: `status1`, `wan`, `Engineer_parameter`, `miautosleep`, `smart_set`, `uapxb_wlan_basic_settings`, and `autoreboot`. Its report contains the device identity, power enums, sleep/auto-reboot fields, endpoint success/size, and explicit safety counters. It never includes raw XML, APN values, identifiers, passwords, SMS content, or configuration backups.
+
+The preflight code has an explicit denylist for `RestoreFw`, `BackupFwStart`, `RestoreBackup`, `reset`, `poweroff`, `restore_defaults`, and `debugmodeon`. It reports `writesAttempted: 0`, `restoreTransportVerified: false`, and `flashAllowed: false`; those flags are facts about this diagnostic, not an authorization to proceed with firmware work.
+
 ### Power endpoint diagnostics
 
-Power-off and restart commands vary across MF855/MF885-family firmware builds. If a power command is rejected or the router stops responding before confirmation is received, the dashboard shows copyable diagnostics in the status/notice area. Please send those diagnostics when reporting power-control problems; they include attempted XML endpoints such as `xml_action.cgi?method=set&module=duster&file=device_management`, XML root/field names, and `routerCall` object path/method pairs, while omitting passwords, Digest responses, and sensitive headers. If possible, also include a packet capture from the router's native web UI while using its own restart or shutdown button so the correct firmware endpoint can be matched safely.
+Power-off and restart commands vary across MF855/MF885-family firmware builds. The dashboard enables them only after a live `status1` response exactly matches `LV01`/`MF885` plus `2.5.94_release_MF855_NZ_CP_2.129.003`; a reported hardware revision must be Ver.D, and a missing revision is accepted only for the `LV01` product label. The backend repeats that identity read immediately before submitting exactly one APK-confirmed command-on-read request: `GET file=reset` or `GET file=poweroff`, with no body and no automatic replay—not even after an authentication failure. A connection loss produces an `unknown` outcome and requires human review before any later attempt.
+
+If a power command is rejected or the router stops responding, the dashboard shows redacted diagnostics containing only the HTTP method, operation/model name, endpoint path, and sanitized error. Never report passwords, Digest material, identifiers, raw configuration, or SMS data.
 
 ## Run instructions
 

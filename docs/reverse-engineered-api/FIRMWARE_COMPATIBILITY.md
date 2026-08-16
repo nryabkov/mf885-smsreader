@@ -62,7 +62,7 @@ See [Power clients](POWER_CLIENTS.md) for the DEX call chains and provenance.
 
 #### Runtime support status
 
-The project runtime is now transport-aware for destructive commands. The `2.5.94` profile advertises:
+The project runtime is transport-aware for destructive commands. The exact MF885 `2.5.94` profile advertises:
 
 ```text
 reset:    GET /xml_action.cgi?method=get&module=duster&file=reset
@@ -71,7 +71,14 @@ poweroff: GET /xml_action.cgi?method=get&module=duster&file=poweroff
 
 with no XML request body. The firmware semantic trees (`reboot` / `shutdown`) remain profile metadata and are not sent by the GET path.
 
-The API helper also fixes the earlier destructive-validation bug: destructive operations no longer require a normal write/read-back `verify` callback before submission.
+The API helper also fixes the earlier destructive-validation bug: destructive operations no longer require a normal write/read-back `verify` callback before submission. Runtime selection is deliberately narrower than the companion APK's family support:
+
+- the fresh live model must be exactly `LV01` or `MF885`;
+- the full firmware string must be exactly `2.5.94_release_MF855_NZ_CP_2.129.003`;
+- a reported hardware revision must be Ver.D; a missing revision is accepted only with the firmware's `LV01` product label;
+- no configuration flag, cached profile, shortened version, or neighbouring model can override a mismatch;
+- the backend repeats the identity read immediately before every power command;
+- the destructive GET itself is submitted once, with automatic retry disabled.
 
 This status means:
 
@@ -83,7 +90,7 @@ current runtime can express it   yes
 live exact-device execution      separate validation level
 ```
 
-Restart and Power off are therefore enabled for the dedicated MF885 `2.5.94` profile. A live run on the exact router is still valuable as behavioural confirmation, but is no longer required to know the request shape.
+Restart and Power off are therefore conditionally enabled only for that exact live identity. A live run on the exact router remains a separate behavioural validation step; request-shape evidence is not side-effect evidence.
 
 **Status:** deeply statically analysed, partially live-tested, companion-client power transport confirmed as GET/no-body, and runtime support implemented.
 
@@ -101,7 +108,7 @@ Confirmed static properties include:
 - working Digest/XML flow;
 - `status1`, `wan`, `Engineer_parameter`, `message`, statistics, management, firmware and other models.
 
-The project retains its existing 2.5.96 destructive POST/SET mappings. The transport-aware helper can now support 2.5.94 GET/no-body and 2.5.96 POST/XML independently instead of assuming one global destructive transport.
+Read-only compatibility remains broad, but the project does not enable power controls for `2.5.96`. No `2.5.94` transport is inherited by another build, and no legacy POST/SET power mapping is selected as a fallback.
 
 ## Compatibility terminology
 
@@ -138,11 +145,13 @@ Client code should therefore prefer firmware-specific profiles over broad probin
 
 1. Read-only diagnostic discovery may try known model names.
 2. Unknown enum values remain raw.
-3. A destructive control is enabled only when both semantics and concrete trigger transport can be represented by the active profile/client.
+3. A destructive control is enabled only when both semantics and concrete trigger transport are confirmed and a fresh live identity exactly selects that profile.
 4. Destructive actions are never inferred from neighbouring fields or another firmware's callback layout.
 5. Ordinary writes are read back where possible.
 6. Restart/shutdown are one-shot operations; do not automatically replay after connection loss.
 7. Connection loss alone is not evidence that an unverified request shape was correct.
+8. WAN traffic reset remains disabled because its exact write contract is not confirmed.
+9. Firmware restore/upload, configuration restore, debug mode, factory reset, and `trueshutdown` remain outside the power profile.
 
 ## Suggested evidence when reporting another firmware
 
@@ -160,6 +169,19 @@ Do not publish passwords, Digest responses/nonces, IMEI, ICCID, IMSI, MSISDN, Wi
 
 ## Profile selection precedence
 
+There is no precedence chain for destructive power actions. Selection is a single fail-closed predicate over the newest live `status1` response:
+
+```text
+(model is LV01 or MF885)
+AND (firmware is exactly 2.5.94_release_MF855_NZ_CP_2.129.003)
+AND (hardware revision is Ver.D, or is absent only when model is LV01)
+```
+
+Only that predicate selects `mf885-ver-d-2.5.94-apk-get-power`. Missing fields, read failure, a changed identity during polling, or any mismatch selects `unavailable`. User configuration and cached detection results are not consulted.
+
+The companion APK also contains MF96 Ver.D mappings, but this project's runtime intentionally does not use those mappings: the implemented profile is scoped to the observed MF885/LV01 target.
+
+For a first live check, use the fixed [read-only preflight](READ_ONLY_PREFLIGHT.md). It does not select or invoke a power, restore, debug, reset, or firmware endpoint.
 
 
 ## MF885 2.5.94 read-mapping evidence

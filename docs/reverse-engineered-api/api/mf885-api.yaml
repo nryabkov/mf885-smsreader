@@ -242,6 +242,14 @@ models:
       request: "GET /xml_action.cgi?method=get&module=duster&file=reset"
       body: none
       runtime_enabled: true
+      runtime_identity:
+        models: [LV01, MF885]
+        firmware_exact: 2.5.94_release_MF855_NZ_CP_2.129.003
+        hardware_if_reported: Ver.D
+        missing_hardware_allowed_for: [LV01]
+        source: fresh-status1-before-command
+        override: none
+      automatic_retry: false
     notes:
       - reset is reboot, not factory reset.
       - Do not automatically retry after timeout/connection loss.
@@ -259,6 +267,14 @@ models:
       request: "GET /xml_action.cgi?method=get&module=duster&file=poweroff"
       body: none
       runtime_enabled: true
+      runtime_identity:
+        models: [LV01, MF885]
+        firmware_exact: 2.5.94_release_MF855_NZ_CP_2.129.003
+        hardware_if_reported: Ver.D
+        missing_hardware_allowed_for: [LV01]
+        source: fresh-status1-before-command
+        override: none
+      automatic_retry: false
     notes:
       - The analysed Android shutdown UI uses poweroff, not trueshutdown.
       - Do not automatically retry after timeout/connection loss.
