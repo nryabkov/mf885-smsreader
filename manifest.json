@@ -1,5 +1,5 @@
 {
-  "version": "3.1.5-ui2",
+  "version": "3.1.6-ui2",
   "loaderProtocol": 2,
   "minimumLoaderProtocol": 2,
   "loader": "loader.js",
@@ -14,6 +14,7 @@
     "modules/cellular-control.js",
     "modules/api-contract.js",
     "modules/power-compatibility.js",
+    "modules/power-status.js",
     "modules/read-only-preflight.js",
     "modules/counters.js",
     "modules/engineer-parameter.js",

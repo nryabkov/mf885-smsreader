@@ -23,7 +23,7 @@ const DEFAULT_CONFIG = {
 };
 const MARKER = "MF885_LOADER_STABLE_MARKER";
 const SHA_RE = /^[0-9a-f]{40}$/i;
-const GITHUB_TIMEOUT_SECONDS = 30;
+const GITHUB_IDLE_TIMEOUT_SECONDS = 5;
 
 function commitApiUrl(config) {
   return `https://api.github.com/repos/${encodeURIComponent(config.repositoryOwner)}/${encodeURIComponent(config.repositoryName)}/commits/${encodeURIComponent(config.branch)}`;
@@ -231,8 +231,9 @@ async function installApplication(fm, appDir, statePath, priorState, sha, manife
 
 function applyRequestOptions(request, token, githubApi) {
   request.headers = requestHeaders(token, githubApi);
-  // Scriptable supports timeoutInterval in current releases; keep the guard for older versions.
-  if ("timeoutInterval" in request) request.timeoutInterval = GITHUB_TIMEOUT_SECONDS;
+  // Scriptable treats timeoutInterval as an idle timeout. Assign it directly so
+  // a black-holed mobile route cannot silently retain Scriptable's longer default.
+  request.timeoutInterval = GITHUB_IDLE_TIMEOUT_SECONDS;
 }
 
 function describeNetworkFailure(operation, request, error) {
@@ -353,6 +354,6 @@ function removeIfExists(fm, path) { if (fm.fileExists(path)) fm.remove(path); }
 async function downloadICloud(fm, path) { if (fm.isFileDownloaded && !fm.isFileDownloaded(path)) await fm.downloadFileFromiCloud(path); }
 async function showMessage(title, message) { const a = new Alert(); a.title = title; a.message = message; a.addAction("OK"); await a.presentAlert(); }
 
-const exported = { SHA_RE, LOADER_PROTOCOL, DEFAULT_CONFIG, normalizeConfig, commitApiUrl, rawBaseUrl, artifactUrls, assertSha, safeRelativePath, validateManifest, validState, synchronizationNeeded, activeInstallationState, activeSoftwareVersion, requestHeaders, abbreviate };
+const exported = { SHA_RE, LOADER_PROTOCOL, GITHUB_IDLE_TIMEOUT_SECONDS, DEFAULT_CONFIG, normalizeConfig, commitApiUrl, rawBaseUrl, artifactUrls, assertSha, safeRelativePath, validateManifest, validState, synchronizationNeeded, activeInstallationState, activeSoftwareVersion, requestHeaders, applyRequestOptions, abbreviate };
 if (typeof module !== "undefined" && module.exports) module.exports = exported;
 if (typeof Script !== "undefined" && typeof FileManager !== "undefined") main().catch(error => { console.log(`[Router/startup error] ${error}`); throw error; });

@@ -106,6 +106,18 @@ test("GitHub headers include API negotiation, user agent, no-cache, and optional
   assert.equal(updater.requestHeaders("", true).Authorization, undefined);
 });
 
+test("every GitHub request gets the five-second idle timeout even when the Request mock has no property", () => {
+  const request = {};
+  updater.applyRequestOptions(request, "secret", true);
+  assert.equal(updater.GITHUB_IDLE_TIMEOUT_SECONDS, 5);
+  assert.equal(request.timeoutInterval, 5);
+  assert.equal(request.headers.Authorization, "Bearer secret");
+
+  const existing = { timeoutInterval: 60 };
+  updater.applyRequestOptions(existing, "", false);
+  assert.equal(existing.timeoutInterval, 5);
+});
+
 test("safe paths reject traversal, absolute paths, and empty segments", () => {
   for (const path of ["loader.js", "modules/ussd.js"]) assert.equal(updater.safeRelativePath(path), true);
   for (const path of ["../loader.js", "/loader.js", "a//b", "", "a?b"]) assert.equal(updater.safeRelativePath(path), false);

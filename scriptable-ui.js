@@ -2,6 +2,9 @@
 // It preserves the proven router backend in scriptable.js and replaces only
 // the WebView renderer plus the polling payload used by that renderer.
 
+let powerStatusModule = null;
+if (typeof require === "function") powerStatusModule = require("./modules/power-status.js");
+
 function isLv01Device(model) {
   return /^LV01$/i.test(String(model && model.actualModel || "").trim());
 }
@@ -25,26 +28,33 @@ function normalizeUiBattery(battery = {}, model = {}) {
   const measuredInput = Number.isFinite(chargerCurrent) && chargerCurrent > 0;
   const measuredOutput = Number.isFinite(outputCurrent) && outputCurrent > 0;
 
-  // LV01 status1 uses a different numeric battery enum from the legacy parser.
-  // On this firmware the observed externally-powered signature is
-  // Battery_status=1 together with Charger_status=4. Scope this compatibility
-  // rule to LV01 only so other MF855/MF885 builds keep their existing mapping.
-  const lv01Input = rawBattery === "1" && rawCharger === "4";
-  const inputConnected = backendInput || measuredInput || lv01Input;
-  const usbOutputActive = backendOutput || measuredOutput;
+  // The recovered ZMI 1.2.42 companion app defines the LV01 enum: status 1 is
+  // charging (charger substatus 4 = full, 5 = abnormal), status 2 is USB-A
+  // feeding, and status 3 is normal battery operation. Charger_status=0 is
+  // therefore a valid charging substatus and is not a cable-presence flag.
+  const decoded = powerStatusModule && typeof powerStatusModule.decode === "function"
+    ? powerStatusModule.decode({ batteryStatus:rawBattery, chargerStatus:rawCharger }, model)
+    : { confirmed:false };
+  const inputConnected = decoded.confirmed ? decoded.inputConnected : backendInput || measuredInput;
+  const usbOutputActive = decoded.confirmed ? decoded.usbOutputActive : backendOutput || measuredOutput;
   const percent = Number(source.percent);
-  const full = inputConnected && Number.isFinite(percent) && percent >= 98;
+  const full = decoded.confirmed ? decoded.state === "full" : inputConnected && Number.isFinite(percent) && percent >= 98;
+  const chargingError = decoded.confirmed && decoded.state === "charging-error";
   const legacyState = String(source.powerStatus || source.state || "").toLowerCase();
 
   let state;
-  if (full) state = usbOutputActive ? "full-and-powering-usb" : "full";
+  if (chargingError) state = "charging-error";
+  else if (full) state = usbOutputActive ? "full-and-powering-usb" : "full";
   else if (inputConnected) state = usbOutputActive ? "charging-and-powering-usb" : "charging";
   else if (usbOutputActive) state = "powering-usb";
+  else if (decoded.confirmed && decoded.state === "not-charging") state = "not-charging";
   else if (legacyState === "full" || legacyState === "discharging") state = legacyState;
   else state = "unknown";
 
   const labels = {
     charging: "Charging",
+    "charging-error": "Charging error",
+    "not-charging": "Not charging",
     discharging: "Discharging",
     "powering-usb": "Powering USB device",
     "charging-and-powering-usb": "Charging · Powering USB device",
@@ -62,6 +72,9 @@ function normalizeUiBattery(battery = {}, model = {}) {
   normalized.state = state;
   normalized.status = labels[state];
   normalized.detailText = labels[state];
+  normalized.chargeHealth = decoded.chargeHealth || source.chargeHealth || "unknown";
+  normalized.firmwarePowerState = decoded.firmwareState || source.firmwarePowerState || "unknown";
+  normalized.profileConfirmed = decoded.confirmed === true || source.profileConfirmed === true;
   return normalized;
 }
 
@@ -76,6 +89,7 @@ function normalizeUiModel(model = {}) {
 
 async function run(options = {}) {
   if (!options.moduleDirectory) throw new Error("The application module directory was not provided by the loader.");
+  powerStatusModule = importModule(`${options.moduleDirectory}/modules/power-status.js`);
   const fm = FileManager.local();
   const sourcePath = fm.joinPath(options.moduleDirectory, "scriptable.js");
   if (!fm.fileExists(sourcePath)) throw new Error("Base application module scriptable.js is missing.");

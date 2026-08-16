@@ -73,7 +73,11 @@ qop   = auth
 login HA2 uses GET:/cgi/protected.cgi
 XML Authorization URI / HA2 uses /cgi/xml_action.cgi
 physical XML HTTP path remains /xml_action.cgi
+login query carries client=APP
+XML Digest Authorization ends with client=APP
 ```
+
+The APP login uses two independent proofs: the query hashes `/cgi/protected.cgi` with one nonce count/`cnonce`, while the Authorization header hashes `/cgi/xml_action.cgi` with the next nonce count and a different `cnonce`. Power GETs use only Authorization plus the no-cache headers; the project does not add its WebUI `Cookie`, `X-Requested-With`, or GET `Content-Type` headers to this scoped transport.
 
 ---
 
@@ -243,8 +247,9 @@ APK UI -> API call chain recovered         confirmed
 HTTP method                                GET, companion-app-confirmed
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=reset
 XML request body                           none
-project runtime support                    exact live LV01/MF885 2.5.94 match only
-live execution on exact 2.5.94 router      separate evidence level
+project runtime support                    fresh client=APP session + exact live LV01/MF885 2.5.94 match
+old project flow live observation          response returned; user observed no reboot effect
+corrected APP-session live effect           pending next one-shot test
 ```
 
 ### Power off
@@ -256,7 +261,7 @@ APK UI -> API call chain recovered         confirmed
 HTTP method                                GET, companion-app-confirmed
 endpoint                                   /xml_action.cgi?method=get&module=duster&file=poweroff
 XML request body                           none
-project runtime support                    exact live LV01/MF885 2.5.94 match only
+project runtime support                    fresh client=APP session + exact live LV01/MF885 2.5.94 match
 ```
 
 ### Factory reset
@@ -296,9 +301,9 @@ The runtime profile is selected only from a fresh live `status1`: model must be 
 
 ### Retry semantics
 
-Immediately before submission, the backend completes a fresh authenticated `status1` read and re-evaluates the exact profile. The subsequent destructive GET is configured for one HTTP attempt only: no retry after connection failure, HTTP `401`, or XML `unauthorized`. A rejected/stale session therefore fails the command instead of risking a second side effect.
+Immediately before submission, the backend obtains a fresh challenge, completes the recovered `client=APP` login, performs a harmless APP-authenticated `status1` read, and re-evaluates the exact profile. The subsequent destructive GET is configured for one HTTP attempt only: no retry after connection failure, HTTP `401`, or XML `login_status` values `UNAUTHORIZED`, `TIMEOUT`, or `KICKOFF`. A rejected/stale session therefore fails the command instead of risking a second side effect.
 
-After an ambiguous transport drop, the result is `unknown`; do not issue the power command again automatically.
+HTTP 2xx produces `request-accepted` with `effectConfirmed: false`; even a returned schema tree is not proof of a reboot or shutdown. An ambiguous transport drop produces `delivery-unknown`. Neither result causes an automatic replay.
 
 ---
 
@@ -306,7 +311,7 @@ After an ambiguous transport drop, the result is `unknown`; do not issue the pow
 
 The request-shape and runtime-expression gaps are closed. Remaining checks are:
 
-1. first run the fixed GET-only preflight, then perform a separately approved live one-shot reboot on the exact MF885 2.5.94 device;
+1. update the loader/application once with normal Internet access, return to MF885 Wi-Fi, run the fixed GET-only preflight, then perform one corrected APP-session reboot on the exact MF885 2.5.94 device;
 2. optional stock-WebUI packet capture;
 3. exact native `reset`/`poweroff` descriptor/handler decode;
 4. `trueshutdown` research only if needed.

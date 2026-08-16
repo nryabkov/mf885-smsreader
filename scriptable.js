@@ -11,6 +11,7 @@ let telnetControlModule = null;
 let cellularControlModule = null;
 let apiContractModule = null;
 let powerCompatibilityModule = null;
+let powerStatusModule = null;
 let readOnlyPreflightModule = null;
 let engineerParameterModule = null;
 let cellularDiagnosticsModule = null;
@@ -18,11 +19,13 @@ let ACTIVE_POWER_PROFILE = { id: "unavailable", supported: false, commands: {}, 
 if (typeof require === "function") {
   cellularDiagnosticsModule = require("./modules/cellular-diagnostics.js");
   powerCompatibilityModule = require("./modules/power-compatibility.js");
+  powerStatusModule = require("./modules/power-status.js");
   readOnlyPreflightModule = require("./modules/read-only-preflight.js");
 }
 
 const XML_REQUEST_PATH = "/xml_action.cgi";
 const XML_DIGEST_URI = "/cgi/xml_action.cgi";
+const APP_CLIENT = "APP";
 let ACTIVE_XML_REQUEST_PATH = XML_REQUEST_PATH;
 
 let POLL_SECONDS = 30;
@@ -67,6 +70,7 @@ async function run(options = {}) {
   cellularControlModule = importModule(`${options.moduleDirectory}/modules/cellular-control.js`);
   apiContractModule = importModule(`${options.moduleDirectory}/modules/api-contract.js`);
   powerCompatibilityModule = importModule(`${options.moduleDirectory}/modules/power-compatibility.js`);
+  powerStatusModule = importModule(`${options.moduleDirectory}/modules/power-status.js`);
   readOnlyPreflightModule = importModule(`${options.moduleDirectory}/modules/read-only-preflight.js`);
   engineerParameterModule = importModule(`${options.moduleDirectory}/modules/engineer-parameter.js`);
   cellularDiagnosticsModule = importModule(`${options.moduleDirectory}/modules/cellular-diagnostics.js`);
@@ -75,7 +79,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -249,8 +253,10 @@ async function loadPollingSnapshot(auth, currentSms) {
   let status = null;
   try {
     status=await getStatus(auth);
-    model.traffic=parseTraffic(status); model.battery=parseBattery(status); model.network=parseNetwork(status);
-    ACTIVE_POWER_PROFILE=powerProfileForIdentity({model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status)});
+    const identity={model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status)};
+    model.actualModel=identity.model; model.actualRevision=identity.hardware; model.actualFirmware=identity.firmware;
+    model.traffic=parseTraffic(status); model.battery=parseBattery(status,identity); model.network=parseNetwork(status);
+    ACTIVE_POWER_PROFILE=powerProfileForIdentity(identity);
     model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE);
   }
   catch(error){ ACTIVE_POWER_PROFILE=powerProfileForIdentity({}); model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE); model.errors.status=cleanError(error); }
@@ -322,7 +328,7 @@ async function loadModel(auth) {
     ACTIVE_POWER_PROFILE=powerProfileForIdentity({model:actualModel,hardware:model.actualRevision,firmware:actualFirmware});
     model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE);
     model.traffic = sectionWithError(parseTraffic(status), "trafficError", "status1 has no WanStatistics data");
-    model.battery = sectionWithError(parseBattery(status), "batteryError", "status1 has no batteryinfo data");
+    model.battery = sectionWithError(parseBattery(status, { model:actualModel, hardware:model.actualRevision, firmware:actualFirmware }), "batteryError", "status1 has no batteryinfo data");
     model.network = sectionWithError(parseNetwork(status), "networkError", "status1 has no cellular network data");
     debugLog("network:normalized",{firmware:actualFirmware,sys_mode:model.network.raw&&model.network.raw.sys_mode,sys_submode:model.network.raw&&model.network.raw.sys_submode,ConnType:model.network.raw&&model.network.raw.ConnType,proto:model.network.raw&&model.network.raw.proto,source:model.network.networkSource,currentRat:model.network.mode,reason:model.network.networkConflict?"conflict":model.network.generation==="Unknown"?"unknown":null});
   } catch (error) {
@@ -434,7 +440,7 @@ async function powerFlow(auth, kind) {
   try {
     if (kind !== "reboot" && kind !== "powerOff") throw new Error("Unsupported power action.");
     const result = await executePowerCommand(auth, kind);
-    const text=result.outcome==="submitted"?"Router command was submitted; the router response was received.":"Command was sent; the connection was lost before confirmation was received.";
+    const text=result.outcome==="request-accepted"?"The APP-compatible request was accepted; the reboot or shutdown effect is not yet confirmed.":"The command was attempted once; delivery is unknown after connection loss.";
     return dashboardFlow(auth, warningNotice(text, result.diagnostics), "router");
   } catch(error) {
     return dashboardFlow(auth, errorNotice("Router command failed.", error.diagnostics || cleanError(error)), "router");
@@ -497,6 +503,131 @@ function authorization(auth, method) {
   return digestAuthorization(auth, method, XML_DIGEST_URI, nc, cnonce, response);
 }
 function digestAuthorization(auth, method, path, nc, cnonce, response) { const opaque=auth.opaque?`, opaque="${auth.opaque}"`:""; return `Digest username="${USERNAME}", realm="${auth.realm}", nonce="${auth.nonce}", uri="${path}", response="${response}", qop=${auth.qop}, nc=${nc}, cnonce="${cnonce}"${opaque}`; }
+
+function digestProof(auth, method, uri, ncNumber, cnonce) {
+  const nc = Number(ncNumber).toString(16).padStart(8, "0");
+  const response = md5(`${auth.ha1}:${auth.nonce}:${nc}:${cnonce}:${auth.qop}:${md5(`${method}:${uri}`)}`);
+  return { method, uri, nc, cnonce, response };
+}
+
+function appDigestHeader(auth, proof) {
+  return `${digestAuthorization(auth, proof.method, proof.uri, proof.nc, proof.cnonce, proof.response)}, client=${APP_CLIENT}`;
+}
+
+function buildAppLogin(auth, options = {}) {
+  const start = Number(auth && auth.nc);
+  if (!Number.isSafeInteger(start) || start < 1) throw new Error("APP Digest nonce count is invalid");
+  const queryCnonce = options.queryCnonce || randomCnonce();
+  const headerCnonce = options.headerCnonce || randomCnonce();
+  const queryProof = digestProof(auth, "GET", "/cgi/protected.cgi", start, queryCnonce);
+  const headerProof = digestProof(auth, "GET", XML_DIGEST_URI, start + 1, headerCnonce);
+  const query = formEncode({
+    realm: auth.realm,
+    nonce: auth.nonce,
+    response: queryProof.response,
+    qop: auth.qop,
+    cnonce: queryProof.cnonce,
+    Action: "Digest",
+    username: USERNAME,
+    temp: "marvell",
+    client: APP_CLIENT
+  });
+  return {
+    query,
+    authorization: appDigestHeader(auth, headerProof),
+    queryProof,
+    headerProof,
+    nextNc: start + 2
+  };
+}
+
+function appAuthorization(auth, method, cnonce = randomCnonce()) {
+  return appDigestHeader(auth, digestProof(auth, method, XML_DIGEST_URI, auth.nc, cnonce));
+}
+
+function appRequestHeaders(auth, method, cnonce) {
+  return Object.assign({}, baseHeaders(), { Authorization:appAuthorization(auth, method, cnonce) });
+}
+
+function classifyControlResponse(value) {
+  const text = String(value || "");
+  const loginStatus = firstText(text, ["login_status"]).toUpperCase();
+  if (["UNAUTHORIZED", "TIMEOUT", "KICKOFF"].includes(loginStatus)) return `auth-${loginStatus.toLowerCase()}`;
+  if (!text.trim()) return "empty";
+  if (/<(?:reboot|shutdown)\b/i.test(text)) return "model-schema";
+  if (/^\s*<\?xml\b|^\s*<[A-Za-z_][^>]*>/i.test(text)) return "xml-response";
+  return "text-response";
+}
+
+function assertAppResponse(result, operation) {
+  const status = result.response && Number(result.response.statusCode);
+  if (!Number.isFinite(status)) {
+    if (result.exception) throw result.exception;
+    throw new Error(`${operation} request failed without an HTTP status`);
+  }
+  if (Number.isFinite(status) && (status < 200 || status > 299)) throw new Error(`${operation} request failed: HTTP ${status} from /xml_action.cgi`);
+  const responseClass = classifyControlResponse(result.text);
+  if (responseClass.startsWith("auth-")) throw new Error(`Authorization failed for ${operation}: ${responseClass.slice(5)}`);
+  if (result.exception) throw result.exception;
+  return { responseClass, statusCode:Number.isFinite(status)?status:null };
+}
+
+async function appLogin(auth) {
+  const built = buildAppLogin(auth);
+  const req = new Request(`http://${ROUTER_HOST}/login.cgi?${built.query}`);
+  req.method = "GET";
+  req.headers = Object.assign({}, baseHeaders(), { Authorization:built.authorization });
+  req.timeoutInterval = 10;
+  const startedAt = Date.now();
+  const result = await loadResponse(req, { requestId:++DEBUG_REQUEST_SEQUENCE, operation:"APP login", attempt:1, startedAt });
+  const checked = assertAppResponse(result, "APP login");
+  auth.nc = built.nextNc;
+  return { ...checked, bytes:String(result.text||"").length, durationMs:Date.now()-startedAt, queryClientApp:true, authClientApp:true };
+}
+
+async function createAppSession() {
+  const auth = await getAuthChallenge();
+  auth.appLogin = await appLogin(auth);
+  return auth;
+}
+
+async function appXmlGet(auth, file, timeout = 5) {
+  const req = new Request(xmlRequestUrl(ROUTER_HOST, "GET", file, null, XML_REQUEST_PATH));
+  req.method = "GET";
+  req.headers = appRequestHeaders(auth, "GET");
+  req.timeoutInterval = timeout;
+  req._zmi = { method:"GET", operation:file, timeout, body:null, appClient:true };
+  const startedAt = Date.now();
+  let result;
+  try {
+    result = await loadResponse(req, { requestId:++DEBUG_REQUEST_SEQUENCE, operation:`APP ${file}`, attempt:1, startedAt });
+  } finally {
+    auth.nc = Number(auth.nc) + 1;
+  }
+  const checked = assertAppResponse(result, file);
+  return { text:result.text, ...checked, bytes:String(result.text||"").length, durationMs:Date.now()-startedAt, method:"GET", model:file };
+}
+
+function expectedPowerDisconnect(error) {
+  const message = String(error && error.message || error || "");
+  return /timed?\s*out|timeout|connection\s+(?:lost|closed|reset|aborted)|network\s+connection\s+was\s+lost|socket\s+hang\s+up/i.test(message)
+    && !/authorization|unauthorized|HTTP\s+[45]\d\d/i.test(message);
+}
+
+async function submitAppPowerCommand(auth, descriptor, options = {}) {
+  const normalized = apiContractModule && apiContractModule.normalizeModelDescriptor
+    ? apiContractModule.normalizeModelDescriptor(descriptor)
+    : typeof descriptor === "string" ? { name:descriptor, method:"GET" } : descriptor || {};
+  if (!normalized.name || normalized.method !== "GET") throw new Error("Invalid APP power command descriptor");
+  const get = options.get || ((file)=>appXmlGet(auth,file,5));
+  try {
+    const response = await get(normalized.name);
+    return { outcome:"request-accepted", effectConfirmed:false, responseClass:response.responseClass, statusCode:response.statusCode, bytes:response.bytes, durationMs:response.durationMs, method:"GET", model:normalized.name };
+  } catch (error) {
+    if (!expectedPowerDisconnect(error)) throw error;
+    return { outcome:"delivery-unknown", effectConfirmed:false, connectionLost:true, error, method:"GET", model:normalized.name };
+  }
+}
 
 function xmlRequestUrl(host, method, file, command, requestPath = XML_REQUEST_PATH) {
   const query = [`method=${method === "GET" ? "get" : "set"}`, "module=duster", `file=${encodeURIComponent(file)}`];
@@ -846,21 +977,27 @@ function parseTraffic(xml) {
 }
 function parseCounter(value) { if(value===undefined||value===null||String(value).trim()==="")return{state:"missing",raw:value==null?"":String(value),value:null};const raw=String(value).trim();if(!/^[0-9]+$/.test(raw))return{state:"invalid",raw,value:null};return{state:"valid",raw,value:BigInt(raw)}; }
 function connectionSeconds(source) { const d=firstNumber(source,["conn_days"]), h=firstNumber(source,["conn_hours"]), m=firstNumber(source,["conn_minutes"]), sec=firstNumber(source,["conn_seconds"]); return [d,h,m,sec].some(v=>v!==null) ? (d||0)*86400+(h||0)*3600+(m||0)*60+(sec||0) : null; }
-function parseBattery(xml) {
+function parseBattery(xml, identity = {}) {
   const source = tag(xml, "batteryinfo") || xml;
   const percentRaw = firstText(source, ["Battery_percent"]);
   const percentNumber = percentRaw !== "" && /^\d+$/.test(percentRaw) ? Number(percentRaw) : null;
   const percent = percentNumber !== null && percentNumber >= 0 && percentNumber <= 100 ? percentNumber : null;
   const batteryStatus = firstText(source, ["Battery_status", "battery_status", "battery_charging"]);
-  const chargerStatus = firstText(source, ["Charger_status", "charger_status", "CDetectStatus"]);
+  const batteryLevel = firstText(source, ["Battery_level", "battery_level"]);
+  const chargerStatus = firstText(source, ["Charger_status", "charger_status"]);
+  const cDetectStatus = firstText(source, ["CDetectStatus", "c_detect_status"]);
   const chargerCurrentRaw = firstText(source, ["Charger_current", "charger_current"]), outputCurrentRaw = firstText(source, ["Output_current", "output_current"]);
   const chargerCurrent = chargerCurrentRaw !== "" && Number.isFinite(Number(chargerCurrentRaw)) ? Number(chargerCurrentRaw) : null;
   const outputCurrent = outputCurrentRaw !== "" && Number.isFinite(Number(outputCurrentRaw)) ? Number(outputCurrentRaw) : null;
-  const state = batteryState(batteryStatus, chargerStatus, percent, chargerCurrent, outputCurrent);
-  const inputConnected = batteryInputConnected(batteryStatus, chargerStatus, chargerCurrent);
-  const usbOutputActive = outputCurrent !== null && outputCurrent > 0;
-  const labels={charging:"Charging",discharging:"Discharging","powering-usb":"Powering USB device","charging-and-powering-usb":"Charging · Powering USB device",full:"Full","full-and-powering-usb":"Full · Powering USB device",unknown:"Unknown"}, status=labels[state];
-  return { hasData: percentRaw !== "" || !!batteryStatus || !!chargerStatus || chargerCurrent !== null || outputCurrent !== null, percent, percentRaw, percentValid: percent !== null, charging:inputConnected, inputConnected, chargerConnected:inputConnected, usbOutputActive, usbHostActive:usbOutputActive, powerStatus:state, state, status, detailText:status, chargerCurrent, outputCurrent, rawStatus:batteryStatus || "", chargerStatus:chargerStatus || "", rawChargerStatus:chargerStatus || "", rawChargerCurrent:chargerCurrentRaw, rawOutputCurrent:outputCurrentRaw };
+  const profile = powerStatusModule && typeof powerStatusModule.decode === "function"
+    ? powerStatusModule.decode({ batteryStatus, chargerStatus, batteryLevel, chargerCurrent, outputCurrent, cDetectStatus }, identity)
+    : { confirmed:false };
+  const lv01Family = powerStatusModule && typeof powerStatusModule.isLv01Family === "function" && powerStatusModule.isLv01Family(identity);
+  const state = profile.confirmed ? profile.state : lv01Family ? "unknown" : batteryState(batteryStatus, chargerStatus, percent, chargerCurrent, outputCurrent);
+  const inputConnected = profile.confirmed ? profile.inputConnected : lv01Family ? false : batteryInputConnected(batteryStatus, chargerStatus, chargerCurrent);
+  const usbOutputActive = profile.confirmed ? profile.usbOutputActive : lv01Family ? false : outputCurrent !== null && outputCurrent > 0;
+  const labels={charging:"Charging","charging-error":"Charging error","not-charging":"Not charging",discharging:"Discharging","powering-usb":"Powering USB device","charging-and-powering-usb":"Charging · Powering USB device",full:"Full","full-and-powering-usb":"Full · Powering USB device",unknown:"Unknown"}, status=labels[state]||labels.unknown;
+  return { hasData: percentRaw !== "" || !!batteryStatus || !!chargerStatus || !!batteryLevel || chargerCurrent !== null || outputCurrent !== null, percent, percentRaw, percentValid: percent !== null, charging:inputConnected, inputConnected, chargerConnected:inputConnected, usbOutputActive, usbHostActive:usbOutputActive, powerStatus:state, state, status, detailText:status, chargeHealth:profile.chargeHealth||"unknown", firmwarePowerState:profile.firmwareState||"unknown", profileConfirmed:profile.confirmed===true, batteryLevel:batteryLevel||"", chargerCurrent, outputCurrent, rawStatus:batteryStatus || "", chargerStatus:chargerStatus || "", rawChargerStatus:chargerStatus || "", cDetectStatus:cDetectStatus||"", rawChargerCurrent:chargerCurrentRaw, rawOutputCurrent:outputCurrentRaw };
 }
 function batteryInputConnected(batteryStatus, chargerStatus, chargerCurrent) {
   const battery=String(batteryStatus||"").trim(), charger=String(chargerStatus||"").trim();
@@ -912,12 +1049,14 @@ function parseNetwork(xml) {
 }
 function batteryStatusLabel(value, charging, percent, chargerStatus) {
   const state = batteryState(value, chargerStatus, percent, charging ? 1 : null, null);
-  return state === "full" ? "Full" : state === "full-and-powering-usb" ? "Full · Powering USB device" : state === "charging" ? "Charging" : state === "discharging" ? "Discharging" : state === "powering-usb" ? "Powering USB device" : state === "charging-and-powering-usb" ? "Charging · Powering USB device" : "Unknown";
+  return state === "full" ? "Full" : state === "full-and-powering-usb" ? "Full · Powering USB device" : state === "charging-error" ? "Charging error" : state === "charging" ? "Charging" : state === "not-charging" ? "Not charging" : state === "discharging" ? "Discharging" : state === "powering-usb" ? "Powering USB device" : state === "charging-and-powering-usb" ? "Charging · Powering USB device" : "Unknown";
 }
 function batteryInlineLabel(battery) {
   const percent = battery && battery.percent !== null && battery.percent !== undefined ? `${battery.percent}%` : "—";
   const status = battery && battery.status ? battery.status : batteryStatusLabel(battery && battery.rawStatus, battery && battery.charging, battery && battery.percent);
   if (status === "Charging") return `🔋 ${percent} ↑ Charging`;
+  if (status === "Charging error") return `🔋 ${percent} ⚠ Charging error`;
+  if (status === "Not charging") return `🔋 ${percent} · Not charging`;
   if (status === "Discharging") return `🔋 ${percent} ↓ Discharging`;
   if (status === "Powering USB device") return `🔋 ${percent} → Powering USB device`;
   if (status === "Charging · Powering USB device") return `🔋 ${percent} ↑ Charging · → Powering USB device`;
@@ -1128,26 +1267,36 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     reboot:()=>executePowerCommand(auth,"reboot"),powerOff:()=>executePowerCommand(auth,"powerOff")};
   return createWebViewDispatcher(handlers,response=>applyWebView(web,"zmiApplyActionResult",response));
 }
-function powerDiagnostics(method,operation,file,error){const descriptor=apiContractModule&&apiContractModule.normalizeModelDescriptor?apiContractModule.normalizeModelDescriptor(file):(typeof file==="string"?{name:file,method:"POST"}:file||{});return sanitizeDiagnostics(`method=${method||descriptor.method||"unknown"}; model=${operation}; endpoint=${ACTIVE_XML_REQUEST_PATH}; error=${error?cleanError(error):"none"}`);}
+function powerDiagnostics(method,operation,file,error,outcome,responseClass){const descriptor=apiContractModule&&apiContractModule.normalizeModelDescriptor?apiContractModule.normalizeModelDescriptor(file):(typeof file==="string"?{name:file,method:"POST"}:file||{});return sanitizeDiagnostics(`client=APP; method=${method||descriptor.method||"unknown"}; model=${operation}; endpoint=${XML_REQUEST_PATH}; outcome=${outcome||"unknown"}; responseClass=${responseClass||"none"}; error=${error?cleanError(error):"none"}`);}
 async function executePowerCommand(auth,kind,options={}) {
   const compatibility=options.compatibility||powerCompatibilityModule;
   if(!compatibility||typeof compatibility.command!=="function")throw new Error("Power compatibility module is unavailable");
   let profile=options.profile;
+  let powerAuth=options.appAuth||null;
   if(!profile){
-    const readStatus=options.getStatus||getStatus;
-    const status=await readStatus(auth);
+    let status;
+    if(options.getStatus) status=await options.getStatus(auth);
+    else {
+      const makeSession=options.createAppSession||createAppSession;
+      powerAuth=await makeSession();
+      const readAppStatus=options.getAppStatus||((session)=>appXmlGet(session,"status1",5));
+      const probe=await readAppStatus(powerAuth);
+      status=probe&&typeof probe==="object"&&Object.prototype.hasOwnProperty.call(probe,"text")?probe.text:probe;
+    }
     profile=powerProfileForIdentity({model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status)});
     ACTIVE_POWER_PROFILE=profile;
   }
   const spec=compatibility.command(profile,kind);
-  const submit=options.writeThenVerify||((operation)=>writeThenVerify(auth,operation));
+  if(!options.writeThenVerify&&!powerAuth)throw new Error("APP power session is unavailable");
+  const submit=options.writeThenVerify||((operation)=>submitAppPowerCommand(powerAuth,operation.model));
   try {
     const result=await submit({model:spec.file,xml:`<RGW><${spec.tree}></${spec.tree}></RGW>`,destructive:true});
     if(result.error&&!result.connectionLost)throw result.error;
-    if(result.outcome!=="submitted"&&result.outcome!=="unknown")throw new Error(`Unexpected destructive command outcome: ${result.outcome}`);
-    return {...result,message:result.outcome==="submitted"?"Command submitted; router response received.":"Command sent once; connection lost before confirmation.",diagnostics:powerDiagnostics(result.method,spec.operation,spec.file,result.error)};
+    if(!["request-accepted","delivery-unknown","submitted","unknown"].includes(result.outcome))throw new Error(`Unexpected destructive command outcome: ${result.outcome}`);
+    const accepted=result.outcome==="request-accepted"||result.outcome==="submitted";
+    return {...result,effectConfirmed:false,message:accepted?"The APP-compatible request was accepted; the reboot effect is not yet confirmed.":"The command was attempted once; delivery is unknown after connection loss.",diagnostics:powerDiagnostics(result.method,spec.operation,spec.file,result.error,result.outcome,result.responseClass)};
   } catch(error) {
-    error.diagnostics=powerDiagnostics(null,spec.operation,spec.file,error);
+    error.diagnostics=powerDiagnostics(null,spec.operation,spec.file,error,"failed");
     throw error;
   }
 }
@@ -1156,7 +1305,7 @@ async function runReadOnlyPreflight(auth,options={}) {
   const module=options.module||readOnlyPreflightModule;
   if(!module||typeof module.collect!=="function")throw new Error("Read-only preflight module is unavailable");
   const get=options.get||((endpoint)=>xmlRequest(auth,"GET",endpoint,null,true,10));
-  const report=await module.collect({get},{now:options.now||Date.now()});
+  const report=await module.collect({get},{now:options.now||Date.now(),powerDecoder:options.powerDecoder||powerStatusModule});
   return {report,text:module.format(report)};
 }
 
@@ -1281,7 +1430,7 @@ function bridge(action,params,button){var semantic=action+':'+JSON.stringify(par
 function smsHistoryContains(history,id){return !!(history&&Array.isArray(history.messages)&&history.messages.some(function(message){return String(message.id)===String(id)}))}
 function deleteStatusBox(p){var card=p&&p.button&&p.button.closest&&p.button.closest('.sms');return card&&card.querySelector('[data-delete-confirm]')}
 function setDeleteStatus(p,message,isError){var box=deleteStatusBox(p);if(!box)return;box.hidden=false;box.classList.toggle('error',!!isError);box.setAttribute('role',isError?'alert':'status');box.setAttribute('aria-live',isError?'assertive':'polite');box.textContent=message}
-window.zmiApplyActionResult=function(payload){var p=payload&&pending[payload.id];if(p){delete pending[payload.id];delete pendingKeys[p.key];var deletion=p.action==='deleteSms',verified=deletion&&payload.ok&&payload.result&&payload.result.id===String(p.params.id)&&payload.result.history&&!smsHistoryContains(payload.result.history,p.params.id);if(payload.ok&&(!deletion||verified)){var destructive=p.action==='reboot'||p.action==='powerOff'||p.action==='cellularReconnect',uncertain=(p.action==='reboot'||p.action==='powerOff')&&payload.result&&payload.result.outcome==='unknown';if(deletion)setDeleteStatus(p,'SMS deleted and verified in the updated history.',false);finishButton(p.button,uncertain?'warning':'success',uncertain?'Sent · unconfirmed':destructive?'Submitted':p.action==='sendSms'||p.action==='ussd'?'Sent':deletion?'Deleted':p.action==='cellularMode'?'Applied':'Done');p.resolve(payload.result);if(deletion)setTimeout(function(){window.zmiApplySmsHistory(payload.result.history)},0)}else{var message=payload.error||(deletion?'SMS deletion was not confirmed by the updated history.':'Command failed'),error=new Error(message);error.diagnostics=payload.diagnostics||'';finishButton(p.button,'error',deletion?'Retry':'Failed');if(deletion)setDeleteStatus(p,message+(error.diagnostics?'\\n'+error.diagnostics:''),true);p.reject(error)}}if(!payload.ok&&(!p||p.action!=='deleteSms')){stopProgress();showActionError('Command failed',payload.error||'Unknown error',payload.diagnostics||'')}};
+window.zmiApplyActionResult=function(payload){var p=payload&&pending[payload.id];if(p){delete pending[payload.id];delete pendingKeys[p.key];var deletion=p.action==='deleteSms',verified=deletion&&payload.ok&&payload.result&&payload.result.id===String(p.params.id)&&payload.result.history&&!smsHistoryContains(payload.result.history,p.params.id);if(payload.ok&&(!deletion||verified)){var destructive=p.action==='reboot'||p.action==='powerOff'||p.action==='cellularReconnect',powerAction=p.action==='reboot'||p.action==='powerOff',uncertain=powerAction&&payload.result&&['delivery-unknown','unknown'].includes(payload.result.outcome),accepted=powerAction&&payload.result&&['request-accepted','submitted'].includes(payload.result.outcome);if(deletion)setDeleteStatus(p,'SMS deleted and verified in the updated history.',false);finishButton(p.button,powerAction?'warning':'success',uncertain?'Delivery unknown':accepted?'Accepted · effect unconfirmed':destructive?'Submitted':p.action==='sendSms'||p.action==='ussd'?'Sent':deletion?'Deleted':p.action==='cellularMode'?'Applied':'Done');p.resolve(payload.result);if(deletion)setTimeout(function(){window.zmiApplySmsHistory(payload.result.history)},0)}else{var message=payload.error||(deletion?'SMS deletion was not confirmed by the updated history.':'Command failed'),error=new Error(message);error.diagnostics=payload.diagnostics||'';finishButton(p.button,'error',deletion?'Retry':'Failed');if(deletion)setDeleteStatus(p,message+(error.diagnostics?'\\n'+error.diagnostics:''),true);p.reject(error)}}if(!payload.ok&&(!p||p.action!=='deleteSms')){stopProgress();showActionError('Command failed',payload.error||'Unknown error',payload.diagnostics||'')}};
 function renderPolledSms(payload){var messages=payload.messages||payload.smsMessages;if(!Array.isArray(messages))return false;var section=document.getElementById('sms');if(!section)return false;section.querySelectorAll('.sms,.empty,[data-history-warning]').forEach(function(x){x.remove()});if(messages.length===0){var empty=document.createElement('article');empty.className='card empty';var title=document.createElement('h2');title.textContent='No SMS found';var description=document.createElement('p');description.textContent='No inbox messages are available. They may not have arrived yet, or message history could not be loaded.';empty.appendChild(title);empty.appendChild(description);section.appendChild(empty)}messages.slice(0,200).forEach(function(item,index){var card=document.createElement('article');card.className='card sms';card.setAttribute('data-msg-id',item.id||'');card.setAttribute('data-msg-text',item.content||'');card.setAttribute('data-msg-sender',item.phone||'');card.setAttribute('data-msg-date',item.date||'');card.innerHTML='<header><div><h3></h3><small></small></div><time></time></header><p class="body"></p><div class="translation" data-translation><span></span></div><footer><button data-copy>Copy</button><button data-share>Share</button><button class="danger" data-delete-action>Delete</button></footer><div class="warning" data-delete-confirm role="status" aria-live="polite" hidden></div>';card.querySelectorAll('h3,time,.body,.translation span').forEach(function(el){el.classList.add('app-value')});card.querySelector('h3').textContent=item.phone||'Unknown sender';card.querySelector('small').textContent='SMS #'+(item.row||index+1);card.querySelector('time').textContent=item.date||'Unknown time';card.querySelector('.body').textContent=item.content||'';section.appendChild(card)});return true}
 window.zmiApplySmsHistory=function(payload){payload=payload||{};renderPolledSms(payload);model.sms.fingerprint=payload.fingerprint||model.sms.fingerprint;var loaded=Array.isArray(payload.messages)?payload.messages.length:0,total=Number(payload.totalMessages),hasTotal=Number.isFinite(total)&&total>=loaded&&total>0,percent=hasTotal?Math.min(100,Math.round(loaded/total*100)):null,counter=hasTotal?loaded+'/'+total:String(loaded),hero=document.querySelector('.hero strong'),section=document.getElementById('sms'),note=section&&section.querySelector('[data-history-warning]'),toast=section&&section.querySelector('[data-history-toast]');if(hero)hero.textContent='SMS: '+counter;if(payload.loading){if(historyToastTimer!==null){clearTimeout(historyToastTimer);historyToastTimer=null}if(toast)toast.hidden=true;if(!note&&section){note=document.createElement('div');note.setAttribute('data-history-warning','');section.insertBefore(note,section.firstChild)}if(note){note.className='notice';note.textContent='Loading messages: '+counter+(hasTotal?' ('+percent+'%)':'')}}else if(payload.warning){if(!note&&section){note=document.createElement('div');note.setAttribute('data-history-warning','');section.insertBefore(note,section.firstChild)}if(note){note.className='warning';note.textContent='⚠️ '+payload.warning}}else{if(note)note.remove();showHistoryToast('Message history loaded')}};
 function setAll(selector,value){document.querySelectorAll(selector).forEach(function(el){el.textContent=value})}

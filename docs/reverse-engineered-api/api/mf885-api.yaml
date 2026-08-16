@@ -67,6 +67,18 @@ authentication:
     - The physical XML request still targets /xml_action.cgi.
     - The 1.2.42 ZMI Android client independently confirms this physical-path/Digest-URI split.
     - Plain HTTP means request/response bodies are not encrypted.
+  app_power_session:
+    scope: [reboot, poweroff]
+    login_query_client: APP
+    authorization_client: APP
+    query_digest_uri: /cgi/protected.cgi
+    header_digest_uri: /cgi/xml_action.cgi
+    independent_query_and_header_proofs: true
+    request_headers: [Authorization, Expires, Cache-Control, Pragma]
+    excludes_webui_headers: [Cookie, X-Requested-With, Content-Type]
+    pre_command_probe: status1
+    retry: false
+    auth_failure_states: [UNAUTHORIZED, TIMEOUT, KICKOFF]
   documentation: ../AUTHENTICATION.md
 
 firmware_profiles:
@@ -143,7 +155,9 @@ models:
       - RGW/sysinfo/model_name
       - RGW/batteryinfo/Battery_percent
       - RGW/batteryinfo/Battery_status
+      - RGW/batteryinfo/Battery_level
       - RGW/batteryinfo/Charger_status
+      - RGW/batteryinfo/Output_current
       - RGW/wan/NW_register_status
       - RGW/wan/ip
       - RGW/wan/ConnType
@@ -151,6 +165,21 @@ models:
     notes:
       - Values may be empty, NA, stale during transitions, or firmware-specific enums.
       - Responses may contain identifiers/configuration material; redact before sharing.
+    exact_lv01_2_5_94_battery_semantics:
+      confidence: companion-app-confirmed
+      provenance: [android-apk, project-client, live-device]
+      battery_status:
+        "1": charging-input
+        "2": usb-a-feeding
+        "3": normal-on-battery
+      charger_status_when_battery_status_1:
+        "4": full
+        "5": abnormal-charging
+        other_including_0: normal-charging
+      notes:
+        - Charger_status is a charging substatus, not a cable-present or USB-output flag.
+        - CDetectStatus is a separate field and must not be substituted for Charger_status.
+        - Missing fields remain distinct from the literal value "0".
 
   wan:
     description: Cellular WAN state and firmware-specific configuration fields.
@@ -250,6 +279,9 @@ models:
         source: fresh-status1-before-command
         override: none
       automatic_retry: false
+      response_outcomes:
+        http_response: { outcome: request-accepted, effect_confirmed: false }
+        connection_loss: { outcome: delivery-unknown, effect_confirmed: false }
     notes:
       - reset is reboot, not factory reset.
       - Do not automatically retry after timeout/connection loss.
@@ -275,6 +307,9 @@ models:
         source: fresh-status1-before-command
         override: none
       automatic_retry: false
+      response_outcomes:
+        http_response: { outcome: request-accepted, effect_confirmed: false }
+        connection_loss: { outcome: delivery-unknown, effect_confirmed: false }
     notes:
       - The analysed Android shutdown UI uses poweroff, not trueshutdown.
       - Do not automatically retry after timeout/connection loss.
@@ -370,7 +405,7 @@ actions:
 
 client_rules:
   - Keep physical /xml_action.cgi separate from Digest uri /cgi/xml_action.cgi.
-  - Re-authenticate carefully on 401; never blindly replay a destructive command after connection loss.
+  - Use a fresh scoped client=APP session for reboot/poweroff; never replay a destructive command after any response, authentication failure, timeout, or connection loss.
   - For normal writes, POST/SET then read back where possible.
   - For MF885/MF855 2.5.94-family reboot/poweroff, the recovered companion client and project profiles use GET method=get with no XML body.
   - Destructive transport is profile-specific; string descriptors preserve the retained POST behaviour for older mappings.
