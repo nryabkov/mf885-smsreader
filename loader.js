@@ -154,7 +154,14 @@ async function main() {
   if (!Keychain.contains(passwordKey)) Keychain.set(passwordKey, "zimifi");
   const application = importModule(entryFile);
   if (!application || typeof application.run !== "function") throw new Error("The installed application does not export run(options)");
-  await application.run({ ...normalizeConfig(config), ip: config.routerAddress, password: Keychain.get(passwordKey), moduleDirectory: appDir, softwareVersion: activeSoftwareVersion(state) });
+  await application.run({
+    ...normalizeConfig(config),
+    ip: config.routerAddress,
+    password: Keychain.get(passwordKey),
+    moduleDirectory: appDir,
+    softwareVersion: activeSoftwareVersion(state),
+    softwareRevision: state && state.activeSha ? String(state.activeSha) : ""
+  });
 }
 
 async function synchronize(context) {

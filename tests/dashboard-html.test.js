@@ -508,6 +508,47 @@ test('dispatcher reports a failed power command and preserves safe diagnostics',
   assert.match(app.clientScript(model()),/Failed/);
 });
 
+test('dispatcher keeps redacted JSON diagnostics valid across the WebView bridge',async t=>{
+  const cases=[
+    ['cookie','cookie','Cookie: sid=secret-cookie','secret-cookie'],
+    ['quoted nonce','quoted-nonce','nonce="secret-nonce"','secret-nonce']
+  ];
+  for(const [name,id,detail,secret] of cases)await t.test(name,async()=>{
+    const error=new Error('Power request failed');
+    error.diagnostics=JSON.stringify({schema:1,mode:'power-command',error:detail},null,2);
+    const dispatch=app.createWebViewDispatcher({powerOff:async()=>{throw error}});
+    const result=await dispatch({id:`bridge-${id}`,action:'powerOff',params:{confirmed:true}});
+    assert.equal(result.ok,false);
+    assert.doesNotMatch(result.diagnostics,new RegExp(secret));
+    const report=JSON.parse(result.diagnostics);
+    assert.equal(report.schema,1);
+    assert.equal(report.mode,'power-command');
+    assert.match(report.error,/<redacted>/);
+  });
+});
+
+test('dashboard single-flights reboot and power-off across concurrent commands',async()=>{
+  let release;
+  const gate=new Promise(resolve=>{release=resolve});
+  let attempts=0;
+  const dispatch=app.createDashboardDispatcher({},model(),{evaluateJavaScript:async()=>{}},{
+    refreshGuard:{run:f=>f()},smsGuard:{run:f=>f()},powerGuard:app.createInFlightGuard()
+  },{
+    Pasteboard:{copyString(){}},
+    executePowerCommand:async(_auth,kind)=>{attempts++;await gate;return {outcome:'request-accepted',kind}}
+  });
+  const first=dispatch({id:'power-one',action:'reboot',params:{confirmed:true}});
+  const duplicate=await dispatch({id:'power-two',action:'powerOff',params:{confirmed:true}});
+  assert.equal(duplicate.ok,false);
+  assert.match(duplicate.error,/already in progress; no second command was sent/);
+  assert.equal(attempts,1);
+  release();
+  const completed=await first;
+  assert.equal(completed.ok,true);
+  assert.equal(completed.result.kind,'reboot');
+  assert.equal(attempts,1);
+});
+
 test('battery state and mobile card CSS are canonical and scoped',()=>{
   const cases=[['<Battery_status>2</Battery_status><Battery_percent>40</Battery_percent>','charging'],['<Battery_status>1</Battery_status><Charger_status>0</Charger_status>','discharging'],['<Battery_status>3</Battery_status><Battery_percent>100</Battery_percent>','full'],['<Battery_status>88</Battery_status>','unknown']];
   for(const [body,state] of cases){const b=app.parseBattery(`<batteryinfo>${body}</batteryinfo>`);assert.equal(b.state,state);assert.equal(b.status,state[0].toUpperCase()+state.slice(1));assert.match(app.batteryInlineLabel(b),new RegExp(b.status));}

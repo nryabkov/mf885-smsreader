@@ -129,6 +129,7 @@ function enhancementScript() {
       const model=value('.title h1','MF885');
       const firmware=value('#deviceFirmware','—');
       const software=value('#deviceSoftware','—');
+      const softwareRevision=value('#deviceSoftwareRevision','—');
       const network=value('#mode','Unknown');
       const operator=value('#headerMeta','—');
       const apn=value('#apn','—');
@@ -136,11 +137,13 @@ function enhancementScript() {
       const powerButton=$('#powerBtn'),powerAvailable=!!(powerButton&&!powerButton.disabled);
       root().innerHTML='<div class="sheet-backdrop settings-backdrop" data-overlay="settings"><div class="sheet settings-sheet" role="dialog" aria-modal="true" aria-label="Router settings">'
         +'<div class="settings-head"><div><small>Router</small><h2>Settings</h2></div><button class="settings-close" type="button" aria-label="Close">×</button></div>'
-        +'<div class="settings-group"><div class="settings-row"><span>Model</span><b>'+esc(model)+'</b></div><div class="settings-row"><span>Firmware</span><b>'+esc(firmware)+'</b></div><div class="settings-row"><span>Software</span><b>'+esc(software)+'</b></div></div>'
+        +'<div class="settings-group"><div class="settings-row"><span>Model</span><b>'+esc(model)+'</b></div><div class="settings-row"><span>Firmware</span><b>'+esc(firmware)+'</b></div><div class="settings-row"><span>Software</span><b>'+esc(software)+'</b></div><div class="settings-row"><span>Dashboard build</span><b>'+esc(softwareRevision)+'</b></div></div>'
         +'<div class="settings-group"><div class="settings-row"><span>Operator</span><b>'+esc(operator)+'</b></div><div class="settings-row"><span>Network</span><b>'+esc(network)+'</b></div><div class="settings-row"><span>APN</span><b>'+esc(apn)+'</b></div><div class="settings-row"><span>Auto refresh</span><b>'+esc(poll)+' s</b></div></div>'
         +'<button type="button" class="settings-primary" data-settings-open-diag>Open diagnostics</button>'
         +'<button type="button" data-settings-capabilities>Detect capabilities</button>'
         +'<button type="button" data-settings-preflight>Run read-only preflight</button>'
+        +'<button type="button" data-settings-app-auth>Run APP auth probe (GET only)</button>'
+        +'<button type="button" data-settings-last-power>Last power report</button>'
         +'<button type="button" class="danger" data-settings-power'+(powerAvailable?'':' disabled aria-disabled="true"')+'>Reboot / Power</button>'
         +'</div></div>';
       $('.settings-close').onclick=()=>closeOverlay('settings');
@@ -148,6 +151,8 @@ function enhancementScript() {
       $('[data-settings-open-diag]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="diagnostics"]');if(t)t.click();};
       $('[data-settings-capabilities]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const d=$('#detectAll');if(d){d.scrollIntoView({behavior:'smooth',block:'center'});d.focus();}},100);};
       $('[data-settings-preflight]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#safePreflight');if(p)p.click();},0);};
+      $('[data-settings-app-auth]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#appAuthProbe');if(p)p.click();},0);};
+      $('[data-settings-last-power]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#lastPowerReportBtn');if(p)p.click();},0);};
       $('[data-settings-power]').onclick=()=>{closeOverlay('settings');setTimeout(()=>{const p=$('#powerBtn');if(p)p.click();},0);};
     }
 

@@ -36,6 +36,7 @@ No POST, SET, `routerCall`, upload, configuration restore, reboot, shutdown, fac
 
 The copyable JSON report contains only:
 
+- installed dashboard version and loader-reported commit revision; the revision is `unknown` until a replacement loader's next invocation;
 - normalized and raw model label, reported hardware revision, and firmware version;
 - battery percentage, level, raw battery/charger enums, APK-confirmed `Output_current`, optional observed `Charger_current`/`CDetectStatus`, and per-field presence flags;
 - an exact-profile power interpretation from the recovered ZMI 1.2.42 client: `Battery_status=1` is charging (`Charger_status=4` full, `5` abnormal, every other value including `0` normal charging), `2` is USB-A feeding, and `3` is normal battery operation;
@@ -54,9 +55,9 @@ Battery fields are read from `RGW/batteryinfo` when that section exists. `CDetec
 ## First live run
 
 1. Keep the MF885 on normal battery/USB power and connect the iPhone to its Wi-Fi.
-2. Open the dashboard and do not use any System command.
+2. Return to the MF885 Wi-Fi and launch the loader again after an online update. Open the dashboard and do not use any System command.
 3. Select **Run read-only preflight** in Experimental features.
 4. Copy the report and review it before choosing any later experiment.
-5. Confirm `identity.rawModel` is `LV01` (or `MF885`), `identity.firmware` is the full expected 2.5.94 string, `power.inputConnected` matches the physical setup, `writesAttempted` is `0`, and `forbiddenEndpointsTouched` is `false`.
+5. Confirm `software.version` identifies the intended build and `software.revision` is the intended non-`unknown` 40-character SHA, `identity.rawModel` is `LV01` (or `MF885`), `identity.firmware` is the full expected 2.5.94 string, `power.inputConnected` matches the physical setup, `writesAttempted` is `0`, and `forbiddenEndpointsTouched` is `false`.
 
-The next eligible experiment, after human review, is one confirmed reboot—not power-off or firmware restore. Reboot remains a destructive, connection-dropping request and is outside this preflight.
+For power-transport troubleshooting, the next eligible check is **Run APP auth probe (GET only)**. It uses a fresh APP-compatible login and reads only `status1`; it does not touch `reset` or `poweroff`. A reboot remains a separate destructive, connection-dropping request and is outside both read-only reports.
