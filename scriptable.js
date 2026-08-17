@@ -50,6 +50,9 @@ const QUERY = typeof args !== "undefined" && args.queryParameters
 const ACTION = String(QUERY.action || "dashboard");
 const INITIAL_TAB = String(QUERY.tab || "sms") === "router" ? "router" : "sms";
 let SOFTWARE_VERSION = "";
+let SOFTWARE_REVISION = "";
+let LAST_POWER_REPORT_MEMORY = "";
+const LAST_POWER_REPORT_SCHEMA = 1;
 
 /**
  * Run the dashboard with settings supplied by loader.js.
@@ -59,6 +62,7 @@ let SOFTWARE_VERSION = "";
 async function run(options = {}) {
   configureDebug(options);
   SOFTWARE_VERSION = String(options.softwareVersion || "").trim();
+  SOFTWARE_REVISION = String(options.softwareRevision || "").trim();
   if (options.ip) ROUTER_HOST = String(options.ip);
   if (options.password) PASSWORD = String(options.password);
   POLL_SECONDS = Math.max(15, Math.min(300, Number(options.pollSeconds) || 30));
@@ -80,7 +84,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -154,7 +158,7 @@ async function main() {
 // Application flows
 function normalizeNotice(notice) {
   if (!notice) return null;
-  if (typeof notice === "object") return { text: String(notice.text || ""), type: ["success", "warning", "error"].includes(notice.type) ? notice.type : "success", diagnostics: sanitizeDiagnostics(notice.diagnostics || "") };
+  if (typeof notice === "object") return { text: String(notice.text || ""), type: ["success", "warning", "error"].includes(notice.type) ? notice.type : "success", diagnostics: sanitizeDiagnosticOutput(notice.diagnostics || "") };
   return { text: String(notice), type: "success", diagnostics: "" };
 }
 function successNotice(text, diagnostics = "") { return { text, type: "success", diagnostics }; }
@@ -213,6 +217,7 @@ async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
   }
   const smsGuard = createInFlightGuard();
   const refreshGuard = createInFlightGuard();
+  const powerGuard = createInFlightGuard();
   // History is deliberately sequential: several MF885 firmwares lose requests
   // when two message pages are fetched concurrently.
   if (model.sms.loading) smsGuard.run(async () => {
@@ -226,7 +231,7 @@ async function dashboardFlow(auth, notice = "", tab = "sms", overrides = {}) {
       await applyWebView(web, "zmiApplySmsHistory", model.sms);
     }
   });
-  const dispatcher = dependencies.createDispatcher(auth, model, web, { smsGuard, refreshGuard });
+  const dispatcher = dependencies.createDispatcher(auth, model, web, { smsGuard, refreshGuard, powerGuard });
   while (true) {
     try {
       const event = await Promise.race([nextWebViewCommand(web, dependencies.sleep, () => presentationClosed).then(message => ({ message })), presentationResult]);
@@ -311,7 +316,7 @@ async function loadModel(auth) {
   ACTIVE_POWER_PROFILE = powerProfileForIdentity({});
   const model = {
     sms: emptySms(), traffic: {}, battery: {}, network: {}, cellularDiagnostics: {}, ussd: {}, deviceAccess: {}, cellularControl: {},
-    errors: {}, notice: "", tab: "sms", loadedAt: Date.now(), softwareVersion: SOFTWARE_VERSION, pollSeconds: POLL_SECONDS,
+    errors: {}, notice: "", tab: "sms", loadedAt: Date.now(), softwareVersion: SOFTWARE_VERSION, softwareRevision: SOFTWARE_REVISION, pollSeconds: POLL_SECONDS,
     powerControls: powerCompatibilityModule && powerCompatibilityModule.publicState ? powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE) : { available:false, reason:ACTIVE_POWER_PROFILE.reason, actions:{} }
   };
   let status = null;
@@ -465,6 +470,70 @@ function sanitizeDiagnostics(value) {
     .replace(/(cookie:|set-cookie:|x-[^:\n]*token:)[^\n]*/ig, "$1 <redacted>");
 }
 
+function sanitizeDiagnosticReport(value) {
+  if (typeof value === "string") return sanitizeDiagnostics(value);
+  if (Array.isArray(value)) return value.map(sanitizeDiagnosticReport);
+  if (value && typeof value === "object") {
+    const safe = Object.create(null);
+    Object.keys(value).forEach(key => { safe[key] = sanitizeDiagnosticReport(value[key]); });
+    return safe;
+  }
+  return value;
+}
+
+function formatDiagnosticReport(value) {
+  return JSON.stringify(sanitizeDiagnosticReport(value), null, 2);
+}
+
+function sanitizeDiagnosticOutput(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") return formatDiagnosticReport(parsed);
+  } catch (_) {}
+  return sanitizeDiagnostics(text);
+}
+
+function softwareIdentity(overrides = {}) {
+  const version = String(overrides.version || SOFTWARE_VERSION || "").trim();
+  const revision = String(overrides.revision || SOFTWARE_REVISION || "").trim();
+  return { version: version || "unknown", revision: revision || "unknown" };
+}
+
+function lastPowerReportKey() {
+  return `zmi-last-power-report-${LAST_POWER_REPORT_SCHEMA}-${ROUTER_HOST}`;
+}
+
+function validPowerReport(value) {
+  const text = String(value || "");
+  if (!text || text.length > 20000) return "";
+  try {
+    const report = JSON.parse(text);
+    if (!report || report.schema !== 1 || report.mode !== "power-command") return "";
+    const safe = formatDiagnosticReport(report);
+    return safe.length <= 10000 ? safe : "";
+  } catch (_) { return ""; }
+}
+
+function rememberLastPowerReport(value) {
+  const text = validPowerReport(value);
+  if (!text) return "";
+  LAST_POWER_REPORT_MEMORY = text;
+  try { if (typeof Keychain !== "undefined") Keychain.set(lastPowerReportKey(), text); } catch (_) {}
+  return text;
+}
+
+function readLastPowerReport() {
+  try {
+    if (typeof Keychain !== "undefined" && Keychain.contains(lastPowerReportKey())) {
+      const stored = validPowerReport(Keychain.get(lastPowerReportKey()));
+      if (stored) { LAST_POWER_REPORT_MEMORY = stored; return stored; }
+    }
+  } catch (_) {}
+  return validPowerReport(LAST_POWER_REPORT_MEMORY);
+}
+
 // Digest authentication and router API
 function rejectRedirects(req) {
   const state={count:0};
@@ -477,6 +546,7 @@ async function getAuthChallenge(options = {}) {
   const req = new Request(`http://${ROUTER_HOST}/login.cgi`);
   req.method = "GET";
   req.headers = baseHeaders();
+  if (Number(options.timeoutInterval) > 0) req.timeoutInterval = Number(options.timeoutInterval);
   const redirectState=options.rejectRedirects===true?rejectRedirects(req):null;
   debugLog("auth:challenge", { stage:"request", url:`http://${ROUTER_HOST}/login.cgi` });
   try { await req.loadString(); } catch (error) { debugLog("auth:challenge", { stage:"exception", error:cleanError(error) }); }
@@ -637,7 +707,9 @@ async function appLogin(auth) {
 }
 
 async function createAppSession() {
-  const auth = await getAuthChallenge({rejectRedirects:true});
+  // Keep the destructive-control authentication path bounded below the WebView
+  // command timeout. The normal dashboard challenge retains its prior timeout.
+  const auth = await getAuthChallenge({rejectRedirects:true,timeoutInterval:10});
   // ZMI MiFi 1.2.42 initializes its process counter at 2. The login query uses
   // nc=2, its Authorization header uses nc=3, and that exact header is then
   // retained by the shared HTTP client for every command-on-read GET.
@@ -1248,7 +1320,7 @@ function createInFlightGuard() {
   let active = null;
   return { get active(){return !!active;}, run(task){ if(active)return active; active=Promise.resolve().then(task).finally(()=>{active=null;}); return active; } };
 }
-const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
+const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","appAuthProbe","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
 const DANGEROUS_ACTIONS = new Set(["cellularReconnect","cellularMode","deviceAccess","resetTraffic","reboot","powerOff"]);
 function validateWebViewCommand(input) {
   if (!input || typeof input!=="object" || typeof input.id!=="string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(input.id)) throw new Error("Invalid command id");
@@ -1271,7 +1343,7 @@ function createWebViewDispatcher(handlers, reply) {
   return async input => {
     let command;
     try { command=validateWebViewCommand(input); const handler=handlers[command.action]; if(typeof handler!=="function")throw new Error("Action is unavailable"); const result=await handler(command.params); const response={id:command.id,ok:true,result:result===undefined?null:result}; if(reply)await reply(response); return response; }
-    catch(error){const response={id:command&&command.id||input&&typeof input.id==="string"?input.id:"",ok:false,error:cleanError(error)};const diagnostics=sanitizeDiagnostics(error&&error.diagnostics||"");if(diagnostics)response.diagnostics=diagnostics;if(reply)await reply(response);return response;}
+    catch(error){const response={id:command&&command.id||input&&typeof input.id==="string"?input.id:"",ok:false,error:cleanError(error)};const diagnostics=sanitizeDiagnosticOutput(error&&error.diagnostics||"");if(diagnostics)response.diagnostics=diagnostics;if(reply)await reply(response);return response;}
   };
 }
 async function applyWebView(web, method, payload) { await web.evaluateJavaScript(`window.${method} && window.${method}(${JSON.stringify(payload)})`,false); }
@@ -1291,6 +1363,9 @@ async function nextWebViewCommand(web, sleep = scriptableSleep, stopped = () => 
 function createDashboardDispatcher(auth, model, web, guards, native = {}) {
   const pasteboard=native.Pasteboard||(typeof Pasteboard!=="undefined"?Pasteboard:null);
   const shareSheet=native.ShareSheet||(typeof ShareSheet!=="undefined"?ShareSheet:null);
+  const powerGuard=guards.powerGuard||createInFlightGuard();
+  const executePower=native.executePowerCommand||executePowerCommand;
+  const runPower=kind=>{if(powerGuard.active)throw new Error("A power request is already in progress; no second command was sent");return powerGuard.run(()=>executePower(auth,kind));};
   const refresh=()=>guards.refreshGuard.run(async()=>{const fresh=await loadPollingSnapshot(auth,model.sms);model.sms=fresh.sms;await applyWebView(web,"zmiApplyStatus",webPollPayload(fresh));return webPollPayload(fresh);});
   const refreshSms=()=>guards.smsGuard.run(async()=>{model.sms=await loadAllSms(auth);await applyWebView(web,"zmiApplySmsHistory",model.sms);return model.sms;});
   const detect=async p=>{const value=p.kind==="ussd"?await detectUssdCapability(auth):p.kind==="deviceAccess"?await detectDeviceAccess(auth):await detectCellularControl(auth);writeCapabilityCache(p.kind,value);model[p.kind]=value;await applyWebView(web,"zmiApplyCapability",{kind:p.kind,value});return value;};
@@ -1302,7 +1377,8 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     await Promise.all(probes.map(async(probe,i)=>{const kind=kinds[i];let value;try{const found=await probe();value={...found,state:found&&found.supported===true?"available":"unavailable"};}catch(error){value={state:"error",supported:false,detail:cleanError(error)};}results[kind]=value;model[kind]=value;writeCapabilityCache(kind,value);completed++;await applyWebView(web,"zmiApplyCapability",{kind,value,progress:{completed,total:kinds.length}});}));
     return {results,completed,total:kinds.length,failed:kinds.filter(kind=>results[kind].state==="error")};
   };
-  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,safePreflight:()=>runReadOnlyPreflight(auth),
+  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),
+    lastPowerReport:async()=>{const diagnostics=readLastPowerReport();if(!diagnostics)throw new Error("No power request report has been recorded yet");return {diagnostics};},
     copySms:async p=>{pasteboard.copyString(p.text);return {copied:true};},
     shareSms:async p=>{
       if(shareSheet&&typeof shareSheet.present==="function"){
@@ -1319,12 +1395,12 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     cellularReconnect:async()=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth);const r=await cellularControlModule.executeReconnect(cellularControlApi(auth),c);await refresh();return r;},
     cellularMode:async p=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth),m=cellularControlModule.modeById(p.mode);if(!m)throw new Error("Unknown cellular network mode");const r=await cellularControlModule.executeSetMode(cellularControlApi(auth),c,m.id);await refresh();return r;},
     resetTraffic:async()=>{throw new Error("Traffic reset is unavailable because no universal write contract is confirmed");},
-    reboot:()=>executePowerCommand(auth,"reboot"),powerOff:()=>executePowerCommand(auth,"powerOff")};
+    reboot:()=>runPower("reboot"),powerOff:()=>runPower("powerOff")};
   return createWebViewDispatcher(handlers,response=>applyWebView(web,"zmiApplyActionResult",response));
 }
 function diagnosticNumber(value){if(value===null||value===undefined||value==="")return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:null;}
-function powerDiagnosticStage(value){if(!value||typeof value!=="object")return null;const status=value.statusCode!==undefined?value.statusCode:value.response&&value.response.statusCode,bytes=value.bytes!==undefined?value.bytes:Object.prototype.hasOwnProperty.call(value,"text")?String(value.text||"").length:null;return {statusCode:diagnosticNumber(status),bytes:diagnosticNumber(bytes),durationMs:diagnosticNumber(value.durationMs),responseClass:String(value.responseClass||"none"),redirectCount:diagnosticNumber(value.redirectCount)};}
-function powerDiagnostics(method,operation,file,error,outcome,responseClass,context={}){const descriptor=apiContractModule&&apiContractModule.normalizeModelDescriptor?apiContractModule.normalizeModelDescriptor(file):(typeof file==="string"?{name:file,method:"POST"}:file||{}),result=context.result||error&&error.appStage||{},login=context.login||{},probe=context.probe||{};const report={schema:1,mode:"power-command",client:"APP",authFlow:"zmi-apk-1.2.42-persisted-login-header",command:{method:method||descriptor.method||"unknown",operation:String(operation||""),endpoint:XML_REQUEST_PATH,file:String(descriptor.name||""),outcome:outcome||"unknown",effectConfirmed:false,responseClass:responseClass||result.responseClass||"none",response:powerDiagnosticStage(result),responseFingerprint:result.responseFingerprint||null},session:{initialNonceCount:diagnosticNumber(login.queryNonceCount),loginHeaderNonceCount:diagnosticNumber(login.loginHeaderNonceCount),login:powerDiagnosticStage(login),identityProbe:powerDiagnosticStage(probe),authorizationPersisted:login.authHeaderPersisted===true,authorizationReusedForProbeAndCommand:probe.authHeaderReused===true&&result.authHeaderReused===true,sessionCookieReceived:login.sessionCookieReceived===true,sessionCookieSent:result.sessionCookieSent===true},safety:{destructiveAttempts:context.destructiveAttempted===false?0:1,automaticRetries:0,replayed:false,requestBodyPresent:false,redirectsAllowed:false},error:error?cleanError(error):null};return sanitizeDiagnostics(JSON.stringify(report,null,2));}
+function powerDiagnosticStage(value){if(!value||typeof value!=="object"||!["statusCode","response","bytes","text","durationMs","responseClass","redirectCount","error","connectionLost"].some(key=>Object.prototype.hasOwnProperty.call(value,key)))return null;const status=value.statusCode!==undefined?value.statusCode:value.response&&value.response.statusCode,bytes=value.bytes!==undefined?value.bytes:Object.prototype.hasOwnProperty.call(value,"text")?String(value.text||"").length:null;return {statusCode:diagnosticNumber(status),bytes:diagnosticNumber(bytes),durationMs:diagnosticNumber(value.durationMs),responseClass:String(value.responseClass||"none"),redirectCount:diagnosticNumber(value.redirectCount)};}
+function powerDiagnostics(method,operation,file,error,outcome,responseClass,context={}){const descriptor=apiContractModule&&apiContractModule.normalizeModelDescriptor?apiContractModule.normalizeModelDescriptor(file):(typeof file==="string"?{name:file,method:"POST"}:file||{}),result=context.result||error&&error.appStage||{},login=context.login||{},probe=context.probe||{};const report={schema:1,mode:"power-command",generatedAt:Date.now(),software:softwareIdentity(context.software||{}),checkpoint:String(context.checkpoint||"complete"),client:"APP",authFlow:"zmi-apk-1.2.42-persisted-login-header",command:{method:method||descriptor.method||"unknown",operation:String(operation||""),endpoint:XML_REQUEST_PATH,file:String(descriptor.name||""),outcome:outcome||"unknown",effectConfirmed:false,responseClass:responseClass||result.responseClass||"none",response:powerDiagnosticStage(result),responseFingerprint:result.responseFingerprint||null},session:{initialNonceCount:diagnosticNumber(login.queryNonceCount),loginHeaderNonceCount:diagnosticNumber(login.loginHeaderNonceCount),login:powerDiagnosticStage(login),identityProbe:powerDiagnosticStage(probe),authorizationPersisted:login.authHeaderPersisted===true,authorizationReusedForProbeAndCommand:probe.authHeaderReused===true&&result.authHeaderReused===true,sessionCookieReceived:login.sessionCookieReceived===true,sessionCookieSent:result.sessionCookieSent===true},safety:{destructiveAttempts:context.destructiveAttempted===true?1:0,automaticRetries:0,replayed:false,requestBodyPresent:false,redirectsAllowed:false},error:error?cleanError(error):null};return formatDiagnosticReport(report);}
 async function executePowerCommand(auth,kind,options={}) {
   const compatibility=options.compatibility||powerCompatibilityModule;
   let profile=options.profile;
@@ -1333,17 +1409,21 @@ async function executePowerCommand(auth,kind,options={}) {
   let spec=null;
   let destructiveAttempted=false;
   let phase="compatibility";
+  const saveCheckpoint=(checkpoint,operation=phase,file={name:phase,method:"GET"})=>rememberLastPowerReport(powerDiagnostics(null,operation,file,null,"in-progress",null,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,destructiveAttempted,software:options.software,checkpoint}));
+  saveCheckpoint("entered",kind,{name:kind,method:"GET"});
   try {
     if(!compatibility||typeof compatibility.command!=="function")throw new Error("Power compatibility module is unavailable");
     if(!profile){
       let status;
-      if(options.getStatus){phase="identity-probe";status=await options.getStatus(auth);}
+      if(options.getStatus){phase="identity-probe";saveCheckpoint("identity-probe","identity-probe",{name:"status1",method:"GET"});status=await options.getStatus(auth);}
       else {
         const makeSession=options.createAppSession||createAppSession;
         phase="app-login";
+        saveCheckpoint("app-login","app-login",{name:"login",method:"GET"});
         powerAuth=await makeSession();
         const readAppStatus=options.getAppStatus||((session)=>appXmlGet(session,"status1",5));
         phase="identity-probe";
+        saveCheckpoint("identity-probe","identity-probe",{name:"status1",method:"GET"});
         appProbe=await readAppStatus(powerAuth);
         status=appProbe&&typeof appProbe==="object"&&Object.prototype.hasOwnProperty.call(appProbe,"text")?appProbe.text:appProbe;
       }
@@ -1355,14 +1435,78 @@ async function executePowerCommand(auth,kind,options={}) {
     const submit=options.writeThenVerify||((operation)=>submitAppPowerCommand(powerAuth,operation.model));
     phase="power-command";
     destructiveAttempted=true;
+    saveCheckpoint("destructive-request-started",spec.operation,spec.file);
     const result=await submit({model:spec.file,xml:`<RGW><${spec.tree}></${spec.tree}></RGW>`,destructive:true});
     if(result.error&&!result.connectionLost)throw result.error;
     if(!["request-accepted","delivery-unknown","submitted","unknown"].includes(result.outcome))throw new Error(`Unexpected destructive command outcome: ${result.outcome}`);
     const accepted=result.outcome==="request-accepted"||result.outcome==="submitted";
-    return {...result,effectConfirmed:false,message:accepted?"The APP-compatible request was accepted; the reboot effect is not yet confirmed.":"The command was attempted once; delivery is unknown after connection loss.",diagnostics:powerDiagnostics(result.method,spec.operation,spec.file,result.error,result.outcome,result.responseClass,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,result,destructiveAttempted:true})};
+    const diagnostics=powerDiagnostics(result.method,spec.operation,spec.file,result.error,result.outcome,result.responseClass,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,result,destructiveAttempted:true,software:options.software,checkpoint:"completed"});
+    rememberLastPowerReport(diagnostics);
+    return {...result,effectConfirmed:false,message:accepted?"The APP-compatible request was accepted; the reboot effect is not yet confirmed.":"The command was attempted once; delivery is unknown after connection loss.",diagnostics};
   } catch(error) {
     const operation=spec&&spec.operation||phase,file=spec&&spec.file||{name:phase==="identity-probe"?"status1":"login",method:"GET"};
-    error.diagnostics=powerDiagnostics(null,operation,file,error,"failed",null,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,result:error&&error.appStage,destructiveAttempted});
+    error.diagnostics=powerDiagnostics(null,operation,file,error,"failed",null,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,result:error&&error.appStage,destructiveAttempted,software:options.software,checkpoint:"failed"});
+    rememberLastPowerReport(error.diagnostics);
+    throw error;
+  }
+}
+
+function appAuthProbeDiagnostics(error,context={}) {
+  const login=context.login||{},probe=context.probe||{},identity=context.identity||{};
+  const loginStage=context.loginStage||login,probeStage=context.probeStage||probe;
+  const report={
+    schema:1,
+    mode:"app-auth-probe",
+    generatedAt:Date.now(),
+    software:softwareIdentity(context.software||{}),
+    client:"APP",
+    authFlow:"zmi-apk-1.2.42-persisted-login-header",
+    outcome:error?"failed":"authenticated",
+    phase:String(context.phase||"complete"),
+    identity:{
+      model:String(identity.model||""),
+      hardware:String(identity.hardware||""),
+      firmware:String(identity.firmware||""),
+      exactFirmware:identity.exactFirmware===true
+    },
+    session:{
+      initialNonceCount:diagnosticNumber(login.queryNonceCount),
+      loginHeaderNonceCount:diagnosticNumber(login.loginHeaderNonceCount),
+      login:powerDiagnosticStage(loginStage),
+      identityProbe:powerDiagnosticStage(probeStage),
+      authorizationPersisted:login.authHeaderPersisted===true,
+      authorizationReusedForProbe:probe.authHeaderReused===true,
+      sessionCookieReceived:login.sessionCookieReceived===true,
+      sessionCookieSent:probe.sessionCookieSent===true
+    },
+    safety:{
+      methodsUsed:["GET"],
+      writesAttempted:0,
+      destructiveAttempts:0,
+      destructiveEndpointsTouched:false,
+      requestBodyPresent:false,
+      automaticRetries:0,
+      redirectsAllowed:false
+    },
+    error:error?cleanError(error):null
+  };
+  return formatDiagnosticReport(report);
+}
+
+async function runAppAuthProbe(options={}) {
+  let session=null,probe=null,phase="app-login",identity={};
+  try {
+    session=await (options.createAppSession||createAppSession)();
+    phase="identity-probe";
+    probe=await (options.getAppStatus||((value)=>appXmlGet(value,"status1",5)))(session);
+    const status=probe&&typeof probe==="object"&&Object.prototype.hasOwnProperty.call(probe,"text")?probe.text:probe;
+    const rawModel=firstText(status,["model","model_name","product_name"]),hardware=hardwareRevision(status),firmware=firmwareVersion(status);
+    identity={model:/^LV01$/i.test(rawModel)?"MF885":rawModel,hardware,firmware,exactFirmware:firmware==="2.5.94_release_MF855_NZ_CP_2.129.003"};
+    phase="complete";
+    const diagnostics=appAuthProbeDiagnostics(null,{login:session&&session.appLogin,probe,identity,phase,software:options.software});
+    return {ok:true,report:JSON.parse(diagnostics),text:diagnostics,diagnostics};
+  } catch(error) {
+    error.diagnostics=appAuthProbeDiagnostics(error,{login:session&&session.appLogin,probe,loginStage:phase==="app-login"&&error&&error.appStage,probeStage:phase==="identity-probe"&&error&&error.appStage,identity,phase,software:options.software});
     throw error;
   }
 }
@@ -1371,7 +1515,7 @@ async function runReadOnlyPreflight(auth,options={}) {
   const module=options.module||readOnlyPreflightModule;
   if(!module||typeof module.collect!=="function")throw new Error("Read-only preflight module is unavailable");
   const get=options.get||((endpoint)=>xmlRequest(auth,"GET",endpoint,null,true,10));
-  const report=await module.collect({get},{now:options.now||Date.now(),powerDecoder:options.powerDecoder||powerStatusModule});
+  const report=await module.collect({get},{now:options.now||Date.now(),powerDecoder:options.powerDecoder||powerStatusModule,software:softwareIdentity(options.software||{})});
   return {report,text:module.format(report)};
 }
 

@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const app = require("../scriptable.js");
+const power = require("../modules/power-compatibility.js");
 
 function auth(overrides = {}) {
   return {
@@ -115,10 +116,12 @@ test("live power flow reuses the exact APK login header for status and one reset
     }
   };
   try {
-    const result = await app.executePowerCommand({}, "reboot");
+    const software = { version:"3.1.8-ui2", revision:"a".repeat(40) };
+    const result = await app.executePowerCommand({}, "reboot", { software });
     assert.equal(result.outcome, "request-accepted");
     assert.equal(result.effectConfirmed, false);
     const report = JSON.parse(result.diagnostics);
+    assert.deepEqual(report.software, software);
     assert.equal(report.authFlow, "zmi-apk-1.2.42-persisted-login-header");
     assert.equal(report.session.initialNonceCount, 2);
     assert.equal(report.session.loginHeaderNonceCount, 3);
@@ -133,6 +136,7 @@ test("live power flow reuses the exact APK login header for status and one reset
     assert.equal(requests.length, 4);
     const [challenge, login, status, reset] = requests;
     assert.equal(challenge.url, "http://192.168.21.1/login.cgi");
+    assert.equal(challenge.timeoutInterval, 10);
     assert.equal(typeof challenge.onRedirect, "function");
     assert.match(login.url, /\/login\.cgi\?.*client=APP/);
     assert.match(login.headers.Authorization, /uri="\/cgi\/xml_action\.cgi".*client=APP$/);
@@ -152,9 +156,135 @@ test("live power flow reuses the exact APK login header for status and one reset
     assert.equal(reset.timeoutInterval, 5);
     assert.equal(reset.headers["X-Requested-With"], undefined);
     assert.equal(requests.filter(request => /file=reset$/.test(request.url)).length, 1);
+    assert.equal(app.readLastPowerReport(), result.diagnostics, "the redacted result must be journaled before UI dispatch");
   } finally {
     global.Request = originalRequest;
   }
+});
+
+test("standalone APP auth probe is GET-only and never touches reset or poweroff", async () => {
+  const originalRequest = global.Request;
+  const requests = [];
+  global.Request = class {
+    constructor(url) { this.url=url; requests.push(this); }
+    async loadString() {
+      if (this.url === ROUTER_LOGIN) {
+        this.response={statusCode:401,headers:{"WWW-Authenticate":'Digest realm="Highwmg", nonce="1000", qop="auth"'}};
+        throw new Error("HTTP 401 challenge");
+      }
+      if (this.url.includes("/login.cgi?")) {
+        this.response={statusCode:200,headers:{"Set-Cookie":"sid=probe; Path=/"}};
+        return "<RGW><login_status>0</login_status></RGW>";
+      }
+      if (this.url.includes("file=status1")) {
+        this.response={statusCode:200,headers:{}};
+        return EXACT_STATUS;
+      }
+      throw new Error(`Unexpected URL ${this.url}`);
+    }
+  };
+  try {
+    const software={version:"3.1.8-ui2",revision:"b".repeat(40)};
+    const result=await app.runAppAuthProbe({software}),report=JSON.parse(result.diagnostics);
+    assert.equal(result.ok,true);
+    assert.equal(report.mode,"app-auth-probe");
+    assert.equal(report.outcome,"authenticated");
+    assert.deepEqual(report.software,software);
+    assert.equal(report.identity.model,"MF885");
+    assert.equal(report.identity.exactFirmware,true);
+    assert.equal(report.session.authorizationPersisted,true);
+    assert.equal(report.session.authorizationReusedForProbe,true);
+    assert.equal(report.safety.writesAttempted,0);
+    assert.equal(report.safety.destructiveAttempts,0);
+    assert.deepEqual(report.safety.methodsUsed,["GET"]);
+    assert.equal(requests.length,3);
+    assert.ok(requests.every(request=>request.method==="GET"));
+    assert.ok(requests.every(request=>request.body===undefined));
+    assert.equal(requestCount(requests,/file=status1$/),1);
+    assert.equal(requestCount(requests,/file=(?:reset|poweroff)$/),0);
+    assert.doesNotMatch(result.diagnostics,/sid=probe|Digest username|cnonce|response=/i);
+  } finally { global.Request=originalRequest; }
+});
+
+test("APP auth probe assigns a login failure to the login stage", async () => {
+  const stage={statusCode:403,bytes:12,durationMs:4,responseClass:"html-response",redirectCount:0};
+  await assert.rejects(
+    app.runAppAuthProbe({createAppSession:async()=>{const error=new Error("APP login request failed: HTTP 403");error.appStage=stage;throw error;}}),
+    error=>{
+      const report=JSON.parse(error.diagnostics);
+      assert.equal(report.phase,"app-login");
+      assert.equal(report.session.login.statusCode,403);
+      assert.equal(report.session.identityProbe,null);
+      assert.equal(report.safety.destructiveAttempts,0);
+      return true;
+    }
+  );
+});
+
+test("last power report is persisted in Keychain and remains redacted/copyable", () => {
+  const originalKeychain=global.Keychain,stored=new Map();
+  global.Keychain={
+    contains:key=>stored.has(key),
+    get:key=>stored.get(key),
+    set:(key,value)=>stored.set(key,value)
+  };
+  try {
+    const source=JSON.stringify({schema:1,mode:"power-command",software:{version:"3.1.8-ui2",revision:"c".repeat(40)},error:null},null,2);
+    const saved=app.rememberLastPowerReport(source);
+    assert.equal(stored.size,1);
+    assert.equal(app.readLastPowerReport(),saved);
+    assert.deepEqual(JSON.parse(saved).software,{version:"3.1.8-ui2",revision:"c".repeat(40)});
+  } finally { global.Keychain=originalKeychain; }
+});
+
+test("credential-bearing power errors stay valid JSON and are redacted before persistence", () => {
+  const source=JSON.stringify({
+    schema:1,
+    mode:"power-command",
+    error:"Authorization: Digest username=admin, nonce=secret-nonce; Cookie: sid=secret-cookie"
+  },null,2);
+  const saved=app.rememberLastPowerReport(source);
+  assert.ok(saved,"a redacted report must still be persisted");
+  const report=JSON.parse(saved);
+  assert.match(report.error,/<redacted>/);
+  assert.doesNotMatch(saved,/secret-nonce|secret-cookie|Digest username/);
+  assert.equal(app.readLastPowerReport(),saved);
+});
+
+test("power flow journals the APP-login checkpoint before awaiting network I/O", async () => {
+  let rejectLogin;
+  const stalled=new Promise((_,reject)=>{rejectLogin=reject;});
+  const pending=app.executePowerCommand({},"reboot",{
+    createAppSession:()=>stalled,
+    software:{version:"3.1.8-ui2",revision:"d".repeat(40)}
+  });
+  const checkpoint=JSON.parse(app.readLastPowerReport());
+  assert.equal(checkpoint.checkpoint,"app-login");
+  assert.equal(checkpoint.command.outcome,"in-progress");
+  assert.equal(checkpoint.safety.destructiveAttempts,0);
+  rejectLogin(new Error("test login stop"));
+  await assert.rejects(pending,/test login stop/);
+});
+
+test("power flow journals a possible destructive attempt before awaiting one-shot dispatch", async () => {
+  let rejectSubmit;
+  const stalled=new Promise((_,reject)=>{rejectSubmit=reject;});
+  const profile=power.resolve({model:"LV01",hardware:"",firmware:power.EXACT_FIRMWARE});
+  const pending=app.executePowerCommand({},"reboot",{
+    profile,
+    writeThenVerify:()=>stalled,
+    software:{version:"3.1.8-ui2",revision:"e".repeat(40)}
+  });
+  const checkpoint=JSON.parse(app.readLastPowerReport());
+  assert.equal(checkpoint.checkpoint,"destructive-request-started");
+  assert.equal(checkpoint.command.file,"reset");
+  assert.equal(checkpoint.command.outcome,"in-progress");
+  assert.equal(checkpoint.safety.destructiveAttempts,1);
+  rejectSubmit(new Error("test dispatch stop"));
+  await assert.rejects(pending,/test dispatch stop/);
+  const failed=JSON.parse(app.readLastPowerReport());
+  assert.equal(failed.checkpoint,"failed");
+  assert.equal(failed.safety.destructiveAttempts,1);
 });
 
 test("APP GET headers are APK-faithful and exclude WebUI identity headers", () => {

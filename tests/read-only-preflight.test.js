@@ -20,6 +20,7 @@ test("collector calls only the fixed GET allowlist and never touches destructive
   }, { now: 12345 });
   assert.deepEqual(calls, preflight.READ_ONLY_ENDPOINTS);
   assert.equal(report.mode, "read-only");
+  assert.deepEqual(report.software,{version:"unknown",revision:"unknown"});
   assert.equal(report.safety.writesAttempted, 0);
   assert.equal(report.safety.forbiddenEndpointsTouched, false);
   assert.equal(report.safety.restoreTransportVerified, false);
@@ -112,11 +113,14 @@ test("arbitrary endpoint errors cannot leak response or credential text", async 
 
 test("dashboard bridge returns the same redacted read-only report", async () => {
   const calls = [];
+  const revision = "a".repeat(40);
   const result = await app.runReadOnlyPreflight({}, {
     get: async endpoint => { calls.push(endpoint); return fixtures[endpoint]; },
-    now: 12345
+    now: 12345,
+    software: { version:"3.1.8-ui2", revision }
   });
   assert.deepEqual(calls, preflight.READ_ONLY_ENDPOINTS);
+  assert.deepEqual(result.report.software, { version:"3.1.8-ui2", revision });
   assert.equal(result.report.safety.flashAllowed, false);
   assert.match(result.text, /"writesAttempted": 0/);
 });

@@ -103,6 +103,8 @@ await get(resetUrl,   { Authorization: persistedAuthorization, Cookie: appCookie
 - A `401`, or XML `login_status` value `UNAUTHORIZED`, `TIMEOUT`, or `KICKOFF`, means the APP session cannot authorize the command.
 - The recovered client disables redirects. The project does the same and rejects redirects, HTML, and non-XML text instead of treating a final login page with HTTP 200 as command acceptance.
 - Restart and power-off create a fresh APP session, perform a harmless APP-authenticated `status1` identity probe, and then submit exactly one destructive GET. They do not retry after an authentication failure, timeout, or connection loss.
+- The standalone **APP auth probe (GET only)** stops after that `status1` read and reports `writesAttempted: 0` and `destructiveAttempts: 0`; it never selects `reset` or `poweroff`.
+- The scoped APP challenge is bounded to ten seconds. Together with the login and GET timeouts, this keeps the native command path inside the WebView bridge deadline and prevents a missing result sheet from hiding an indefinitely pending challenge.
 - The project treats the exact request path `/cgi/xml_action.cgi` as part of the Digest contract. Changing the URI used in HA2 breaks authentication.
 
 **Confidence:** companion-client-confirmed byte-level session behavior / project implementation; persisted-header live side effect pending

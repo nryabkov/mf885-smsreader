@@ -74,6 +74,11 @@ test("offline fallback reports the version of the active local application", () 
   assert.notEqual(updater.activeSoftwareVersion(installed), uninstalledRemoteManifest.version);
 });
 
+test("launcher passes the active commit as the dashboard software revision", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "loader.js"), "utf8");
+  assert.match(source, /softwareRevision:\s*state && state\.activeSha/);
+});
+
 test("manifest validates loader/application separation and compatibility", () => {
   assert.deepEqual(updater.validateManifest({ ...manifest }), manifest);
   assert.throws(() => updater.validateManifest({ ...manifest, files: [] }), /non-empty/);

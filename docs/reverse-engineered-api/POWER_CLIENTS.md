@@ -250,7 +250,10 @@ XML request body                           none
 project runtime support                    persisted-header client=APP session + exact live LV01/MF885 2.5.94 match
 old WebUI-style flow live observation      response returned; user observed no reboot effect
 regenerating APP-header flow observation   response returned; user observed no reboot effect
-persisted-header APP live effect           pending next one-shot test
+post-3.1.7 user observation                no reboot observed; no result sheet appeared
+copied artifact from that observation      read-only preflight, writesAttempted=0
+active revision / reset transport outcome  unknown until versioned APP-probe or saved power report
+persisted-header APP live effect           unresolved; do not infer from the preflight
 ```
 
 ### Power off
@@ -304,7 +307,9 @@ The runtime profile is selected only from a fresh live `status1`: model must be 
 
 Immediately before submission, the backend obtains a fresh challenge, completes the recovered `client=APP` login, persists its exact Authorization header plus any in-scope login cookie, performs a harmless APP-authenticated `status1` read with that same header, and re-evaluates the exact profile. The subsequent destructive GET repeats the same header and is configured for one HTTP attempt only. Redirects are disabled; redirects, HTML, unexpected text, HTTP `401`, and XML `login_status` values `UNAUTHORIZED`, `TIMEOUT`, or `KICKOFF` fail closed. A rejected/stale session therefore fails the command instead of risking a second side effect.
 
-HTTP 2xx with an expected empty/XML response produces `request-accepted` with `effectConfirmed: false`; even a returned schema tree is not proof of a reboot or shutdown. An ambiguous transport drop produces `delivery-unknown`. Neither result causes an automatic replay. Every outcome provides a copyable redacted transport report without Digest or cookie values.
+HTTP 2xx with an expected empty/XML response produces `request-accepted` with `effectConfirmed: false`; even a returned schema tree is not proof of a reboot or shutdown. Family-native analysis explains why: the CGI recognizes reset-class filenames and returns HTTP 200 after queuing the Duster request, without waiting for the power handler to finish. An ambiguous transport drop produces `delivery-unknown`. Neither result causes an automatic replay.
+
+The backend writes a redacted, versioned phase journal before network login and immediately before handing the one-shot command to the transport. At that checkpoint, `destructiveAttempts: 1` conservatively means the request may have been sent; it is not proof of delivery. The UI and backend single-flight power actions, preventing a concurrent second request. The dashboard exposes the latest Keychain-persisted copy through **Last power report**; if Keychain persistence fails, only the in-memory copy remains. A separate **APP auth probe (GET only)** performs only challenge, APP login and `status1`; its report explicitly records zero writes and zero destructive attempts.
 
 ---
 
@@ -312,7 +317,8 @@ HTTP 2xx with an expected empty/XML response produces `request-accepted` with `e
 
 The request-shape and runtime-expression gaps are closed. Remaining checks are:
 
-1. update the loader/application once with normal Internet access, return to MF885 Wi-Fi, then perform one persisted-header APP-session reboot on the exact MF885 2.5.94 device and retain the redacted report;
-2. optional stock-WebUI packet capture;
-3. exact native `reset`/`poweroff` descriptor/handler decode;
-4. `trueshutdown` research only if needed.
+1. update the loader/application with normal Internet access, then return to MF885 Wi-Fi and launch it again so the replacement loader reports the active SHA; require the intended Software version and a non-`unknown` 40-character Dashboard build;
+2. run the zero-write APP authentication probe and retain its redacted report before considering any further reboot attempt;
+3. if APP authentication is confirmed but an exact request still has no effect, capture the stock WebUI reboot flow as a controlled A/B comparison; the project's older “WebUI-style” login was not byte-exact;
+4. decode the exact target-build native `reset`/`poweroff` descriptors/handlers; current address-level handler evidence is from a related family image, not the exact OSLO hash;
+5. research `trueshutdown` only if needed.

@@ -133,6 +133,10 @@ async function collect(api, options = {}) {
     schema: 1,
     mode: "read-only",
     generatedAt: startedAt,
+    software: {
+      version: String(options.software && options.software.version || "unknown"),
+      revision: String(options.software && options.software.revision || "unknown")
+    },
     identity: {
       model: normalizeModel(rawModel),
       rawModel,
