@@ -37,11 +37,13 @@ const SMS_MAX_PAGES = 500;
 const USSD_RESPONSE_POLLS = 8;
 let DEBUG = true;
 let DEBUG_SENSITIVE_PAYLOADS = false;
-let SKIP_SMS_CONTENT_LOG = true;
 const LOGGED_FIRMWARE_MISMATCHES = new Set();
 let DEBUG_REQUEST_SEQUENCE = 0;
 const DEBUG_CHUNK_SIZE = 900;
 const DEBUG_MAX_CHUNKS = 4;
+const DEBUG_EVENT_LIMIT = 400;
+let DEBUG_EVENT_SEQUENCE = 0;
+const DEBUG_EVENTS = [];
 const TRANSLATE_ENDPOINT = ""; // LibreTranslate-compatible endpoint, e.g. https://libretranslate.example/translate
 const CAPABILITY_NAMES = { cellularControl: "Cellular controls", ussd: "USSD", deviceAccess: "Device access" };
 const CAPABILITY_STATE_LABELS = { unchecked: "Not checked", detecting: "Detecting…", available: "Available", unavailable: "Unavailable", error: "Status unavailable" };
@@ -88,7 +90,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, runFirmwareTransportProbe, firmwareStatusRouteDefinitions, validateFirmwareCanary, runFirmwareRestore, firmwareRestoreAvailability, readFirmwareJournalStatus, acknowledgeFirmwareJournal, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, assertAppLoginResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, runFirmwareTransportProbe, firmwareStatusRouteDefinitions, validateFirmwareCanary, runFirmwareRestore, firmwareRestoreAvailability, readFirmwareJournalStatus, acknowledgeFirmwareJournal, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, assertAppLoginResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, debugLogSnapshot, parseDetailedLogSummary, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -99,21 +101,24 @@ function powerProfileForIdentity(identity) {
 function configureDebug(options = {}) {
   DEBUG = options.debug !== false;
   DEBUG_SENSITIVE_PAYLOADS = options.debugSensitivePayloads === true;
-  SKIP_SMS_CONTENT_LOG = options.skipSmsContentLog !== false;
+  DEBUG_EVENT_SEQUENCE = 0;
+  DEBUG_EVENTS.length = 0;
 }
 
 function redactDebugValue(value) {
   let text = String(value === undefined || value === null ? "" : value);
-  text = text.replace(/<(content|message_content|subject|contacts|from|phone_number|sender|recipient|password|passwd|pwd|pin|puk|psk|ussd(?:_code|code)?|current_device_mac|mac(?:_address)?|imei|iccid|imsi|ssid|wifi(?:_key|_password)?|apn|ip(?:v[46])?|ip_address)\b[^>]*>[\s\S]*?<\/\1>/gi, "<$1><redacted></$1>");
+  // Preserve technical radio/network identity for diagnostics. Only message
+  // material and active credentials are removed from the local log stream.
+  text = text.replace(/<(content|message_content|subject|contacts|from|phone_number|sender|recipient|password|passwd|pwd|pin|puk|psk|wifi(?:_key|_password)?)\b[^>]*>[\s\S]*?<\/\1>/gi, "<$1><redacted></$1>");
   text = text.replace(/\b(Authorization|Cookie|Set-Cookie|password|passwd|pwd|token|nonce|cnonce|response)\b\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)/gi, "$1=<redacted>");
-  text = text.replace(/([?&](?:token|password|passwd|pwd|nonce|cnonce|response|code)=)[^&#]*/gi, "$1<redacted>");
+  text = text.replace(/([?&](?:token|password|passwd|pwd|nonce|cnonce|response)=)[^&#]*/gi, "$1<redacted>");
   text = text.replace(/(?:\+\d[\d ()-]{6,}\d)/g, "<redacted-phone>");
   return text.replace(/[\r\n]+/g, " ");
 }
 function redactDebugPayload(payload) {
   if (payload === null || payload === undefined) return payload;
   if (typeof payload !== "object") return redactDebugValue(payload);
-  const blocked = /authorization|cookie|password|passwd|pwd|token|nonce|cnonce|response|content|contacts|phone|sender|recipient|ussd|mac|imei|iccid|imsi|ssid|wifi|apn|(?:^|_)ip(?:v[46])?(?:_|$)/i;
+  const blocked = /^(?:authorization|cookie|set[_-]?cookie|password|passwd|pwd|token|nonce|cnonce|response|pin|puk|psk|wifi[_-]?(?:key|password)|content|message[_-]?content|subject|contacts|from|phone(?:_number)?|sender|recipient)$/i;
   const copy = Array.isArray(payload) ? [] : {};
   Object.keys(payload).forEach(key => { copy[key] = blocked.test(key) ? "<redacted>" : redactDebugPayload(payload[key]); });
   return copy;
@@ -121,13 +126,36 @@ function redactDebugPayload(payload) {
 function debugLog(event, data) {
   if (!DEBUG) return;
   const safe = redactDebugPayload(data || {});
+  const safeEvent = redactDebugValue(event).slice(0, 180);
   const fields = Object.keys(safe).map(key => `${key}=${typeof safe[key] === "object" ? JSON.stringify(safe[key]) : safe[key]}`).join(" ");
-  console.log(`[ZMI DEBUG]${event ? `[${redactDebugValue(event)}]` : ""}${fields ? ` ${fields}` : ""}`);
+  DEBUG_EVENTS.push({ seq:++DEBUG_EVENT_SEQUENCE, at:Date.now(), event:safeEvent, data:safe });
+  if (DEBUG_EVENTS.length > DEBUG_EVENT_LIMIT) DEBUG_EVENTS.splice(0, DEBUG_EVENTS.length - DEBUG_EVENT_LIMIT);
+  console.log(`[ZMI DEBUG]${safeEvent ? `[${safeEvent}]` : ""}${fields ? ` ${fields}` : ""}`);
+}
+function debugLogSnapshot(after = 0, limit = 200) {
+  const cursor = Number.isFinite(Number(after)) ? Math.max(0, Math.floor(Number(after))) : 0;
+  const count = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(400, Math.floor(Number(limit)))) : 200;
+  const available = DEBUG_EVENTS.filter(entry => entry.seq > cursor);
+  const events = available.slice(-count).map(entry => ({
+    seq:entry.seq,
+    at:entry.at,
+    event:redactDebugValue(entry.event),
+    data:redactDebugPayload(entry.data)
+  }));
+  return {
+    schema:1,
+    generatedAt:Date.now(),
+    enabled:DEBUG,
+    firstAvailable:DEBUG_EVENTS.length ? DEBUG_EVENTS[0].seq : DEBUG_EVENT_SEQUENCE,
+    nextCursor:events.length ? events[events.length - 1].seq : cursor,
+    dropped:(DEBUG_EVENTS.length>0&&cursor<DEBUG_EVENTS[0].seq-1)||available.length > events.length,
+    events
+  };
 }
 function debugXml(event, xml) {
   if (!DEBUG) return;
-  if (SKIP_SMS_CONTENT_LOG && (/message|sms/i.test(String(event)) || /<(?:content|message_content|subject|contacts|from|phone_number|sender|recipient)\b/i.test(String(xml||"")))) {
-    debugLog(event, { omitted:"SMS content logging disabled", bytes:String(xml||"").length, structure:xmlStructure(xml) });
+  if (/message|sms/i.test(String(event)) || /<(?:content|message_content|subject|contacts|from|phone_number|sender|recipient)\b/i.test(String(xml||""))) {
+    debugLog(event, { omitted:"SMS payload permanently hidden", bytes:String(xml||"").length, structure:xmlStructure(xml) });
     return;
   }
   const safe = redactDebugValue(xml);
@@ -361,6 +389,7 @@ async function loadModel(auth) {
   model.deviceAccess = readCapabilityCache("deviceAccess") || { state: "unchecked", detail: "Run Detect first", capabilities: deviceAccessModule && deviceAccessModule.capabilities ? deviceAccessModule.capabilities() : [] };
   model.cellularControl = readCapabilityCache("cellularControl") || { state: "unchecked", detail: "Not checked" };
   debugLog("loadModel:complete", { smsCount:model.sms.messages.length, traffic:!!model.traffic.hasData, battery:!!model.battery.hasData, network:!!model.network.hasData, errorKeys:Object.keys(model.errors) });
+  model.diagnosticLog = debugLogSnapshot(0, 120);
   return model;
 }
 
@@ -1329,7 +1358,7 @@ function deviceAccessApi(auth) {
 async function loadCellularDiagnostics(auth, statusXml) {
   const responses = {}; const errors = {};
   if (statusXml) responses.status1 = statusXml;
-  const endpoints = ["wan", "Engineer_parameter"];
+  const endpoints = ["wan", "Engineer_parameter", "detailed_log"];
   for (const endpoint of endpoints) {
     try {
       const xml = await xmlRequest(auth, "GET", endpoint);
@@ -1339,7 +1368,49 @@ async function loadCellularDiagnostics(auth, statusXml) {
   }
   responses.__errors = errors;
   const normalized=cellularDiagnosticsModule ? cellularDiagnosticsModule.normalize(responses) : { values: {}, stages: {}, endpointErrors: errors };
+  normalized.routerLog=responses.detailed_log ? parseDetailedLogSummary(responses.detailed_log) : { available:false,events:[],error:errors.detailed_log||"Router detailed_log was not returned." };
+  debugLog("router-log:summary",{available:normalized.routerLog.available,pdpSessions:normalized.routerLog.pdpSessions,clientSessions:normalized.routerLog.clientSessions,eventCount:normalized.routerLog.events.length,truncated:normalized.routerLog.truncated,error:normalized.routerLog.error||null});
   normalized.loadedAt=Date.now(); normalized.loading=false; return normalized;
+}
+
+function detailedLogItems(xml, sectionName) {
+  const section=tag(xml,sectionName);
+  if(!section)return [];
+  return Array.from(String(section).matchAll(/<Item(?:\s[^>]*)?>([\s\S]*?)<\/Item>/gi),match=>match[1]);
+}
+function safeRouterLogField(value, pattern, fallback = "") {
+  const text=String(value||"").trim().slice(0,80);
+  return text&&pattern.test(text)?text:fallback;
+}
+function parseDetailedLogSummary(xml, limit = 120) {
+  const source=String(xml||"");
+  if(!/<detailed_log\b/i.test(source))return {available:false,events:[],pdpSessions:0,clientSessions:0,truncated:false,error:"The response has no detailed_log section."};
+  const pdp=detailedLogItems(source,"pdp_detailed_log_list").map(item=>({
+    type:"pdp",
+    start:safeRouterLogField(firstText(item,["start_time"]),/^[0-9 T/:+_.-]+$/),
+    end:safeRouterLogField(firstText(item,["end_time"]),/^[0-9 T/:+_.-]+$/),
+    context:safeRouterLogField(firstText(item,["cid"]),/^[0-9]+$/),
+    ipType:safeRouterLogField(firstText(item,["ip_type"]),/^[A-Za-z0-9+_.-]+$/,"unknown"),
+    apn:safeRouterLogField(firstText(item,["pdp_name"]),/^[\x20-\x7e]+$/),
+    ipv4:safeRouterLogField(firstText(item,["ip_addr"]),/^[A-Fa-f0-9:./]+$/),
+    ipv6:safeRouterLogField(firstText(item,["ipv6_addr"]),/^[A-Fa-f0-9:./]+$/)
+  }));
+  const clients=detailedLogItems(source,"con_time_list").map(item=>({
+    type:"wifi-client",
+    start:safeRouterLogField(firstText(item,["con_time"]),/^[0-9 T/:+_.-]+$/),
+    end:safeRouterLogField(firstText(item,["discon_time"]),/^[0-9 T/:+_.-]+$/),
+    client:safeRouterLogField(firstText(item,["wifimac"]),/^[A-Fa-f0-9:.-]+$/,"unknown")
+  }));
+  const all=pdp.concat(clients),count=Math.max(1,Math.min(200,Number(limit)||120)),events=all.slice(-count);
+  return {
+    available:true,
+    loadedAt:Date.now(),
+    loginTime:safeRouterLogField(firstText(source,["login_time"]),/^[0-9 T/:+_.-]+$/),
+    pdpSessions:pdp.length,
+    clientSessions:clients.length,
+    truncated:all.length>events.length,
+    events
+  };
 }
 
 async function detectCellularControl(auth) {
@@ -1383,7 +1454,7 @@ function requireSuccessfulActionResult(result, fallbackMessage = "Router action 
   error.diagnostics = sanitizeDiagnostics(result.diagnostics || "");
   throw error;
 }
-const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","appAuthProbe","firmwareTransportProbe","firmwareCanaryValidate","firmwareFlash","firmwareJournalStatus","firmwareJournalAcknowledge","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
+const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","copyDiagnosticLog","shareSms","ussd","detectCapability","detectExperimental","diagnosticLogSnapshot","safePreflight","appAuthProbe","firmwareTransportProbe","firmwareCanaryValidate","firmwareFlash","firmwareJournalStatus","firmwareJournalAcknowledge","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
 const DANGEROUS_ACTIONS = new Set(["firmwareFlash","firmwareJournalAcknowledge","cellularReconnect","cellularMode","deviceAccess","resetTraffic","reboot","powerOff"]);
 function validateWebViewCommand(input) {
   if (!input || typeof input!=="object" || typeof input.id!=="string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(input.id)) throw new Error("Invalid command id");
@@ -1399,14 +1470,31 @@ function validateWebViewCommand(input) {
   if(input.action==="detectCapability"&&!['ussd','deviceAccess','cellularControl'].includes(p.kind))throw new Error("Invalid capability kind");
   if(input.action==="deviceAccess")text("deviceAction",64,true);
   if(input.action==="cellularMode"&&!['auto','lteOnly','ltePreferred','wcdmaOnly','gsmOnly'].includes(p.mode))throw new Error("Invalid cellular mode");
+  if(input.action==="diagnosticLogSnapshot"){
+    if(p.after!==undefined&&(!Number.isInteger(p.after)||p.after<0))throw new Error("Invalid diagnostic log cursor");
+    if(p.limit!==undefined&&(!Number.isInteger(p.limit)||p.limit<1||p.limit>400))throw new Error("Invalid diagnostic log limit");
+  }
   if(DANGEROUS_ACTIONS.has(input.action)&&p.confirmed!==true)throw new Error("Explicit confirmation is required");
   return {id:input.id,action:input.action,params:p};
 }
 function createWebViewDispatcher(handlers, reply) {
   return async input => {
-    let command;
-    try { command=validateWebViewCommand(input); const handler=handlers[command.action]; if(typeof handler!=="function")throw new Error("Action is unavailable"); const result=await handler(command.params); const response={id:command.id,ok:true,result:result===undefined?null:result}; if(reply)await reply(response); return response; }
-    catch(error){const response={id:command&&command.id||input&&typeof input.id==="string"?input.id:"",ok:false,error:cleanError(error)};const diagnostics=sanitizeDiagnosticOutput(error&&error.diagnostics||"");if(diagnostics)response.diagnostics=diagnostics;if(reply)await reply(response);return response;}
+    let command; const startedAt=Date.now();
+    try {
+      command=validateWebViewCommand(input);
+      const shouldTrace=command.action!=="diagnosticLogSnapshot";
+      if(shouldTrace)debugLog("web-action:start",{id:command.id,action:command.action,paramKeys:Object.keys(command.params||{}),confirmed:command.params&&command.params.confirmed===true});
+      const handler=handlers[command.action];
+      if(typeof handler!=="function")throw new Error("Action is unavailable");
+      const result=await handler(command.params);
+      if(shouldTrace)debugLog("web-action:complete",{id:command.id,action:command.action,durationMs:Date.now()-startedAt,ok:true});
+      const response={id:command.id,ok:true,result:result===undefined?null:result}; if(reply)await reply(response); return response;
+    }
+    catch(error){
+      const action=command&&command.action||input&&input.action||"invalid";
+      if(action!=="diagnosticLogSnapshot")debugLog("web-action:failed",{id:command&&command.id||input&&input.id||"",action,durationMs:Date.now()-startedAt,error:cleanError(error)});
+      const response={id:command&&command.id||input&&typeof input.id==="string"?input.id:"",ok:false,error:cleanError(error)};const diagnostics=sanitizeDiagnosticOutput(error&&error.diagnostics||"");if(diagnostics)response.diagnostics=diagnostics;if(reply)await reply(response);return response;
+    }
   };
 }
 async function applyWebView(web, method, payload) { await web.evaluateJavaScript(`window.${method} && window.${method}(${JSON.stringify(payload)})`,false); }
@@ -1450,9 +1538,10 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     await Promise.all(probes.map(async(probe,i)=>{const kind=kinds[i];let value;try{const found=await probe();value={...found,state:found&&found.supported===true?"available":"unavailable"};}catch(error){value={state:"error",supported:false,detail:cleanError(error)};}results[kind]=value;model[kind]=value;writeCapabilityCache(kind,value);completed++;await applyWebView(web,"zmiApplyCapability",{kind,value,progress:{completed,total:kinds.length}});}));
     return {results,completed,total:kinds.length,failed:kinds.filter(kind=>results[kind].state==="error")};
   };
-  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),firmwareTransportProbe:runFirmwareProbe,firmwareCanaryValidate:runCanaryValidation,firmwareFlash:runFirmwareFlash,firmwareJournalStatus:()=>firmwareJournal(),firmwareJournalAcknowledge:runFirmwareJournalAcknowledge,
+  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,diagnosticLogSnapshot:p=>debugLogSnapshot(p&&p.after,p&&p.limit),safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),firmwareTransportProbe:runFirmwareProbe,firmwareCanaryValidate:runCanaryValidation,firmwareFlash:runFirmwareFlash,firmwareJournalStatus:()=>firmwareJournal(),firmwareJournalAcknowledge:runFirmwareJournalAcknowledge,
     lastPowerReport:async()=>{const diagnostics=readLastPowerReport();if(!diagnostics)throw new Error("No power request report has been recorded yet");return {diagnostics};},
     copySms:async p=>{pasteboard.copyString(p.text);return {copied:true};},
+    copyDiagnosticLog:async()=>{if(!pasteboard||typeof pasteboard.copyString!=="function")throw new Error("Clipboard is unavailable");const snapshot=debugLogSnapshot(0,400),text=formatDiagnosticReport(snapshot);pasteboard.copyString(text);return {copied:true,events:snapshot.events.length,bytes:text.length};},
     shareSms:async p=>{
       if(shareSheet&&typeof shareSheet.present==="function"){
         try { const presented=await shareSheet.present([p.text]); return presented===false?{shared:false,cancelled:true}:{shared:true}; }
@@ -1469,7 +1558,7 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     cellularMode:async p=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth),m=cellularControlModule.modeById(p.mode);if(!m)throw new Error("Unknown cellular network mode");const r=requireSuccessfulActionResult(await cellularControlModule.executeSetMode(cellularControlApi(auth),c,m.id),"Cellular mode change failed");await refresh();return r;},
     resetTraffic:async()=>{throw new Error("Traffic reset is unavailable because no universal write contract is confirmed");},
     reboot:()=>runPower("reboot"),powerOff:()=>runPower("powerOff")};
-  const safeDuringFirmware=new Set(["copySms","shareSms","firmwareJournalStatus","firmwareJournalAcknowledge","lastPowerReport"]);
+  const safeDuringFirmware=new Set(["copySms","copyDiagnosticLog","shareSms","diagnosticLogSnapshot","firmwareJournalStatus","firmwareJournalAcknowledge","lastPowerReport"]);
   Object.keys(handlers).forEach(action=>{const handler=handlers[action];handlers[action]=params=>{if(FIRMWARE_EXCLUSIVE&&!safeDuringFirmware.has(action))throw new Error("Firmware-exclusive mode is active; this router action was not sent");return handler(params);};});
   return createWebViewDispatcher(handlers,response=>applyWebView(web,"zmiApplyActionResult",response));
 }
@@ -1904,23 +1993,27 @@ async function validateFirmwareCanary(auth,options={}) {
   catch(error){if(error&&(error.cancelled===true||error.canceled===true||/cancel(?:led|ed)/i.test(String(error.message||""))))return {cancelled:true,ok:false,flashAllowed:false};throw error;}
   const path=Array.isArray(selected)?selected[0]:selected;
   if(!path)return {cancelled:true,ok:false,flashAllowed:false};
-  if(typeof fileManager.downloadFileFromiCloud==="function")await fileManager.downloadFileFromiCloud(path);
-  const data=fileManager.read(path);
+  try { if(typeof fileManager.downloadFileFromiCloud==="function")await fileManager.downloadFileFromiCloud(path); }
+  catch(_){throw new Error("The selected firmware file could not be downloaded from Files.");}
+  let data;
+  try { data=fileManager.read(path); }
+  catch(_){throw new Error("The selected firmware file could not be read.");}
   if(!data)throw new Error("The selected firmware file could not be read");
 
   const imageEvidence=stage0.createImageEvidence(data,clock());
-  const imageValidation=stage0.validateImageEvidence(imageEvidence,clock());
+  const imageValidation=typeof stage0.validateAuditImageEvidence==="function"?stage0.validateAuditImageEvidence(imageEvidence,clock()):stage0.validateImageEvidence(imageEvidence,clock());
   const image=imageValidation.image;
-  const canaryMatch=!!(image&&stage0.WEBUI_CANARY_R3&&image.id===stage0.WEBUI_CANARY_R3.id);
+  const expectedCanary=stage0.WEBUI_CANARY_LOGS_R1||stage0.WEBUI_CANARY_R3;
+  const canaryMatch=!!(image&&expectedCanary&&image.id===expectedCanary.id);
   const imageErrors=imageValidation.errors.slice();
-  if(imageValidation.ok&&!canaryMatch)imageErrors.push("The selected allowlisted image is not WEBUI canary r3.");
+  if(imageValidation.ok&&!canaryMatch)imageErrors.push("The selected audited image is not WEBUI Canary Logs r1.");
   const base={
     schema:1,
     mode:"firmware-canary-validation",
     generatedAt:clock(),
     software:softwareIdentity(options.software||{}),
     selectedFile:{name:selectedFileName(path),size:imageEvidence.size,sha256:imageEvidence.sha256,persistedByDashboard:false},
-    expectedCanary:{id:stage0.WEBUI_CANARY_R3.id,file:stage0.WEBUI_CANARY_R3.file,size:stage0.WEBUI_CANARY_R3.size,sha256:stage0.WEBUI_CANARY_R3.sha256,nativeOsloPatch:false,logicalChanges:stage0.WEBUI_CANARY_R3.logicalChanges},
+    expectedCanary:{id:expectedCanary.id,file:expectedCanary.file,size:expectedCanary.size,sha256:expectedCanary.sha256,nativeOsloPatch:false,logicalChanges:expectedCanary.logicalChanges,restorable:expectedCanary.restorable===true,structuralStatus:expectedCanary.structuralStatus||"unknown",quarantineReason:expectedCanary.quarantineReason||null},
     image:{ok:imageErrors.length===0,match:canaryMatch,id:image&&image.id||null,errors:imageErrors},
     device:{checked:false,ok:false,errors:["Live status1 was not read because the image gate did not pass."]},
     power:{checked:false,ok:false,errors:["Live status1 was not read because the image gate did not pass."]},

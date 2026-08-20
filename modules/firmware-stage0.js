@@ -16,10 +16,29 @@ const WEBUI_CANARY_R3 = Object.freeze({
   baseSha256: GOLDEN_IMAGE.sha256,
   restoreMethod: "RestoreFw",
   nativeOsloPatch: false,
-  logicalChanges: ["WEBI:www/index.html"]
+  logicalChanges: ["WEBI:www/index.html"],
+  restorable: false,
+  structuralStatus: "quarantined-invalid-byte-sums",
+  quarantineReason: "Canary r3 preserves a 32-bit word sum, but RestoreFw verifies additive byte sums; its ZIMI global and WEBI checksums are invalid."
 });
 
-const SAFE_IMAGES = Object.freeze([GOLDEN_IMAGE, WEBUI_CANARY_R3]);
+const WEBUI_CANARY_LOGS_R1 = Object.freeze({
+  id: "0.0-logs-r1",
+  kind: "webui-canary",
+  file: "MF885_Community_0.0-logs-r1.bin",
+  size: 8323644,
+  sha256: "65e5f5b507b9fcf49609a6fd1f010daa6f18111dc6a829d5655fa6bd30553517",
+  baseSha256: GOLDEN_IMAGE.sha256,
+  restoreMethod: "RestoreFw",
+  nativeOsloPatch: false,
+  logicalChanges: ["WEBI:www/index.html", "WEBI:www/js/canary_logs.js"],
+  restorable: false,
+  structuralStatus: "verified-not-qualified",
+  quarantineReason: "Canary Logs r1 is structurally verified and reproducible, but golden-to-golden, RestoreFw transport, software-only risk, and live-boot gates are not qualified."
+});
+
+const KNOWN_IMAGES = Object.freeze([GOLDEN_IMAGE, WEBUI_CANARY_R3, WEBUI_CANARY_LOGS_R1]);
+const SAFE_IMAGES = Object.freeze([GOLDEN_IMAGE]);
 const REQUIRED_FIRMWARE = "2.5.94_release_MF855_NZ_CP_2.129.003";
 const MIN_BATTERY_PERCENT = 50;
 const MAX_LIVE_EVIDENCE_AGE_MS = 60 * 1000;
@@ -186,7 +205,7 @@ function evidenceFresh(observedAt, now, maxAge) {
 function lookupImage(meta) {
   const size = Number(meta && (meta.size === undefined ? meta.byteLength : meta.size));
   const sha256 = cleanSha(meta && (meta.sha256 || meta.computedSha256));
-  return SAFE_IMAGES.find(image => image.size === size && image.sha256 === sha256) || null;
+  return KNOWN_IMAGES.find(image => image.size === size && image.sha256 === sha256) || null;
 }
 
 function validateImage(meta) {
@@ -197,12 +216,18 @@ function validateImage(meta) {
   if (!meta || size !== GOLDEN_IMAGE.size) errors.push(`Unexpected image size; expected ${GOLDEN_IMAGE.size} bytes.`);
   if (!/^[0-9a-f]{64}$/.test(sha256)) errors.push("A full SHA-256 digest is required.");
   if (!image) errors.push("Image SHA-256 is not present in the Stage 0 allowlist.");
+  else if (!SAFE_IMAGES.includes(image)) errors.push(image.quarantineReason || "The recognized image is quarantined and is not in the Stage 0 restore allowlist.");
   return { ok: errors.length === 0, image, errors };
 }
 
 function validateImageEvidence(meta, now = Date.now()) {
   const validation = validateImage(meta);
-  const errors = validation.errors.slice();
+  const errors = validation.errors.concat(validateComputedImageEvidence(meta, now));
+  return { ok: errors.length === 0, image: validation.image, errors };
+}
+
+function validateComputedImageEvidence(meta, now = Date.now()) {
+  const errors = [];
   const byteLength = Number(meta && meta.byteLength);
   const computedSha256 = cleanSha(meta && meta.computedSha256);
   if (!meta || !COMPUTED_IMAGE_EVIDENCE.has(meta)) {
@@ -220,7 +245,14 @@ function validateImageEvidence(meta, now = Date.now()) {
   if (!evidenceFresh(meta && meta.verifiedAt, now, MAX_IMAGE_EVIDENCE_AGE_MS)) {
     errors.push("Image byte verification is missing, stale, or timestamped in the future.");
   }
-  return { ok: errors.length === 0, image: validation.image, errors };
+  return errors;
+}
+
+function validateAuditImageEvidence(meta, now = Date.now()) {
+  const image = lookupImage(meta);
+  const errors = validateComputedImageEvidence(meta, now);
+  if (!image) errors.unshift("Image SHA-256 is not a recognized audited MF885 artifact.");
+  return { ok: errors.length === 0, image, errors };
 }
 
 function normalizedDevice(device) {
@@ -401,7 +433,7 @@ function validateGoldenQualification(qualification, transportEvidence, recoveryE
 
 function validateRestoreSequence(image, qualification, transportEvidence, recoveryEvidence) {
   if (!image || image.id === GOLDEN_IMAGE.id) return { ok: true, errors: [] };
-  if (image.id !== WEBUI_CANARY_R3.id) return { ok: false, errors: ["The selected image is not part of the Stage 0 restore sequence."] };
+  if (image.id !== WEBUI_CANARY_LOGS_R1.id) return { ok: false, errors: ["The selected image is not part of the Stage 0 restore sequence."] };
   return validateGoldenQualification(qualification, transportEvidence, recoveryEvidence);
 }
 
@@ -515,9 +547,8 @@ function validateBootVerification(transaction, verification, now = Date.now()) {
   for (const name of ["status1Reachable", "wifiReachable", "smsApiReachable", "mobileDataConnected"]) {
     if (checks[name] !== true) errors.push(`Boot verification check failed or is missing: ${name}.`);
   }
-  if (transaction && transaction.imageId === WEBUI_CANARY_R3.id && value.webuiMarker !== WEBUI_CANARY_R3.id) {
-    errors.push("WEBUI canary marker is missing after reboot.");
-  }
+  const canary=[WEBUI_CANARY_R3,WEBUI_CANARY_LOGS_R1].find(image=>transaction&&transaction.imageId===image.id);
+  if(canary&&value.webuiMarker!==canary.id)errors.push("WEBUI canary marker is missing after reboot.");
   return { ok: errors.length === 0, value: { ...value, device, checks: { ...checks } }, errors };
 }
 
@@ -773,6 +804,8 @@ async function clearCompletedJournal(journal, transactionId) {
 module.exports = {
   GOLDEN_IMAGE,
   WEBUI_CANARY_R3,
+  WEBUI_CANARY_LOGS_R1,
+  KNOWN_IMAGES,
   SAFE_IMAGES,
   REQUIRED_FIRMWARE,
   MIN_BATTERY_PERCENT,
@@ -794,6 +827,7 @@ module.exports = {
   lookupImage,
   validateImage,
   validateImageEvidence,
+  validateAuditImageEvidence,
   normalizedDevice,
   validateDevice,
   validatePower,

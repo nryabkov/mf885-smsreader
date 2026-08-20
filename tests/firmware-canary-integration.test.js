@@ -17,16 +17,16 @@ function acceptedStage0() {
     ...stage0,
     createImageEvidence() {
       return Object.freeze({
-        size: stage0.WEBUI_CANARY_R3.size,
-        sha256: stage0.WEBUI_CANARY_R3.sha256,
-        byteLength: stage0.WEBUI_CANARY_R3.size,
-        computedSha256: stage0.WEBUI_CANARY_R3.sha256,
+        size: stage0.WEBUI_CANARY_LOGS_R1.size,
+        sha256: stage0.WEBUI_CANARY_LOGS_R1.sha256,
+        byteLength: stage0.WEBUI_CANARY_LOGS_R1.size,
+        computedSha256: stage0.WEBUI_CANARY_LOGS_R1.sha256,
         verification: "computed-from-bytes",
         verifiedAt: NOW
       });
     },
-    validateImageEvidence() {
-      return { ok: true, image: stage0.WEBUI_CANARY_R3, errors: [] };
+    validateAuditImageEvidence() {
+      return { ok: true, image: stage0.WEBUI_CANARY_LOGS_R1, errors: [] };
     }
   };
 }
@@ -38,7 +38,7 @@ test("Scriptable canary validation reads the selected bytes and one fresh status
   const result = await app.validateFirmwareCanary({}, {
     stage0: acceptedStage0(),
     now: () => NOW,
-    documentPicker: { openFile: async () => "/private/mobile/Documents/MF885_Community_0.0-canary-webui-r3.bin" },
+    documentPicker: { openFile: async () => "/private/mobile/Documents/MF885_Community_0.0-logs-r1.bin" },
     fileManager: {
       async downloadFileFromiCloud() { downloads++; },
       read() { reads++; return [1, 2, 3]; }
@@ -49,7 +49,7 @@ test("Scriptable canary validation reads the selected bytes and one fresh status
   assert.equal(result.ok, true);
   assert.equal(result.readyForTransportCapture, true);
   assert.equal(result.flashAllowed, false);
-  assert.equal(result.report.selectedFile.name, stage0.WEBUI_CANARY_R3.file);
+  assert.equal(result.report.selectedFile.name, stage0.WEBUI_CANARY_LOGS_R1.file);
   assert.equal(result.report.image.match, true);
   assert.equal(result.report.device.model, "LV01");
   assert.equal(result.report.device.ok, true);
@@ -73,7 +73,7 @@ test("a non-canary file fails before contacting the router", async () => {
   let statusReads = 0;
   const rejectedStage0 = {
     ...acceptedStage0(),
-    validateImageEvidence() { return { ok: false, image: null, errors: ["Image SHA-256 is not present in the Stage 0 allowlist."] }; }
+    validateAuditImageEvidence() { return { ok: false, image: null, errors: ["Image SHA-256 is not a recognized audited MF885 artifact."] }; }
   };
   const result = await app.validateFirmwareCanary({}, {
     stage0: rejectedStage0,

@@ -358,13 +358,58 @@ test('debug redaction removes secrets and retains useful structural fields',()=>
     app.logXmlSummary('status1','<RGW><status><WanStatistics/><batteryinfo/><network_type>LTE</network_type></status></RGW>');
   } finally { console.log=original; }
   const log=calls.join('\n');
-  for(const secret of ['zimifi','github-secret','deadbeef','sid=secret','+12345678901','private SMS','*100#'])assert.doesNotMatch(log,new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+  for(const secret of ['zimifi','github-secret','deadbeef','sid=secret','+12345678901','private SMS'])assert.doesNotMatch(log,new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+  assert.match(log,/ussd=\*100#/);
   for(const safe of ['request:12:response','operation=status1','method=GET','attempt=1','status=200','durationMs=184','bytes=2371','WanStatistics','batteryinfo','cellularFields'])assert.match(log,new RegExp(safe));
 });
 
-test('XML debug redacts device, subscriber, Wi-Fi, address and APN identifiers',()=>{
-  const value=app.redactDebugValue('<current_device_mac>aa:bb:cc:dd:ee:ff</current_device_mac><IMEI>123456789012345</IMEI><ICCID>8901000000000000000</ICCID><IMSI>250000000000000</IMSI><ssid>Private WiFi</ssid><wifi_key>secret-key</wifi_key><ip_address>10.0.0.2</ip_address><apn>private.apn</apn>');
-  for(const secret of ['aa:bb:cc:dd:ee:ff','123456789012345','8901000000000000000','250000000000000','Private WiFi','secret-key','10.0.0.2','private.apn'])assert.doesNotMatch(value,new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+test('XML debug keeps technical identity while redacting SMS and credentials',()=>{
+  const value=app.redactDebugValue('<current_device_mac>aa:bb:cc:dd:ee:ff</current_device_mac><wifimac>11:22:33:44:55:66</wifimac><IMEI>123456789012345</IMEI><ICCID>8901000000000000000</ICCID><IMSI>250000000000000</IMSI><ssid>Private WiFi</ssid><wifi_key>secret-key</wifi_key><ip_address>10.0.0.2</ip_address><ip_addr>10.0.0.3</ip_addr><ipv6_addr>2001:db8::2</ipv6_addr><pdp_name>private.pdp</pdp_name><apn>private.apn</apn>');
+  for(const visible of ['aa:bb:cc:dd:ee:ff','11:22:33:44:55:66','123456789012345','8901000000000000000','250000000000000','Private WiFi','10.0.0.2','10.0.0.3','2001:db8::2','private.pdp','private.apn'])assert.match(value,new RegExp(visible.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+  assert.doesNotMatch(value,/secret-key/);
+  const sms=app.redactDebugValue('<sender>+15551234567</sender><content>private words</content> Authorization: Digest response=deadbeef');
+  for(const secret of ['+15551234567','private words','deadbeef'])assert.doesNotMatch(sms,new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+});
+
+test('live diagnostic snapshots are bounded, cursor-based and redacted',()=>{
+  const original=console.log;console.log=()=>{};
+  try{
+    app.configureDebug({debug:true});
+    for(let i=0;i<405;i++)app.debugLog('request:event',{index:i,phone:'+15551234567',ip_addr:'10.0.0.2',safe:'kept'});
+    const snapshot=app.debugLogSnapshot(0,400);
+    assert.equal(snapshot.schema,1);
+    assert.equal(snapshot.events.length,400);
+    assert.equal(snapshot.dropped,true);
+    assert.equal(snapshot.events[0].data.index,'5');
+    assert.equal(snapshot.events.at(-1).data.index,'404');
+    assert.equal(snapshot.events.at(-1).data.phone,'<redacted>');
+    assert.equal(snapshot.events.at(-1).data.ip_addr,'10.0.0.2');
+    assert.equal(snapshot.events.at(-1).data.safe,'kept');
+    const next=app.debugLogSnapshot(snapshot.nextCursor,10);
+    assert.deepEqual(next.events,[]);
+    assert.equal(next.nextCursor,snapshot.nextCursor);
+  }finally{app.configureDebug({debug:true});console.log=original;}
+});
+
+test('router detailed_log summary keeps full technical PDP and client identity',()=>{
+  const xml='<RGW><detailed_log><login_time>2026-08-20 10:00:00</login_time><pdp_detailed_log_list><Item><start_time>2026-08-20 10:01:00</start_time><end_time>2026-08-20 10:02:00</end_time><cid>1</cid><ip_type>IPv4v6</ip_type><pdp_name>secret.apn</pdp_name><ip_addr>10.0.0.2</ip_addr></Item></pdp_detailed_log_list><con_time_list><Item><con_time>2026-08-20 10:03:00</con_time><discon_time>2026-08-20 10:04:00</discon_time><wifimac>aa:bb:cc:dd:ee:ff</wifimac></Item></con_time_list></detailed_log></RGW>';
+  const result=app.parseDetailedLogSummary(xml);
+  assert.equal(result.available,true);
+  assert.equal(result.pdpSessions,1);
+  assert.equal(result.clientSessions,1);
+  assert.equal(result.events[0].context,'1');
+  assert.equal(result.events[0].ipType,'IPv4v6');
+  assert.equal(result.events[0].apn,'secret.apn');
+  assert.equal(result.events[0].ipv4,'10.0.0.2');
+  assert.equal(result.events[1].client,'aa:bb:cc:dd:ee:ff');
+  const serialized=JSON.stringify(result);
+  for(const technical of ['secret.apn','10.0.0.2','aa:bb:cc:dd:ee:ff'])assert.match(serialized,new RegExp(technical.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+});
+
+test('diagnostic log commands accept only bounded integer cursors',()=>{
+  assert.equal(app.validateWebViewCommand({id:'log-1',action:'diagnosticLogSnapshot',params:{after:0,limit:400}}).action,'diagnosticLogSnapshot');
+  for(const params of [{after:-1},{after:1.2},{limit:0},{limit:401},{limit:'10'}])assert.throws(()=>app.validateWebViewCommand({id:'log-bad',action:'diagnosticLogSnapshot',params}),/Invalid diagnostic log/);
+  assert.equal(app.validateWebViewCommand({id:'log-copy',action:'copyDiagnosticLog',params:{}}).action,'copyDiagnosticLog');
 });
 
 test('large debug XML is emitted in bounded numbered chunks with truncation',()=>{
@@ -375,15 +420,15 @@ test('large debug XML is emitted in bounded numbered chunks with truncation',()=
   assert.ok(calls.every(line=>line.length<1200)); assert.ok(calls.every(line=>/truncated=true/.test(line)));
 });
 
-test('SMS XML bodies are omitted by default and opt-in still uses central redaction',()=>{
+test('SMS XML bodies stay omitted even when a legacy config requests content logging',()=>{
   const original=console.log,calls=[]; console.log=(...values)=>calls.push(values.join(' '));
   try {
     app.configureDebug({debug:true});
     app.debugXml('request:1:message:response-xml','<RGW><message><content>private words</content><sender>+15551234567</sender></message></RGW>');
-    assert.match(calls.join('\n'),/SMS content logging disabled/); assert.doesNotMatch(calls.join('\n'),/private words/);
+    assert.match(calls.join('\n'),/SMS payload permanently hidden/); assert.doesNotMatch(calls.join('\n'),/private words/);
     calls.length=0; app.configureDebug({debug:true,skipSmsContentLog:false});
     app.debugXml('request:2:message:response-xml','<RGW><message><content>private words</content></message></RGW>');
-    assert.match(calls.join('\n'),/<redacted>/); assert.doesNotMatch(calls.join('\n'),/private words/);
+    assert.match(calls.join('\n'),/SMS payload permanently hidden/); assert.doesNotMatch(calls.join('\n'),/private words/);
   } finally { app.configureDebug({debug:true}); console.log=original; }
 });
 
