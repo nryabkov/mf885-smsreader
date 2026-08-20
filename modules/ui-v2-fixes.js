@@ -143,6 +143,7 @@ function enhancementScript() {
         +'<button type="button" data-settings-capabilities>Detect capabilities</button>'
         +'<button type="button" data-settings-preflight>Run read-only preflight</button>'
         +'<button type="button" data-settings-app-auth>Run APP auth probe (GET only)</button>'
+        +'<button type="button" data-settings-firmware-canary>Verify WEBUI canary file (no flash)</button>'
         +'<button type="button" data-settings-last-power>Last power report</button>'
         +'<button type="button" class="danger" data-settings-power'+(powerAvailable?'':' disabled aria-disabled="true"')+'>Reboot / Power</button>'
         +'</div></div>';
@@ -152,6 +153,7 @@ function enhancementScript() {
       $('[data-settings-capabilities]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const d=$('#detectAll');if(d){d.scrollIntoView({behavior:'smooth',block:'center'});d.focus();d.click();}},100);};
       $('[data-settings-preflight]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#safePreflight');if(p)p.click();},0);};
       $('[data-settings-app-auth]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#appAuthProbe');if(p)p.click();},0);};
+      $('[data-settings-firmware-canary]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#firmwareCanaryValidate');if(p)p.click();},0);};
       $('[data-settings-last-power]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#lastPowerReportBtn');if(p)p.click();},0);};
       $('[data-settings-power]').onclick=()=>{closeOverlay('settings');setTimeout(()=>{const p=$('#powerBtn');if(p)p.click();},0);};
     }

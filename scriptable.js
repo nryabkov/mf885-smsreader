@@ -15,12 +15,14 @@ let powerStatusModule = null;
 let readOnlyPreflightModule = null;
 let engineerParameterModule = null;
 let cellularDiagnosticsModule = null;
+let firmwareStage0Module = null;
 let ACTIVE_POWER_PROFILE = { id: "unavailable", supported: false, commands: {}, reason: "Live device identity has not been read." };
 if (typeof require === "function") {
   cellularDiagnosticsModule = require("./modules/cellular-diagnostics.js");
   powerCompatibilityModule = require("./modules/power-compatibility.js");
   powerStatusModule = require("./modules/power-status.js");
   readOnlyPreflightModule = require("./modules/read-only-preflight.js");
+  firmwareStage0Module = require("./modules/firmware-stage0.js");
 }
 
 const XML_REQUEST_PATH = "/xml_action.cgi";
@@ -79,12 +81,13 @@ async function run(options = {}) {
   readOnlyPreflightModule = importModule(`${options.moduleDirectory}/modules/read-only-preflight.js`);
   engineerParameterModule = importModule(`${options.moduleDirectory}/modules/engineer-parameter.js`);
   cellularDiagnosticsModule = importModule(`${options.moduleDirectory}/modules/cellular-diagnostics.js`);
+  firmwareStage0Module = importModule(`${options.moduleDirectory}/modules/firmware-stage0.js`);
   ACTIVE_POWER_PROFILE = powerProfileForIdentity({});
   ACTIVE_XML_REQUEST_PATH = options.xmlRequestPath || XML_REQUEST_PATH;
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, validateFirmwareCanary, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -1368,7 +1371,7 @@ function requireSuccessfulActionResult(result, fallbackMessage = "Router action 
   error.diagnostics = sanitizeDiagnostics(result.diagnostics || "");
   throw error;
 }
-const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","appAuthProbe","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
+const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","appAuthProbe","firmwareCanaryValidate","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
 const DANGEROUS_ACTIONS = new Set(["cellularReconnect","cellularMode","deviceAccess","resetTraffic","reboot","powerOff"]);
 function validateWebViewCommand(input) {
   if (!input || typeof input!=="object" || typeof input.id!=="string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(input.id)) throw new Error("Invalid command id");
@@ -1412,8 +1415,11 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
   const pasteboard=native.Pasteboard||(typeof Pasteboard!=="undefined"?Pasteboard:null);
   const shareSheet=native.ShareSheet||(typeof ShareSheet!=="undefined"?ShareSheet:null);
   const powerGuard=guards.powerGuard||createInFlightGuard();
+  const firmwareGuard=guards.firmwareGuard||createInFlightGuard();
   const executePower=native.executePowerCommand||executePowerCommand;
+  const validateCanary=native.validateFirmwareCanary||validateFirmwareCanary;
   const runPower=kind=>{if(powerGuard.active)throw new Error("A power request is already in progress; no second command was sent");return powerGuard.run(()=>executePower(auth,kind));};
+  const runCanaryValidation=()=>{if(firmwareGuard.active)throw new Error("Firmware validation is already in progress");return firmwareGuard.run(()=>validateCanary(auth));};
   const refresh=()=>guards.refreshGuard.run(async()=>{const fresh=await loadPollingSnapshot(auth,model.sms);model.sms=fresh.sms;await applyWebView(web,"zmiApplyStatus",webPollPayload(fresh));return webPollPayload(fresh);});
   const refreshSms=()=>guards.smsGuard.run(async()=>{model.sms=await loadAllSms(auth);await applyWebView(web,"zmiApplySmsHistory",model.sms);return model.sms;});
   const detect=async p=>{const value=p.kind==="ussd"?await detectUssdCapability(auth):p.kind==="deviceAccess"?await detectDeviceAccess(auth):await detectCellularControl(auth);writeCapabilityCache(p.kind,value);model[p.kind]=value;await applyWebView(web,"zmiApplyCapability",{kind:p.kind,value});return value;};
@@ -1425,7 +1431,7 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     await Promise.all(probes.map(async(probe,i)=>{const kind=kinds[i];let value;try{const found=await probe();value={...found,state:found&&found.supported===true?"available":"unavailable"};}catch(error){value={state:"error",supported:false,detail:cleanError(error)};}results[kind]=value;model[kind]=value;writeCapabilityCache(kind,value);completed++;await applyWebView(web,"zmiApplyCapability",{kind,value,progress:{completed,total:kinds.length}});}));
     return {results,completed,total:kinds.length,failed:kinds.filter(kind=>results[kind].state==="error")};
   };
-  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),
+  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),firmwareCanaryValidate:runCanaryValidation,
     lastPowerReport:async()=>{const diagnostics=readLastPowerReport();if(!diagnostics)throw new Error("No power request report has been recorded yet");return {diagnostics};},
     copySms:async p=>{pasteboard.copyString(p.text);return {copied:true};},
     shareSms:async p=>{
@@ -1566,6 +1572,73 @@ async function runReadOnlyPreflight(auth,options={}) {
   const get=options.get||((endpoint)=>xmlRequest(auth,"GET",endpoint,null,true,10));
   const report=await module.collect({get},{now:options.now||Date.now(),powerDecoder:options.powerDecoder||powerStatusModule,software:softwareIdentity(options.software||{})});
   return {report,text:module.format(report)};
+}
+
+function selectedFileName(path) {
+  const raw=String(path||"").replace(/\\/g,"/").split("/").pop()||"selected firmware file";
+  try { return decodeURIComponent(raw).slice(0,180); } catch (_) { return raw.slice(0,180); }
+}
+
+async function validateFirmwareCanary(auth,options={}) {
+  const stage0=options.stage0||firmwareStage0Module;
+  if(!stage0||typeof stage0.createImageEvidence!=="function")throw new Error("SafeFlash Stage 0 module is unavailable");
+  const picker=options.documentPicker||(typeof DocumentPicker!=="undefined"?DocumentPicker:null);
+  const fileManager=options.fileManager||(typeof FileManager!=="undefined"?FileManager.local():null);
+  if(!picker||typeof picker.openFile!=="function"||!fileManager||typeof fileManager.read!=="function")throw new Error("Scriptable file selection is unavailable");
+  const clock=typeof options.now==="function"?options.now:Date.now;
+  let selected;
+  try { selected=await picker.openFile(); }
+  catch(error){if(error&&(error.cancelled===true||error.canceled===true||/cancel(?:led|ed)/i.test(String(error.message||""))))return {cancelled:true,ok:false,flashAllowed:false};throw error;}
+  const path=Array.isArray(selected)?selected[0]:selected;
+  if(!path)return {cancelled:true,ok:false,flashAllowed:false};
+  if(typeof fileManager.downloadFileFromiCloud==="function")await fileManager.downloadFileFromiCloud(path);
+  const data=fileManager.read(path);
+  if(!data)throw new Error("The selected firmware file could not be read");
+
+  const imageEvidence=stage0.createImageEvidence(data,clock());
+  const imageValidation=stage0.validateImageEvidence(imageEvidence,clock());
+  const image=imageValidation.image;
+  const canaryMatch=!!(image&&stage0.WEBUI_CANARY_R3&&image.id===stage0.WEBUI_CANARY_R3.id);
+  const imageErrors=imageValidation.errors.slice();
+  if(imageValidation.ok&&!canaryMatch)imageErrors.push("The selected allowlisted image is not WEBUI canary r3.");
+  const base={
+    schema:1,
+    mode:"firmware-canary-validation",
+    generatedAt:clock(),
+    software:softwareIdentity(options.software||{}),
+    selectedFile:{name:selectedFileName(path),size:imageEvidence.size,sha256:imageEvidence.sha256,persistedByDashboard:false},
+    expectedCanary:{id:stage0.WEBUI_CANARY_R3.id,file:stage0.WEBUI_CANARY_R3.file,size:stage0.WEBUI_CANARY_R3.size,sha256:stage0.WEBUI_CANARY_R3.sha256,nativeOsloPatch:false,logicalChanges:stage0.WEBUI_CANARY_R3.logicalChanges},
+    image:{ok:imageErrors.length===0,match:canaryMatch,id:image&&image.id||null,errors:imageErrors},
+    device:{checked:false,ok:false,errors:["Live status1 was not read because the image gate did not pass."]},
+    power:{checked:false,ok:false,errors:["Live status1 was not read because the image gate did not pass."]},
+    restoreTransport:{verified:false,allowlistedContracts:Array.isArray(stage0.VERIFIED_RESTORE_TRANSPORTS)?stage0.VERIFIED_RESTORE_TRANSPORTS.length:0,errors:["RestoreFw transport remains locked in this build."]},
+    safety:{routerReadsAttempted:0,routerWritesAttempted:0,firmwarePostsAttempted:0,automaticRetries:0,flashAllowed:false}
+  };
+  if(imageErrors.length){const text=formatDiagnosticReport(base);return {cancelled:false,ok:false,readyForTransportCapture:false,flashAllowed:false,report:base,text};}
+
+  let status;
+  try {
+    base.safety.routerReadsAttempted=1;
+    status=await (options.getStatus||getStatus)(auth);
+  } catch(error) {
+    base.device={checked:true,ok:false,errors:[`Fresh status1 read failed: ${cleanError(error)}`]};
+    base.power={checked:true,ok:false,errors:["Power gate could not be evaluated without status1."]};
+    const text=formatDiagnosticReport(base);
+    return {cancelled:false,ok:false,readyForTransportCapture:false,flashAllowed:false,report:base,text};
+  }
+
+  const observedAt=clock();
+  const identity={model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status),source:"status1-live",observedAt};
+  const battery=parseBattery(status,identity);
+  const power={batteryPercent:battery.percent,chargerConnected:battery.chargerConnected===true,source:"status1-live",observedAt};
+  const deviceValidation=stage0.validateDevice(identity,observedAt);
+  const powerValidation=stage0.validatePower(power,observedAt);
+  base.device={checked:true,ok:deviceValidation.ok,model:identity.model,hardware:identity.hardware,firmware:identity.firmware,source:identity.source,errors:deviceValidation.errors};
+  base.power={checked:true,ok:powerValidation.ok,batteryPercent:powerValidation.batteryPercent,chargerConnected:powerValidation.chargerConnected,source:powerValidation.source,errors:powerValidation.errors};
+  const readyForTransportCapture=canaryMatch&&deviceValidation.ok&&powerValidation.ok;
+  base.readyForTransportCapture=readyForTransportCapture;
+  const text=formatDiagnosticReport(base);
+  return {cancelled:false,ok:readyForTransportCapture,readyForTransportCapture,flashAllowed:false,report:base,text};
 }
 
 // WebView rendering

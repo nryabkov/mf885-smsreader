@@ -229,7 +229,7 @@ function normalizedDevice(device) {
 function validateDevice(device, now = Date.now()) {
   const value = normalizedDevice(device);
   const errors = [];
-  if (!/(?:^|\b)MF885(?:\b|$)|MF96-ROUTER-C2/i.test(value.model)) errors.push("Device model is not positively identified as MF885 / MF96-ROUTER-C2.");
+  if (!/^(?:LV01|MF885|MF96-ROUTER-C2)$/i.test(value.model)) errors.push("Device model is not positively identified as LV01 / MF885 / MF96-ROUTER-C2.");
   if (!/Ver\.?\s*D/i.test(value.hardware)) errors.push("Hardware revision is not positively identified as Ver.D.");
   if (value.firmware !== REQUIRED_FIRMWARE) errors.push(`Base firmware must be exactly ${REQUIRED_FIRMWARE}.`);
   if (value.source !== "status1-live") errors.push("Device identity must come from a fresh live status1 read.");
@@ -378,7 +378,7 @@ function validateBootVerification(transaction, verification) {
   if (String(value.transactionId || "") !== String(transaction && transaction.transactionId || "")) errors.push("Boot verification is not bound to this transaction.");
   if (cleanSha(value.imageSha256) !== cleanSha(transaction && transaction.imageSha256)) errors.push("Boot verification is not bound to this image.");
   if (!finiteTimestamp(value.observedAt) || Number(value.observedAt) < Number(transaction && transaction.updatedAt || 0)) errors.push("Boot verification predates the restore transaction.");
-  if (!/(?:^|\b)MF885(?:\b|$)|MF96-ROUTER-C2/i.test(device.model) || !/Ver\.?\s*D/i.test(device.hardware) || device.firmware !== REQUIRED_FIRMWARE) errors.push("Post-boot device identity does not match the exact MF885 target.");
+  if (!/^(?:LV01|MF885|MF96-ROUTER-C2)$/i.test(device.model) || !/Ver\.?\s*D/i.test(device.hardware) || device.firmware !== REQUIRED_FIRMWARE) errors.push("Post-boot device identity does not match the exact MF885 target.");
   for (const name of ["status1Reachable", "wifiReachable", "smsApiReachable", "mobileDataConnected"]) {
     if (checks[name] !== true) errors.push(`Boot verification check failed or is missing: ${name}.`);
   }

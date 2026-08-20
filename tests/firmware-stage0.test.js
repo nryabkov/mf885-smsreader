@@ -98,6 +98,7 @@ test("image metadata that bypasses the Stage 0 byte hasher is rejected", () => {
 
 test("requires fresh live MF885 Ver.D identity on the exact 2.5.94 build", () => {
   assert.equal(stage0.validateDevice(deviceEvidence(), NOW).ok, true);
+  assert.equal(stage0.validateDevice(deviceEvidence({ model: "LV01" }), NOW).ok, true);
   assert.equal(stage0.validateDevice(deviceEvidence({ model: "MF855" }), NOW).ok, false);
   assert.equal(stage0.validateDevice(deviceEvidence({ hardware: "Ver.C" }), NOW).ok, false);
   assert.equal(stage0.validateDevice(deviceEvidence({ firmware: "2.5.96" }), NOW).ok, false);
