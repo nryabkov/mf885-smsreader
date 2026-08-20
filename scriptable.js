@@ -88,7 +88,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, validateFirmwareCanary, runFirmwareRestore, firmwareRestoreAvailability, readFirmwareJournalStatus, acknowledgeFirmwareJournal, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, runFirmwareTransportProbe, firmwareStatusRouteDefinitions, validateFirmwareCanary, runFirmwareRestore, firmwareRestoreAvailability, readFirmwareJournalStatus, acknowledgeFirmwareJournal, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, assertAppLoginResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -698,6 +698,16 @@ function assertAppResponse(result, operation) {
   return { responseClass, statusCode:Number.isFinite(status)?status:null };
 }
 
+function assertAppLoginResponse(result){
+  try{return assertAppResponse(result,"APP login");}
+  catch(error){
+    const status=result&&result.response&&Number(result.response.statusCode),text=String(result&&result.text||"");
+    const capturedMongooseEnvelope=/^HTTP\/1\.1 200 OK\r?\nContent-Type: text\/html\r?\nServer: Mongoose\/3\.0\r?\n\r?\n?$/.test(text);
+    if(status===200&&Number(result&&result.redirectCount)===0&&!result.exception&&capturedMongooseEnvelope)return {responseClass:"captured-mongoose-login-envelope",statusCode:200};
+    throw error;
+  }
+}
+
 async function appLogin(auth) {
   const built = buildAppLogin(auth);
   const req = new Request(`http://${ROUTER_HOST}/login.cgi?${built.query}`);
@@ -708,7 +718,7 @@ async function appLogin(auth) {
   const startedAt = Date.now();
   const result = await loadResponse(req, { requestId:++DEBUG_REQUEST_SEQUENCE, operation:"APP login", attempt:1, startedAt });
   let checked;
-  try { checked=assertAppResponse(result, "APP login"); }
+  try { checked=assertAppLoginResponse(result); }
   catch(error){error.appStage={...powerDiagnosticStage(result),responseClass:classifyControlResponse(result.text),redirectCount:Number(result.redirectCount)||0};throw error;}
   auth.appAuthorization = built.authorization;
   auth.appCookie = responseCookieHeader(result.response);
@@ -1373,7 +1383,7 @@ function requireSuccessfulActionResult(result, fallbackMessage = "Router action 
   error.diagnostics = sanitizeDiagnostics(result.diagnostics || "");
   throw error;
 }
-const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","appAuthProbe","firmwareCanaryValidate","firmwareFlash","firmwareJournalStatus","firmwareJournalAcknowledge","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
+const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","appAuthProbe","firmwareTransportProbe","firmwareCanaryValidate","firmwareFlash","firmwareJournalStatus","firmwareJournalAcknowledge","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
 const DANGEROUS_ACTIONS = new Set(["firmwareFlash","firmwareJournalAcknowledge","cellularReconnect","cellularMode","deviceAccess","resetTraffic","reboot","powerOff"]);
 function validateWebViewCommand(input) {
   if (!input || typeof input!=="object" || typeof input.id!=="string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(input.id)) throw new Error("Invalid command id");
@@ -1420,11 +1430,13 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
   const firmwareGuard=guards.firmwareGuard||createInFlightGuard();
   const executePower=native.executePowerCommand||executePowerCommand;
   const validateCanary=native.validateFirmwareCanary||validateFirmwareCanary;
+  const probeFirmwareTransport=native.runFirmwareTransportProbe||runFirmwareTransportProbe;
   const restoreFirmware=native.runFirmwareRestore||runFirmwareRestore;
   const firmwareJournal=native.readFirmwareJournalStatus||readFirmwareJournalStatus;
   const acknowledgeJournal=native.acknowledgeFirmwareJournal||acknowledgeFirmwareJournal;
   const runPower=kind=>{if(powerGuard.active)throw new Error("A power request is already in progress; no second command was sent");return powerGuard.run(()=>executePower(auth,kind));};
   const runCanaryValidation=()=>{if(firmwareGuard.active)throw new Error("Firmware validation is already in progress");return firmwareGuard.run(()=>validateCanary(auth));};
+  const runFirmwareProbe=()=>{if(firmwareGuard.active)throw new Error("Firmware diagnostics are already in progress");return firmwareGuard.run(()=>probeFirmwareTransport());};
   const runFirmwareFlash=async()=>{if(firmwareGuard.active||guards.smsGuard.active||guards.refreshGuard.active||powerGuard.active)throw new Error("Another router operation is still active; firmware mode was not entered");FIRMWARE_EXCLUSIVE=true;try{const result=await firmwareGuard.run(()=>restoreFirmware(auth));if(result&&result.cancelled)FIRMWARE_EXCLUSIVE=false;return result;}catch(error){if(!error.stage0Transaction&&Number(error.destructivePostsAttempted)!==1)FIRMWARE_EXCLUSIVE=false;throw error;}};
   const runFirmwareJournalAcknowledge=async()=>{if(firmwareGuard.active)throw new Error("A firmware operation is already in progress");const result=await firmwareGuard.run(()=>acknowledgeJournal());if(result&&result.cleared)FIRMWARE_EXCLUSIVE=false;return result;};
   const refresh=()=>guards.refreshGuard.run(async()=>{const fresh=await loadPollingSnapshot(auth,model.sms);model.sms=fresh.sms;await applyWebView(web,"zmiApplyStatus",webPollPayload(fresh));return webPollPayload(fresh);});
@@ -1438,7 +1450,7 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     await Promise.all(probes.map(async(probe,i)=>{const kind=kinds[i];let value;try{const found=await probe();value={...found,state:found&&found.supported===true?"available":"unavailable"};}catch(error){value={state:"error",supported:false,detail:cleanError(error)};}results[kind]=value;model[kind]=value;writeCapabilityCache(kind,value);completed++;await applyWebView(web,"zmiApplyCapability",{kind,value,progress:{completed,total:kinds.length}});}));
     return {results,completed,total:kinds.length,failed:kinds.filter(kind=>results[kind].state==="error")};
   };
-  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),firmwareCanaryValidate:runCanaryValidation,firmwareFlash:runFirmwareFlash,firmwareJournalStatus:()=>firmwareJournal(),firmwareJournalAcknowledge:runFirmwareJournalAcknowledge,
+  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),firmwareTransportProbe:runFirmwareProbe,firmwareCanaryValidate:runCanaryValidation,firmwareFlash:runFirmwareFlash,firmwareJournalStatus:()=>firmwareJournal(),firmwareJournalAcknowledge:runFirmwareJournalAcknowledge,
     lastPowerReport:async()=>{const diagnostics=readLastPowerReport();if(!diagnostics)throw new Error("No power request report has been recorded yet");return {diagnostics};},
     copySms:async p=>{pasteboard.copyString(p.text);return {copied:true};},
     shareSms:async p=>{
@@ -1571,6 +1583,90 @@ async function runAppAuthProbe(options={}) {
     return {ok:true,report:JSON.parse(diagnostics),text:diagnostics,diagnostics};
   } catch(error) {
     error.diagnostics=appAuthProbeDiagnostics(error,{login:session&&session.appLogin,probe,loginStage:phase==="app-login"&&error&&error.appStage,probeStage:phase==="identity-probe"&&error&&error.appStage,identity,phase,software:options.software});
+    throw error;
+  }
+}
+
+function firmwareStatusRouteDefinitions(){
+  return Object.freeze([
+    Object.freeze({id:"restore-status-duster",model:"GetRestoreStatus",method:"GET",query:"method=get&module=duster&file=GetRestoreStatus",schema:"restore"}),
+    Object.freeze({id:"restore-status-direct",model:"GetRestoreStatus",method:"GET",query:"method=get&file=GetRestoreStatus",schema:"restore"}),
+    Object.freeze({id:"upgrade-status-direct",model:"upgrade_firmware",method:"GET",query:"method=get&file=upgrade_firmware",schema:"upgrade"}),
+    Object.freeze({id:"upgrade-status-duster",model:"upgrade_firmware",method:"GET",query:"method=get&module=duster&file=upgrade_firmware",schema:"upgrade"})
+  ]);
+}
+
+function firmwareStatusValues(schema,xml){
+  if(schema==="restore")return {status:firstText(xml,["status"]),progress:firstText(xml,["progress"]),cause:firstText(xml,["cause"])};
+  return {
+    support32mFlash:firstText(xml,["support_32m_flash"]),
+    upgradeStatus:firstText(xml,["upgrade_status"]),
+    progress:firstText(xml,["progress"]),
+    upgradeFailCause:firstText(xml,["upgrade_fail_cause"]),
+    backupStatus:firstText(xml,["backup_status"]),
+    backupProgress:firstText(xml,["backup_progress"]),
+    backupFailCause:firstText(xml,["backup_fail_cause"]),
+    restoreStatus:firstText(xml,["restore_status"]),
+    restoreProgress:firstText(xml,["restore_progress"]),
+    restoreFailCause:firstText(xml,["restore_fail_cause"])
+  };
+}
+
+async function readFirmwareStatusRoute(auth,route,options={}){
+  const RequestType=options.Request||(typeof Request!=="undefined"?Request:null);
+  if(!RequestType)throw new Error("Native GET transport is unavailable");
+  if(!route||route.method!=="GET"||!/^(?:method=get&)/.test(String(route.query||"")))throw new Error("Firmware status probe refused a non-GET route");
+  const req=new RequestType(`http://${ROUTER_HOST}${XML_REQUEST_PATH}?${route.query}`);
+  req.method="GET";
+  req.headers=appRequestHeaders(auth,"GET");
+  req.timeoutInterval=Math.max(1,Math.min(10,Number(options.timeout)||5));
+  req._zmi={method:"GET",operation:`firmware-status:${route.id}`,timeout:req.timeoutInterval,body:null,appClient:true};
+  rejectRedirects(req);
+  const startedAt=Date.now();
+  const result=await loadResponse(req,{requestId:++DEBUG_REQUEST_SEQUENCE,operation:`Firmware status ${route.id}`,attempt:1,startedAt});
+  const checked=assertAppResponse(result,`Firmware status ${route.id}`);
+  return {...checked,text:result.text,bytes:String(result.text||"").length,durationMs:Date.now()-startedAt,redirectCount:Number(result.redirectCount)||0,method:"GET"};
+}
+
+async function runFirmwareTransportProbe(options={}){
+  const clock=typeof options.now==="function"?options.now:Date.now;
+  const routes=firmwareStatusRouteDefinitions();
+  const makeSession=options.createAppSession||createAppSession;
+  const getIdentity=options.getAppStatus||((session)=>appXmlGet(session,"status1",5));
+  const readRoute=options.readRoute||((session,route)=>readFirmwareStatusRoute(session,route,options));
+  let session=null,identityResponse=null,phase="app-login";
+  try{
+    session=await makeSession();
+    phase="identity";
+    identityResponse=await getIdentity(session);
+    const status=identityResponse&&typeof identityResponse==="object"&&Object.prototype.hasOwnProperty.call(identityResponse,"text")?identityResponse.text:identityResponse;
+    const rawModel=firstText(status,["model","model_name","product_name","device_name"]),hardware=hardwareRevision(status),firmware=firmwareVersion(status);
+    const identity={model:/^LV01$/i.test(rawModel)?"MF885":rawModel,rawModel,hardware,firmware,exactFirmware:firmware==="2.5.94_release_MF855_NZ_CP_2.129.003"};
+    const battery=parseBattery(status,identity);
+    const observations=[];
+    for(const route of routes){
+      phase=route.id;
+      try{
+        const response=await readRoute(session,route);
+        const text=response&&typeof response==="object"&&Object.prototype.hasOwnProperty.call(response,"text")?response.text:String(response||"");
+        const statusCode=response&&response.statusCode!==undefined?Number(response.statusCode):response&&response.response&&Number(response.response.statusCode);
+        const redirectCount=Number(response&&response.redirectCount)||0;
+        observations.push({id:route.id,model:route.model,method:"GET",requestPath:XML_REQUEST_PATH,query:route.query,ok:Number.isFinite(statusCode)?statusCode>=200&&statusCode<=299&&!unauthorized(text)&&redirectCount===0:!unauthorized(text)&&redirectCount===0,statusCode:Number.isFinite(statusCode)?statusCode:null,responseClass:String(response&&response.responseClass||classifyControlResponse(text)),bytes:String(text).length,redirectCount,values:firmwareStatusValues(route.schema,text)});
+      }catch(error){
+        observations.push({id:route.id,model:route.model,method:"GET",requestPath:XML_REQUEST_PATH,query:route.query,ok:false,statusCode:null,responseClass:"error",bytes:0,redirectCount:0,values:{},error:cleanError(error)});
+      }
+    }
+    const exactDevice=identity.model==="MF885"&&identity.hardware==="MF96 Ver.D"&&identity.exactFirmware;
+    const readSideComplete=exactDevice&&observations.every(item=>item.ok);
+    const fingerprintSource=JSON.stringify({identity,observations:observations.map(item=>({id:item.id,query:item.query,statusCode:item.statusCode,responseClass:item.responseClass,values:item.values}))});
+    const stage0=options.stage0||firmwareStage0Module;
+    const observationFingerprint=stage0&&typeof stage0.sha256Hex==="function"?stage0.sha256Hex(utf8Bytes(fingerprintSource)):md5(fingerprintSource);
+    const report={schema:1,mode:"firmware-transport-read-probe",generatedAt:clock(),software:softwareIdentity(options.software||{}),identity,power:{batteryPercent:battery.percent,batteryStatus:battery.rawStatus,chargerStatus:battery.chargerStatus,chargerConnected:battery.chargerConnected===true},session:{authFlow:"zmi-apk-1.2.42-persisted-login-header",authorizationPersisted:session&&session.appLogin&&session.appLogin.authHeaderPersisted===true,sessionCookieReceived:session&&session.appLogin&&session.appLogin.sessionCookieReceived===true},observations,readSideComplete,observationFingerprint,limitations:["RestoreFw upload POST was not sent.","Multipart fields, filename, MIME type, acceptance response, and redirect behavior remain unverified on this router.","This report cannot populate the destructive transport allowlist."],safety:{methodsUsed:["GET"],routerGetsAttempted:3+routes.length,writesAttempted:0,firmwarePostsAttempted:0,requestBodiesPresent:false,automaticRetries:0,redirectsAllowed:false,flashAllowed:false}};
+    const text=formatDiagnosticReport(report);
+    return {ok:readSideComplete,readSideComplete,flashAllowed:false,report,text,diagnostics:text};
+  }catch(error){
+    const report={schema:1,mode:"firmware-transport-read-probe",generatedAt:clock(),phase,readSideComplete:false,limitations:["RestoreFw upload POST was not sent.","This report cannot populate the destructive transport allowlist."],safety:{methodsUsed:["GET"],writesAttempted:0,firmwarePostsAttempted:0,requestBodiesPresent:false,automaticRetries:0,redirectsAllowed:false,flashAllowed:false},error:cleanError(error)};
+    error.diagnostics=formatDiagnosticReport(report);
     throw error;
   }
 }

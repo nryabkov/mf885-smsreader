@@ -38,6 +38,8 @@ A destructive restore is permitted only when all of the following are true:
 
 The transport and recovery allowlists are intentionally empty. `restoreTransportVerified=true`, caller-built evidence, or a configuration override cannot unlock them. Transport evidence binds the exact firmware, operation, HTTP method, physical request path, Digest URI, upload query order/escaping, multipart field/MIME/filename/encoding, authentication/session profile, acceptance predicate, GET-only status route/query/raw-value map, polling bounds, reviewed adapter artifact SHA-256, platform-backed exclusive-lease profile, and SHA-256 of a redacted capture artifact. Recovery evidence independently binds the physical NOR facts, one live unit fingerprint, and reviewed recovery artifact. Filling only a URL or multipart field is insufficient. The shipped build also has no production adapter fallback: adding allowlist data alone leaves the UI locked until a core-owned adapter is reviewed into `scriptable.js`.
 
+On 2026-08-20 a GET-only live read-side observation on the exact LV01 / Ver.D / 2.5.94 target confirmed that both `method=get&file=GetRestoreStatus` variants (with and without `module=duster`) return `<process><status>0</status><progress>0</progress><cause>No Error!</cause></process>` while idle. The corresponding `upgrade_firmware` reads expose `support_32m_flash=1` and separate upgrade, backup, and restore status fields. The dashboard can reproduce and export this redacted observation through **Capture firmware status contract (GET only)**. This confirms only the status-reader side; it does not prove upload multipart/authentication/acceptance semantics and cannot populate `VERIFIED_RESTORE_TRANSPORTS`.
+
 Image metadata is also insufficient. Stage 0 computes SHA-256 itself from the exact Scriptable `Data`/byte array selected for upload and seals that evidence for the current process; caller-built metadata is rejected. The installer retains immutable native `Data` privately and completes the second hash before authentication/arming, so no fallible local hash occurs after `POST_ARMED`. Device identity, unit fingerprint, hardware revision, firmware, battery level, and charger state come from the final live status observation of the prepared session immediately before arming.
 
 The Scriptable dashboard keeps **Verify WEBUI canary file (no flash)** as a read-only action and adds a separate **Firmware restore (Stage 0)** control. Its WebView command exists so the complete workflow can be tested, but the runtime control and backend both fail closed before file selection while either compiled allowlist is empty. No Request is constructed and no router read or POST is made in that state.
@@ -62,7 +64,7 @@ The in-process sender guard rejects concurrent calls sharing one journal. Cross-
 
 1. verify recovery-mode entry without flashing;
 2. save golden firmware backup and configuration backup;
-3. capture and review the exact RestoreFw transport without sending a firmware payload;
+3. capture the GET-only status-reader contract, then capture and review the remaining exact RestoreFw upload/authentication contract without sending a firmware payload;
 4. add the reviewed immutable transport and physical recovery records to the source allowlists;
 5. run the Scriptable Stage 0 installer dry path and verify all gates with zero POSTs;
 6. stock golden -> stock golden restore;
