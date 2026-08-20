@@ -41,6 +41,7 @@ The script does **not** read or send messages through Apple Messages on the iPho
 - Keeps WAN traffic reset disabled until a verified write contract exists, and exposes restart/power-off only for the exact live MF885 2.5.94 profile.
 - Produces a copyable, redacted read-only preflight report from a fixed seven-endpoint GET allowlist before any live power or firmware experiment. The report includes the installed dashboard version and loader-reported commit revision; the revision is explicitly `unknown` until a replacement loader's next invocation.
 - Provides a separate **Run APP auth probe (GET only)** action that performs the scoped companion-client login and a harmless `status1` read without touching `reset`, `poweroff`, configuration, debug, restore, or flash endpoints.
+- Provides **Capture firmware status contract (GET only)** to record redacted live schemas from `GetRestoreStatus` and `upgrade_firmware`. It performs seven bounded GETs including login and identity, sends no request body, and always reports `firmwarePostsAttempted: 0` and `flashAllowed: false`.
 - Provides **Verify WEBUI canary file (no flash)** plus a separate **Firmware restore (Stage 0)** workflow. The validator remains read-only. The restore workflow is compiled but visibly locked while the reviewed RestoreFw wire contract and physical recovery evidence allowlists are empty; in that state it stops before the file picker and makes zero router requests.
 - Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive. Each user action is limited to exactly one non-retried USSD POST; response polling is GET-only, and an ambiguous timeout is never replayed through another guessed schema.
 - Provides experimental, confirmed cellular controls for mobile-WAN reconnect and preferred protocol selection (Automatic, LTE only, LTE preferred where supported, 3G only, or 2G only).
@@ -140,6 +141,8 @@ These controls are firmware-dependent and may be ignored or rejected on some bui
 The **Run read-only preflight** button reads only this fixed allowlist: `status1`, `wan`, `Engineer_parameter`, `miautosleep`, `smart_set`, `uapxb_wlan_basic_settings`, and `autoreboot`. Its report contains the dashboard version/build, device identity, power enums, sleep/auto-reboot fields, endpoint success/size, and explicit safety counters. It never includes raw XML, APN values, identifiers, passwords, SMS content, or configuration backups.
 
 The preflight code has an explicit denylist for `RestoreFw`, `BackupFwStart`, `RestoreBackup`, `reset`, `poweroff`, `restore_defaults`, and `debugmodeon`. It reports `writesAttempted: 0`, `restoreTransportVerified: false`, and `flashAllowed: false`; those flags are facts about this diagnostic, not an authorization to proceed with firmware work.
+
+The separate firmware-status capture uses the recovered APP login flow and four fixed GET routes: `GetRestoreStatus` and `upgrade_firmware`, each with and without `module=duster`. It stores only identity, power enums, HTTP/result classes, response sizes, and parsed status fields. It deliberately does not probe the destructive `Action=RestoreFw` route, construct multipart data, start a backup, or infer that the upload contract is safe.
 
 ### WEBUI canary validation
 

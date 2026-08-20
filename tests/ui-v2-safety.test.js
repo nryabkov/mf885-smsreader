@@ -85,6 +85,9 @@ test("software build and GET-only APP auth probe are visible and copyable", () =
 
 test("WEBUI canary remains validate-only while the Stage 0 restore control is visibly locked", () => {
   const html = ui.buildHtml(model({ available:false, reason:"Locked", actions:{} }));
+  assert.match(html, /id="firmwareTransportProbe">Capture firmware status contract \(GET only\)/);
+  assert.match(html, /command\('firmwareTransportProbe',\{\}\)/);
+  assert.match(html, /Restore upload remains locked/);
   assert.match(html, /id="firmwareCanaryValidate">Verify WEBUI canary file \(no flash\)/);
   assert.match(html, /command\('firmwareCanaryValidate',\{\}\)/);
   assert.match(html, /Flash remains locked/);
@@ -137,6 +140,7 @@ test("every v2 control is either actionable or rendered as non-interactive statu
   assert.match(html,/data-settings-capabilities[\s\S]*?d\.click\(\)/);
   assert.match(html,/\$\('#safePreflight'\)\.onclick/);
   assert.match(html,/\$\('#appAuthProbe'\)\.onclick/);
+  assert.match(html,/\$\('#firmwareTransportProbe'\)\.onclick/);
   assert.match(html,/\$\('#firmwareCanaryValidate'\)\.onclick/);
   assert.match(html,/\$\('#firmwareFlash'\)\.onclick/);
   assert.match(html,/\$\('#firmwareJournalBtn'\)\.onclick/);
@@ -160,7 +164,7 @@ test("SMS send and verified delete avoid redundant full-history reloads", () => 
 
 test("state-changing commands stay single-flight while the native result is pending", () => {
   const html=ui.buildHtml(model({available:false,reason:"Locked",actions:{}}));
-  assert.match(html,/const nonRepeatableActions=new Set\(\['sendSms','deleteSms','ussd','firmwareCanaryValidate','firmwareFlash','firmwareJournalAcknowledge','deviceAccess','cellularReconnect','cellularMode','resetTraffic','reboot','powerOff'\]\)/);
+  assert.match(html,/const nonRepeatableActions=new Set\(\['sendSms','deleteSms','ussd','firmwareTransportProbe','firmwareCanaryValidate','firmwareFlash','firmwareJournalAcknowledge','deviceAccess','cellularReconnect','cellularMode','resetTraffic','reboot','powerOff'\]\)/);
   assert.match(html,/state\.mutationPending\.has\(key\)[\s\S]*?it was not sent again/);
   assert.match(html,/if\(key\)\{toast\('Still waiting for the router; do not repeat the action'\);return;\}/);
   assert.match(html,/if\(p\.mutationKey\)state\.mutationPending\.delete\(p\.mutationKey\)/);

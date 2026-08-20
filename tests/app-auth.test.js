@@ -95,6 +95,15 @@ test("APP login uses separate protected-query and XML-header Digest proofs", () 
   assert.equal(state.nc, 2, "pure builder must not mutate the live session");
 });
 
+test("APP login accepts only the exact captured Mongoose success envelope", async () => {
+  const result=app.assertAppLoginResponse({response:{statusCode:200},redirectCount:0,exception:null,text:"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nServer: Mongoose/3.0\r\n\r\n"});
+  assert.deepEqual(result,{responseClass:"captured-mongoose-login-envelope",statusCode:200});
+});
+
+test("APP login still rejects arbitrary HTTP 200 text", async () => {
+  assert.throws(()=>app.assertAppLoginResponse({response:{statusCode:200},redirectCount:0,exception:null,text:"login accepted"}),/unexpected text-response/i);
+});
+
 test("live power flow reuses the exact APK login header for status and one reset", async () => {
   const originalRequest = global.Request;
   const requests = [];
