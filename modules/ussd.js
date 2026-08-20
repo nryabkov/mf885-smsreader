@@ -47,35 +47,38 @@ async function execute(api, capability, code) {
   const candidates = capability.candidates && capability.candidates.length
     ? capability.candidates
     : CANDIDATES;
+  // A USSD POST may reach the modem even when the HTTP response is lost. Never
+  // replay the carrier command through another guessed schema after a timeout,
+  // rejection, or ambiguous response. Detection/profile work must select the
+  // candidate before execution; one user action consumes exactly one POST.
+  const candidate = candidates[0];
+  if (!candidate) return { ok:false, title:"USSD request failed", message:"The router does not expose a known USSD endpoint.", diagnostics:"" };
+  const xml = buildRequest(candidate, code, api.escapeXml);
+  try {
+    let response = await api.xmlRequest("POST", candidate.file, xml, false, 20);
+    attempts.push(`${candidate.file}/${candidate.field}: ${compact(response)}`);
+    let parsed = parseResponse(response, code, api);
+    if (parsed.response) return success(parsed.response, candidate, attempts);
+    if (parsed.rejected) return { ok:false, title:"USSD request failed", message:ussdFailureMessage(attempts), diagnostics:attempts.join("\n") };
 
-  for (const candidate of candidates) {
-    const xml = buildRequest(candidate, code, api.escapeXml);
-    try {
-      let response = await api.xmlRequest("POST", candidate.file, xml, true, 20);
-      attempts.push(`${candidate.file}/${candidate.field}: ${compact(response)}`);
-      let parsed = parseResponse(response, code, api);
+    for (let poll = 0; poll < api.responsePolls; poll++) {
+      await api.sleep(1000);
+      response = await api.xmlRequest("GET", candidate.file, null, true, 10);
+      parsed = parseResponse(response, code, api);
       if (parsed.response) return success(parsed.response, candidate, attempts);
-      if (parsed.rejected) continue;
-
-      for (let poll = 0; poll < api.responsePolls; poll++) {
-        await api.sleep(1000);
-        response = await api.xmlRequest("GET", candidate.file, null, true, 10);
-        parsed = parseResponse(response, code, api);
-        if (parsed.response) return success(parsed.response, candidate, attempts);
-        if (parsed.rejected) break;
-      }
-
-      if (!parsed.rejected) {
-        return {
-          ok: true,
-          title: "USSD command accepted",
-          message: "The router accepted the USSD request, but this firmware did not expose response text.",
-          diagnostics: attempts.join("\n")
-        };
-      }
-    } catch (error) {
-      attempts.push(`${candidate.file}/${candidate.field}: ${api.cleanError(error)}`);
+      if (parsed.rejected) break;
     }
+
+    if (!parsed.rejected) {
+      return {
+        ok: true,
+        title: "USSD command accepted",
+        message: "The router accepted the USSD request, but this firmware did not expose response text.",
+        diagnostics: attempts.join("\n")
+      };
+    }
+  } catch (error) {
+    attempts.push(`${candidate.file}/${candidate.field}: ${api.cleanError(error)}`);
   }
 
   return {

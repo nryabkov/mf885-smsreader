@@ -41,7 +41,8 @@ The script does **not** read or send messages through Apple Messages on the iPho
 - Keeps WAN traffic reset disabled until a verified write contract exists, and exposes restart/power-off only for the exact live MF885 2.5.94 profile.
 - Produces a copyable, redacted read-only preflight report from a fixed seven-endpoint GET allowlist before any live power or firmware experiment. The report includes the installed dashboard version and loader-reported commit revision; the revision is explicitly `unknown` until a replacement loader's next invocation.
 - Provides a separate **Run APP auth probe (GET only)** action that performs the scoped companion-client login and a harmless `status1` read without touching `reset`, `poweroff`, configuration, debug, restore, or flash endpoints.
-- Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive.
+- Provides **Verify WEBUI canary file (no flash)**: Scriptable selects a file, hashes its actual bytes, requires the exact allowlisted Canary r3 size/SHA-256, and then performs one fresh `status1` read to check the exact device, firmware, battery, and external-power gates. This action has no uploader and cannot send `RestoreFw`.
+- Probes known hidden firmware endpoints and allows an experimental USSD attempt even when safe detection is inconclusive. Each user action is limited to exactly one non-retried USSD POST; response polling is GET-only, and an ambiguous timeout is never replayed through another guessed schema.
 - Provides experimental, confirmed cellular controls for mobile-WAN reconnect and preferred protocol selection (Automatic, LTE only, LTE preferred where supported, 3G only, or 2G only).
 - Decodes router SMS fields that are returned as UTF-16BE hexadecimal strings.
 
@@ -139,6 +140,12 @@ These controls are firmware-dependent and may be ignored or rejected on some bui
 The **Run read-only preflight** button reads only this fixed allowlist: `status1`, `wan`, `Engineer_parameter`, `miautosleep`, `smart_set`, `uapxb_wlan_basic_settings`, and `autoreboot`. Its report contains the dashboard version/build, device identity, power enums, sleep/auto-reboot fields, endpoint success/size, and explicit safety counters. It never includes raw XML, APN values, identifiers, passwords, SMS content, or configuration backups.
 
 The preflight code has an explicit denylist for `RestoreFw`, `BackupFwStart`, `RestoreBackup`, `reset`, `poweroff`, `restore_defaults`, and `debugmodeon`. It reports `writesAttempted: 0`, `restoreTransportVerified: false`, and `flashAllowed: false`; those flags are facts about this diagnostic, not an authorization to proceed with firmware work.
+
+### WEBUI canary validation
+
+**Verify WEBUI canary file (no flash)** opens Scriptable's native Files picker. The dashboard computes SHA-256 from the selected bytes and accepts only the exact 8,323,644-byte `MF885_Community_0.0-canary-webui-r3.bin` image with SHA-256 `f2ee088574634d822d5feed8210578a62788c8837fabc80129c6ce51ddfb429c`. If that gate passes, one fresh `status1` GET must confirm LV01/MF885, Ver.D, firmware `2.5.94_release_MF855_NZ_CP_2.129.003`, at least 50% battery, and connected external USB power.
+
+The report contains only the selected file name, size/hash, device/power gates, and explicit zero-write counters; it does not retain the selected bytes or expose the full Files path. Passing validation means only that the image and live preconditions are ready for transport-capture work. The `RestoreFw` transport allowlist remains empty, `firmwarePostsAttempted` is always `0`, and `flashAllowed` is always `false`.
 
 ### Power endpoint diagnostics
 
