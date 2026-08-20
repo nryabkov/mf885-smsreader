@@ -7,7 +7,7 @@ function model(){return {loadedAt:Date.now(),actualModel:'MF885',actualFirmware:
 
 test('v2 help covers overview, panel, diagnostics, capability, battery, footer, and actions',()=>{
   const html=enhanceHtml(buildHtml(model()),model());
-  for(const key of ['routerPanel','onlineState','headerNetwork','connection','rsrp','battery','chargeCurrent','device','capabilities','safePreflight','firmwareCanary','cellularControl','diagnosticUpdated','refreshStatus','refreshNow','settings','powerAction','resetTraffic']) {
+  for(const key of ['routerPanel','onlineState','headerNetwork','connection','rsrp','battery','chargeCurrent','device','capabilities','safePreflight','firmwareCanary','firmwareRestore','cellularControl','diagnosticUpdated','refreshStatus','refreshNow','settings','powerAction','resetTraffic']) {
     assert.match(html,new RegExp(`data-help-key=["']${key}["']`),`missing ${key}`);
   }
 });

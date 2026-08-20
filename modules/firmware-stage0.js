@@ -26,13 +26,21 @@ const MAX_LIVE_EVIDENCE_AGE_MS = 60 * 1000;
 const MAX_IMAGE_EVIDENCE_AGE_MS = 5 * 60 * 1000;
 const JOURNAL_SCHEMA = 2;
 const JOURNAL_KEY = "mf885-safeflash-stage0-transaction-v2";
+const GOLDEN_QUALIFICATION_SCHEMA = 1;
+const GOLDEN_QUALIFICATION_KEY = "mf885-safeflash-stage0-golden-qualification-v1";
+const RECOVERY_EVIDENCE_SCHEMA = 1;
+const FULL_NOR_SIZE_BYTES = 32 * 1024 * 1024;
 
 // Intentionally empty. A caller-provided boolean or object must never be able
 // to unlock RestoreFw. A captured contract is added here only after its exact
 // multipart shape and status polling have been reproduced on the target build.
 const VERIFIED_RESTORE_TRANSPORTS = Object.freeze([]);
+// Also intentionally empty until the target unit has three identical full
+// 32 MiB dumps from the 1.8 V MX25U25635FZ4I and a proven recovery entry.
+const VERIFIED_RECOVERY_EVIDENCE = Object.freeze([]);
 const AUTHORIZED_PREFLIGHTS = new WeakSet();
 const COMPUTED_IMAGE_EVIDENCE = new WeakSet();
+const ACTIVE_RESTORE_JOURNALS = new WeakSet();
 
 const SHA256_K = Object.freeze([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -221,6 +229,7 @@ function normalizedDevice(device) {
     model: String(source.model || source.modelName || source.deviceName || "").trim(),
     hardware: String(source.hardware || source.hardwareVersion || source.revision || "").trim(),
     firmware: String(source.firmware || source.version || source.versionNum || "").trim(),
+    unitFingerprintSha256:cleanSha(source.unitFingerprintSha256),
     observedAt: finiteTimestamp(source.observedAt),
     source: String(source.source || "").trim()
   };
@@ -229,9 +238,10 @@ function normalizedDevice(device) {
 function validateDevice(device, now = Date.now()) {
   const value = normalizedDevice(device);
   const errors = [];
-  if (!/^(?:LV01|MF885|MF96-ROUTER-C2)$/i.test(value.model)) errors.push("Device model is not positively identified as LV01 / MF885 / MF96-ROUTER-C2.");
+  if (!/^(?:LV01|MF885)$/i.test(value.model)) errors.push("Device model is not positively identified as the exact LV01 / MF885 target.");
   if (!/Ver\.?\s*D/i.test(value.hardware)) errors.push("Hardware revision is not positively identified as Ver.D.");
   if (value.firmware !== REQUIRED_FIRMWARE) errors.push(`Base firmware must be exactly ${REQUIRED_FIRMWARE}.`);
+  if(!/^[0-9a-f]{64}$/.test(value.unitFingerprintSha256))errors.push("A privacy-safe fingerprint of the exact physical router is required.");
   if (value.source !== "status1-live") errors.push("Device identity must come from a fresh live status1 read.");
   if (!evidenceFresh(value.observedAt, now, MAX_LIVE_EVIDENCE_AGE_MS)) errors.push("Live device identity is missing, stale, or timestamped in the future.");
   return { ok: errors.length === 0, value, errors };
@@ -254,21 +264,40 @@ function validatePower(power, now = Date.now()) {
 function normalizedTransportEvidence(evidence) {
   const source = evidence && typeof evidence === "object" ? evidence : {};
   return {
+    contractSchema: Number(source.contractSchema),
     contractId: String(source.contractId || "").trim(),
     firmware: String(source.firmware || "").trim(),
     restoreMethod: String(source.restoreMethod || "").trim(),
     httpMethod: String(source.httpMethod || "").trim().toUpperCase(),
     requestPath: String(source.requestPath || "").trim(),
     digestUri: String(source.digestUri || "").trim(),
+    uploadQuery: String(source.uploadQuery || "").trim(),
     multipartField: String(source.multipartField || "").trim(),
+    multipartMimeType: String(source.multipartMimeType || "").trim().toLowerCase(),
+    multipartFilenameRule: String(source.multipartFilenameRule || "").trim(),
+    multipartEncoding: String(source.multipartEncoding || "").trim(),
+    authProfile: String(source.authProfile || "").trim(),
+    sessionProfile: String(source.sessionProfile || "").trim(),
+    acceptanceProfile: String(source.acceptanceProfile || "").trim(),
+    adapterArtifactSha256:cleanSha(source.adapterArtifactSha256),
+    exclusiveLeaseProfile:String(source.exclusiveLeaseProfile||"").trim(),
     statusModel: String(source.statusModel || "").trim(),
+    statusHttpMethod: String(source.statusHttpMethod || "").trim().toUpperCase(),
+    statusRequestPath: String(source.statusRequestPath || "").trim(),
+    statusDigestUri: String(source.statusDigestUri || "").trim(),
+    statusQuery: String(source.statusQuery || "").trim(),
+    statusMapId: String(source.statusMapId || "").trim(),
+    maxStatusPolls: Number(source.maxStatusPolls),
+    statusPollIntervalMs: Number(source.statusPollIntervalMs),
+    maxBootPolls: Number(source.maxBootPolls),
+    bootPollIntervalMs: Number(source.bootPollIntervalMs),
     captureSha256: cleanSha(source.captureSha256),
     verifiedAt: finiteTimestamp(source.verifiedAt)
   };
 }
 
 function sameTransportContract(evidence, contract) {
-  return ["contractId", "firmware", "restoreMethod", "httpMethod", "requestPath", "digestUri", "multipartField", "statusModel", "captureSha256"]
+  return ["contractSchema", "contractId", "firmware", "restoreMethod", "httpMethod", "requestPath", "digestUri", "uploadQuery", "multipartField", "multipartMimeType", "multipartFilenameRule", "multipartEncoding", "authProfile", "sessionProfile", "acceptanceProfile","adapterArtifactSha256","exclusiveLeaseProfile", "statusModel", "statusHttpMethod", "statusRequestPath", "statusDigestUri", "statusQuery", "statusMapId", "maxStatusPolls", "statusPollIntervalMs", "maxBootPolls", "bootPollIntervalMs", "captureSha256"]
     .every(field => evidence[field] === contract[field]);
 }
 
@@ -276,14 +305,104 @@ function validateTransportEvidence(evidence) {
   const value = normalizedTransportEvidence(evidence);
   const errors = [];
   if (!evidence || typeof evidence !== "object") errors.push("RestoreFw requires an immutable transport evidence record; a boolean cannot unlock it.");
+  if (value.contractSchema !== 1) errors.push("RestoreFw evidence does not use the reviewed full wire-contract schema.");
   if (value.firmware !== REQUIRED_FIRMWARE) errors.push("RestoreFw evidence does not target the exact base firmware.");
   if (value.restoreMethod !== "RestoreFw" || value.httpMethod !== "POST") errors.push("RestoreFw evidence has the wrong operation or HTTP method.");
   if (value.requestPath !== "/xml_action.cgi" || value.digestUri !== "/cgi/xml_action.cgi") errors.push("RestoreFw request and Digest URIs are not the expected exact pair.");
-  if (!value.multipartField || !value.statusModel) errors.push("RestoreFw multipart field and status model must both be proven.");
+  if (!value.uploadQuery) errors.push("RestoreFw upload query order and escaping must be captured exactly.");
+  if (!value.multipartField || !value.multipartMimeType || !value.multipartFilenameRule || !value.multipartEncoding) errors.push("RestoreFw multipart field, MIME type, filename rule, and encoding must all be proven.");
+  if (!value.authProfile || !value.sessionProfile || !value.acceptanceProfile) errors.push("RestoreFw authentication, session, and acceptance-response profiles must all be proven.");
+  if(!/^[0-9a-f]{64}$/.test(value.adapterArtifactSha256)||!value.exclusiveLeaseProfile)errors.push("RestoreFw requires a reviewed adapter artifact hash and a platform-backed exclusive lease profile.");
+  if (!value.statusModel || value.statusHttpMethod !== "GET" || !value.statusRequestPath || !value.statusDigestUri || !value.statusQuery || !value.statusMapId) errors.push("RestoreFw GET-only status route, query, and raw-value map must all be proven.");
+  if (!Number.isInteger(value.maxStatusPolls) || value.maxStatusPolls < 1 || value.maxStatusPolls > 120 || !Number.isInteger(value.statusPollIntervalMs) || value.statusPollIntervalMs < 250 || value.statusPollIntervalMs > 30000) errors.push("RestoreFw status polling bounds are missing or unsafe.");
+  if (!Number.isInteger(value.maxBootPolls) || value.maxBootPolls < 1 || value.maxBootPolls > 120 || !Number.isInteger(value.bootPollIntervalMs) || value.bootPollIntervalMs < 250 || value.bootPollIntervalMs > 30000) errors.push("RestoreFw post-boot polling bounds are missing or unsafe.");
   if (!/^[0-9a-f]{64}$/.test(value.captureSha256)) errors.push("RestoreFw evidence requires the SHA-256 of a redacted capture artifact.");
   const matched = VERIFIED_RESTORE_TRANSPORTS.find(contract => sameTransportContract(value, contract)) || null;
   if (!matched) errors.push("No matching RestoreFw transport contract is allowlisted in this build; destructive send remains locked.");
   return { ok: errors.length === 0, value, contract: matched, errors };
+}
+
+function normalizedRecoveryEvidence(evidence) {
+  const source=evidence&&typeof evidence==="object"?evidence:{};
+  return {
+    schema:Number(source.schema),
+    evidenceId:String(source.evidenceId||"").trim(),
+    model:String(source.model||"").trim(),
+    hardware:String(source.hardware||"").trim(),
+    norPart:String(source.norPart||"").trim(),
+    norSizeBytes:Number(source.norSizeBytes),
+    ioVoltage:Number(source.ioVoltage),
+    fullDumpCopies:Number(source.fullDumpCopies),
+    dumpsIdentical:source.dumpsIdentical===true,
+    fullDumpSha256:cleanSha(source.fullDumpSha256),
+    unitFingerprintSha256:cleanSha(source.unitFingerprintSha256),
+    goldenBackupSha256:cleanSha(source.goldenBackupSha256),
+    recoveryEntryVerified:source.recoveryEntryVerified===true,
+    captureSha256:cleanSha(source.captureSha256)
+  };
+}
+
+function sameRecoveryEvidence(value, compiled) {
+  return ["schema","evidenceId","model","hardware","norPart","norSizeBytes","ioVoltage","fullDumpCopies","dumpsIdentical","fullDumpSha256","unitFingerprintSha256","goldenBackupSha256","recoveryEntryVerified","captureSha256"]
+    .every(field=>value[field]===compiled[field]);
+}
+
+function validateRecoveryEvidence(evidence) {
+  const value=normalizedRecoveryEvidence(evidence),errors=[];
+  if(value.schema!==RECOVERY_EVIDENCE_SCHEMA)errors.push("Reviewed physical recovery evidence is missing.");
+  if(!/^(?:LV01|MF885)$/i.test(value.model)||!/Ver\.?\s*D/i.test(value.hardware))errors.push("Recovery evidence is not bound to the exact LV01 / MF885 Ver.D target.");
+  if(!/^MX25U25635FZ4I(?:-10G)?$/i.test(value.norPart)||value.norSizeBytes!==FULL_NOR_SIZE_BYTES||value.ioVoltage!==1.8)errors.push("Recovery evidence must identify the full 32 MiB 1.8 V MX25U25635FZ4I NOR.");
+  if(!Number.isInteger(value.fullDumpCopies)||value.fullDumpCopies<3||value.dumpsIdentical!==true||!/^[0-9a-f]{64}$/.test(value.fullDumpSha256))errors.push("At least three identical full NOR dumps with SHA-256 are required.");
+  if(!/^[0-9a-f]{64}$/.test(value.unitFingerprintSha256))errors.push("Recovery evidence is not bound to a privacy-safe fingerprint of one physical router.");
+  if(value.goldenBackupSha256!==GOLDEN_IMAGE.sha256)errors.push("Recovery evidence is not bound to the exact stock golden backup.");
+  if(value.recoveryEntryVerified!==true)errors.push("Recovery-mode entry has not been positively verified.");
+  if(!/^[0-9a-f]{64}$/.test(value.captureSha256))errors.push("Recovery evidence requires the SHA-256 of its reviewed redacted artifact.");
+  const matched=VERIFIED_RECOVERY_EVIDENCE.find(compiled=>sameRecoveryEvidence(value,compiled))||null;
+  if(!matched)errors.push("No matching physical recovery evidence is compiled into this build; destructive send remains locked.");
+  return {ok:errors.length===0,value,evidence:matched,errors};
+}
+
+function restoreAvailability() {
+  const count = VERIFIED_RESTORE_TRANSPORTS.length;
+  const recoveryCount=VERIFIED_RECOVERY_EVIDENCE.length;
+  return {
+    available: count > 0&&recoveryCount>0,
+    allowlistedContracts: count,
+    recoveryEvidenceRecords:recoveryCount,
+    reason: count===0
+      ? "Locked until the exact RestoreFw upload, authentication, response, and GET-only status contract is captured and compiled into the allowlist."
+      : recoveryCount===0
+        ? "Locked until three identical full 32 MiB 1.8 V NOR dumps and recovery-mode entry are reviewed and compiled."
+        : "Reviewed RestoreFw and physical recovery evidence are compiled. Native preflight and the persistent one-shot journal still apply."
+  };
+}
+
+function validateGoldenQualification(qualification, transportEvidence, recoveryEvidence) {
+  const value = qualification && typeof qualification === "object" ? qualification : {};
+  const transport = normalizedTransportEvidence(transportEvidence);
+  const recovery=normalizedRecoveryEvidence(recoveryEvidence);
+  const errors = [];
+  if(value.integrityVerified!==true)errors.push("The stock golden qualification did not pass local integrity verification.");
+  if (value.schema !== GOLDEN_QUALIFICATION_SCHEMA) errors.push("A completed stock golden-to-golden qualification is required before the WEBUI canary can be flashed.");
+  if (String(value.imageId || "") !== GOLDEN_IMAGE.id || cleanSha(value.imageSha256) !== GOLDEN_IMAGE.sha256) {
+    errors.push("The stored qualification is not for the exact stock golden image.");
+  }
+  if (String(value.state || "") !== TRANSACTION_STATES.BOOT_VERIFIED) errors.push("The stock golden qualification did not reach BOOT_VERIFIED.");
+  if (String(value.transportContractId || "") !== transport.contractId || cleanSha(value.transportCaptureSha256) !== transport.captureSha256) {
+    errors.push("The stock golden qualification belongs to a different RestoreFw contract or capture.");
+  }
+  if(String(value.recoveryEvidenceId||"")!==recovery.evidenceId||cleanSha(value.recoveryCaptureSha256)!==recovery.captureSha256){
+    errors.push("The stock golden qualification belongs to different physical recovery evidence.");
+  }
+  if(cleanSha(value.unitFingerprintSha256)!==recovery.unitFingerprintSha256)errors.push("The stock golden qualification belongs to a different physical router.");
+  if (!finiteTimestamp(value.completedAt)) errors.push("The stock golden qualification completion time is missing.");
+  return { ok: errors.length === 0, value: { ...value }, errors };
+}
+
+function validateRestoreSequence(image, qualification, transportEvidence, recoveryEvidence) {
+  if (!image || image.id === GOLDEN_IMAGE.id) return { ok: true, errors: [] };
+  if (image.id !== WEBUI_CANARY_R3.id) return { ok: false, errors: ["The selected image is not part of the Stage 0 restore sequence."] };
+  return validateGoldenQualification(qualification, transportEvidence, recoveryEvidence);
 }
 
 function preflight(input, now = Date.now()) {
@@ -291,7 +410,10 @@ function preflight(input, now = Date.now()) {
   const device = validateDevice(input && input.device, now);
   const power = validatePower(input && input.power, now);
   const transport = validateTransportEvidence(input && input.restoreTransportEvidence);
-  const errors = [...image.errors, ...device.errors, ...power.errors, ...transport.errors];
+  const recovery = validateRecoveryEvidence(input && input.recoveryEvidence);
+  const sequence = validateRestoreSequence(image.image, input && input.goldenQualification, transport.value, recovery.value);
+  const errors = [...image.errors, ...device.errors, ...power.errors, ...transport.errors, ...recovery.errors, ...sequence.errors];
+  if(device.value.unitFingerprintSha256!==recovery.value.unitFingerprintSha256)errors.push("Live router fingerprint does not match the physical recovery evidence.");
   if (input && input.restoreTransportVerified === true) {
     errors.push("Legacy restoreTransportVerified=true is ignored; only an allowlisted immutable evidence record can unlock RestoreFw.");
   }
@@ -302,6 +424,8 @@ function preflight(input, now = Date.now()) {
     device: device.value,
     power: { batteryPercent: power.batteryPercent, chargerConnected: power.chargerConnected, observedAt: power.observedAt, source: power.source },
     restoreTransportEvidence: transport.value,
+    recoveryEvidence: recovery.value,
+    restoreSequence: { ok: sequence.ok, goldenQualified: image.image && image.image.id === GOLDEN_IMAGE.id ? false : sequence.ok },
     errors
   };
   if (report.destructiveAllowed) AUTHORIZED_PREFLIGHTS.add(report);
@@ -333,7 +457,8 @@ function transactionIdFor(report, now) {
 function preflightFingerprint(report) {
   const device = report.device || {};
   const transport = report.restoreTransportEvidence || {};
-  return [report.image && report.image.sha256, device.model, device.hardware, device.firmware, transport.contractId, transport.captureSha256].join("|");
+  const recovery=report.recoveryEvidence||{};
+  return [report.image && report.image.sha256, device.model, device.hardware, device.firmware,device.unitFingerprintSha256, transport.contractId, transport.captureSha256,recovery.evidenceId,recovery.captureSha256].join("|");
 }
 
 function createTransaction(preflightReport, now = Date.now(), transactionId = "") {
@@ -350,6 +475,11 @@ function createTransaction(preflightReport, now = Date.now(), transactionId = ""
     state: TRANSACTION_STATES.PRECHECK_OK,
     imageId: preflightReport.image.id,
     imageSha256: preflightReport.image.sha256,
+    unitFingerprintSha256:cleanSha(preflightReport.device&&preflightReport.device.unitFingerprintSha256),
+    transportContractId: String(preflightReport.restoreTransportEvidence && preflightReport.restoreTransportEvidence.contractId || ""),
+    transportCaptureSha256: cleanSha(preflightReport.restoreTransportEvidence && preflightReport.restoreTransportEvidence.captureSha256),
+    recoveryEvidenceId:String(preflightReport.recoveryEvidence&&preflightReport.recoveryEvidence.evidenceId||""),
+    recoveryCaptureSha256:cleanSha(preflightReport.recoveryEvidence&&preflightReport.recoveryEvidence.captureSha256),
     preflightFingerprint: preflightFingerprint(preflightReport),
     destructivePostCount: 0,
     events: [{ at: now, event: "PRECHECK_OK" }]
@@ -370,7 +500,7 @@ function validateTransaction(transaction) {
   return { ok: errors.length === 0, errors };
 }
 
-function validateBootVerification(transaction, verification) {
+function validateBootVerification(transaction, verification, now = Date.now()) {
   const value = verification && typeof verification === "object" ? verification : {};
   const device = normalizedDevice(value.device);
   const checks = value.checks || {};
@@ -378,7 +508,10 @@ function validateBootVerification(transaction, verification) {
   if (String(value.transactionId || "") !== String(transaction && transaction.transactionId || "")) errors.push("Boot verification is not bound to this transaction.");
   if (cleanSha(value.imageSha256) !== cleanSha(transaction && transaction.imageSha256)) errors.push("Boot verification is not bound to this image.");
   if (!finiteTimestamp(value.observedAt) || Number(value.observedAt) < Number(transaction && transaction.updatedAt || 0)) errors.push("Boot verification predates the restore transaction.");
-  if (!/^(?:LV01|MF885|MF96-ROUTER-C2)$/i.test(device.model) || !/Ver\.?\s*D/i.test(device.hardware) || device.firmware !== REQUIRED_FIRMWARE) errors.push("Post-boot device identity does not match the exact MF885 target.");
+  if(!evidenceFresh(value.observedAt,now,MAX_LIVE_EVIDENCE_AGE_MS))errors.push("Boot verification is stale or timestamped in the future.");
+  const liveDevice=validateDevice(device,now);
+  if(!liveDevice.ok)errors.push(...liveDevice.errors.map(error=>`Post-boot ${error}`));
+  if(device.unitFingerprintSha256!==cleanSha(transaction&&transaction.unitFingerprintSha256))errors.push("Post-boot router fingerprint does not match the preflight target.");
   for (const name of ["status1Reachable", "wifiReachable", "smsApiReachable", "mobileDataConnected"]) {
     if (checks[name] !== true) errors.push(`Boot verification check failed or is missing: ${name}.`);
   }
@@ -402,7 +535,10 @@ function transition(transaction, event, detail = "", now = Date.now()) {
   }
   if (name === "POST_SENT" && tx.destructivePostCount !== 1) throw new Error("POST_SENT requires a durably armed destructive transaction.");
   if (name === "BOOT_VERIFIED") {
-    const boot = validateBootVerification(tx, detail);
+    // The observation is made after REBOOT_WAIT and before this transition is
+    // journaled, so compare it with the prior persisted revision, not the new
+    // journal-write timestamp assigned above.
+    const boot = validateBootVerification(transaction, detail, now);
     if (!boot.ok) throw new Error(boot.errors.join(" "));
     tx.bootVerification = boot.value;
   }
@@ -486,6 +622,132 @@ async function armPersistentRestore(journal, transaction, now = Date.now()) {
   return persistTransition(journal, transaction, "POST_ARMED", "single destructive send allowance consumed", now);
 }
 
+async function persistUnknownAfterArming(journal, fallback, detail, now = Date.now()) {
+  let current;
+  try { current = await loadJournal(journal); }
+  catch (_) { return fallback; }
+  if (!current || TERMINAL_STATES.includes(current.state)) return current || fallback;
+  if (![TRANSACTION_STATES.POST_ARMED, TRANSACTION_STATES.POST_SENT, TRANSACTION_STATES.RESTORING, TRANSACTION_STATES.REBOOT_WAIT].includes(current.state)) return current;
+  try { return await persistTransition(journal, current, "UNKNOWN", detail, now); }
+  catch (_) { return current; }
+}
+
+async function executeArmedRestoreOnce(journal, precheckTransaction, sendOnce, options = {}) {
+  if (typeof sendOnce !== "function") throw new Error("Stage 0 one-shot RestoreFw sender is unavailable.");
+  const lease=options.exclusiveLease;
+  if(!lease||typeof lease.assertOwner!=="function")throw new Error("A platform-backed exclusive firmware lease is required before arming.");
+  if(!journal||typeof journal!=="object")throw new Error("Stage 0 journal adapter is invalid.");
+  if(ACTIVE_RESTORE_JOURNALS.has(journal))throw new Error("A Stage 0 send is already active for this journal; no second sender was called.");
+  ACTIVE_RESTORE_JOURNALS.add(journal);
+  const clock = typeof options.now === "function" ? options.now : Date.now;
+  try {
+    await lease.assertOwner(precheckTransaction.transactionId,"before-arm");
+    const armed = await armPersistentRestore(journal, precheckTransaction, clock());
+    let result;
+    // The durable POST_ARMED read-back above is the final boundary before any
+    // transport code may construct or submit the single destructive request.
+    await lease.assertOwner(armed.transactionId,"before-send");
+    result = await sendOnce(armed);
+    if (!result || result.accepted !== true) throw new Error("RestoreFw did not return a captured, explicitly accepted response.");
+    const sent = await persistTransition(journal, armed, "POST_SENT", "captured acceptance response received", clock());
+    return { transaction: sent, transportResult: result, destructivePostsAttempted: 1, automaticRetries: 0 };
+  } catch (error) {
+    const current=await loadJournal(journal).catch(()=>null);
+    const unknown = current&&current.state!==TRANSACTION_STATES.PRECHECK_OK
+      ? await persistUnknownAfterArming(journal, current, "one-shot RestoreFw outcome is unknown; automatic retry is permanently locked", clock())
+      : current;
+    error.stage0Transaction = unknown;
+    error.destructivePostsAttempted = unknown&&unknown.destructivePostCount===1?1:0;
+    error.automaticRetries = 0;
+    throw error;
+  }finally{
+    ACTIVE_RESTORE_JOURNALS.delete(journal);
+  }
+}
+
+async function executePersistentRestoreOnce(journal, preflightReport, sendOnce, options = {}) {
+  const clock = typeof options.now === "function" ? options.now : Date.now;
+  const transaction = await createPersistentTransaction(journal, preflightReport, clock(), options.transactionId || "");
+  return executeArmedRestoreOnce(journal, transaction, sendOnce, { now: clock,exclusiveLease:options.exclusiveLease });
+}
+
+async function monitorPersistentRestore(journal, postSentTransaction, monitor, options = {}) {
+  if (!monitor || typeof monitor.readStatus !== "function" || typeof monitor.classifyStatus !== "function" || typeof monitor.verifyBoot !== "function") {
+    throw new Error("The reviewed GET-only restore-status and post-boot monitor is unavailable.");
+  }
+  const clock = typeof options.now === "function" ? options.now : Date.now;
+  const sleep = typeof options.sleep === "function" ? options.sleep : async () => {};
+  const maxPolls = Math.max(1, Math.min(120, Number(options.maxPolls) || 40));
+  const intervalMs = Math.max(250, Math.min(30000, Number(options.intervalMs) || 2000));
+  const maxBootPolls=Math.max(1,Math.min(120,Number(options.maxBootPolls)||30));
+  const bootIntervalMs=Math.max(250,Math.min(30000,Number(options.bootIntervalMs)||2000));
+  let current = await loadJournal(journal);
+  if (!current || !postSentTransaction || current.transactionId !== postSentTransaction.transactionId || current.revision !== postSentTransaction.revision || current.state !== TRANSACTION_STATES.POST_SENT) {
+    throw new Error("Stage 0 status monitoring requires the exact persisted POST_SENT transaction.");
+  }
+  try {
+    for (let index = 0; index < maxPolls; index++) {
+      let observation;
+      try { observation = await monitor.readStatus({ transaction: current, poll: index + 1 }); }
+      catch (error) { observation = { error: String(error && error.message || error || "status read failed") }; }
+      const classified = await monitor.classifyStatus(observation, { transaction: current, poll: index + 1 });
+      const event = String(classified && classified.event || "");
+      if (!["RESTORING", "REBOOT_WAIT", "FAILED", "UNKNOWN"].includes(event)) {
+        throw new Error("The reviewed restore-status classifier returned an unknown state.");
+      }
+      current = await persistTransition(journal, current, event, String(classified && classified.detail || ""), clock());
+      if (event === "FAILED" || event === "UNKNOWN") return current;
+      if (event === "REBOOT_WAIT") {
+        let lastBootErrors=[];
+        for(let bootPoll=0;bootPoll<maxBootPolls;bootPoll++){
+          try{
+            const candidate=await monitor.verifyBoot({transaction:current,poll:bootPoll+1});
+            const verification=candidate&&candidate.ready===true?candidate.verification:candidate&&candidate.ready===false?null:candidate;
+            if(verification){
+              const checked=validateBootVerification(current,verification,clock());
+              if(checked.ok)return persistTransition(journal,current,"BOOT_VERIFIED",verification,clock());
+              lastBootErrors=checked.errors;
+            }
+          }catch(error){lastBootErrors=[String(error&&error.message||error||"post-boot check failed")];}
+          if(bootPoll+1<maxBootPolls)await sleep(bootIntervalMs);
+        }
+        const suffix=lastBootErrors.length?` Last checks: ${lastBootErrors.join(" ")}`:"";
+        return persistTransition(journal,current,"UNKNOWN",`bounded post-boot verification did not pass.${suffix}`,clock());
+      }
+      if (index + 1 < maxPolls) await sleep(intervalMs);
+    }
+    return persistTransition(journal, current, "UNKNOWN", "GET-only restore-status polling reached its reviewed bound", clock());
+  } catch (error) {
+    const unknown = await persistUnknownAfterArming(journal, current, "restore-status or post-boot verification was inconclusive; automatic retry is permanently locked", clock());
+    error.stage0Transaction = unknown;
+    throw error;
+  }
+}
+
+function createGoldenQualification(transaction, now = Date.now()) {
+  const valid = validateTransaction(transaction);
+  if (!valid.ok) throw new Error(valid.errors.join(" "));
+  if (transaction.state !== TRANSACTION_STATES.BOOT_VERIFIED || transaction.imageId !== GOLDEN_IMAGE.id || cleanSha(transaction.imageSha256) !== GOLDEN_IMAGE.sha256) {
+    throw new Error("Only an exact stock golden transaction that reached BOOT_VERIFIED can qualify the canary stage.");
+  }
+  if (!transaction.transportContractId || !/^[0-9a-f]{64}$/.test(cleanSha(transaction.transportCaptureSha256))||!transaction.recoveryEvidenceId||!/^[0-9a-f]{64}$/.test(cleanSha(transaction.recoveryCaptureSha256))||!/^[0-9a-f]{64}$/.test(cleanSha(transaction.unitFingerprintSha256))) {
+    throw new Error("The completed golden transaction is not bound to reviewed RestoreFw and physical recovery evidence.");
+  }
+  return Object.freeze({
+    schema: GOLDEN_QUALIFICATION_SCHEMA,
+    completedAt: now,
+    transactionId: transaction.transactionId,
+    state: transaction.state,
+    imageId: transaction.imageId,
+    imageSha256: transaction.imageSha256,
+    unitFingerprintSha256:cleanSha(transaction.unitFingerprintSha256),
+    transportContractId: transaction.transportContractId,
+    transportCaptureSha256: cleanSha(transaction.transportCaptureSha256),
+    recoveryEvidenceId:transaction.recoveryEvidenceId,
+    recoveryCaptureSha256:cleanSha(transaction.recoveryCaptureSha256)
+  });
+}
+
 async function recoverPersistentTransaction(journal, now = Date.now()) {
   const current = await loadJournal(journal);
   if (!current || TERMINAL_STATES.includes(current.state)) return current;
@@ -518,7 +780,12 @@ module.exports = {
   MAX_IMAGE_EVIDENCE_AGE_MS,
   JOURNAL_SCHEMA,
   JOURNAL_KEY,
+  GOLDEN_QUALIFICATION_SCHEMA,
+  GOLDEN_QUALIFICATION_KEY,
+  RECOVERY_EVIDENCE_SCHEMA,
+  FULL_NOR_SIZE_BYTES,
   VERIFIED_RESTORE_TRANSPORTS,
+  VERIFIED_RECOVERY_EVIDENCE,
   TRANSACTION_STATES,
   TERMINAL_STATES,
   ALLOWED_TRANSITIONS,
@@ -532,6 +799,11 @@ module.exports = {
   validatePower,
   normalizedTransportEvidence,
   validateTransportEvidence,
+  normalizedRecoveryEvidence,
+  validateRecoveryEvidence,
+  restoreAvailability,
+  validateGoldenQualification,
+  validateRestoreSequence,
   preflight,
   parseRestoreStatus,
   createTransaction,
@@ -546,6 +818,10 @@ module.exports = {
   createPersistentTransaction,
   persistTransition,
   armPersistentRestore,
+  executeArmedRestoreOnce,
+  executePersistentRestoreOnce,
+  monitorPersistentRestore,
+  createGoldenQualification,
   recoverPersistentTransaction,
   clearCompletedJournal
 };

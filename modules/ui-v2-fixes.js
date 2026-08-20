@@ -134,7 +134,7 @@ function enhancementScript() {
       const operator=value('#headerMeta','—');
       const apn=value('#apn','—');
       const poll=value('#pollSeconds','30');
-      const powerButton=$('#powerBtn'),powerAvailable=!!(powerButton&&!powerButton.disabled);
+      const powerButton=$('#powerBtn'),powerAvailable=!!(powerButton&&!powerButton.disabled),firmwareButton=$('#firmwareFlash'),firmwareAvailable=!!(firmwareButton&&!firmwareButton.disabled);
       root().innerHTML='<div class="sheet-backdrop settings-backdrop" data-overlay="settings"><div class="sheet settings-sheet" role="dialog" aria-modal="true" aria-label="Router settings">'
         +'<div class="settings-head"><div><small>Router</small><h2>Settings</h2></div><button class="settings-close" type="button" aria-label="Close">×</button></div>'
         +'<div class="settings-group"><div class="settings-row"><span>Model</span><b>'+esc(model)+'</b></div><div class="settings-row"><span>Firmware</span><b>'+esc(firmware)+'</b></div><div class="settings-row"><span>Software</span><b>'+esc(software)+'</b></div><div class="settings-row"><span>Dashboard build</span><b>'+esc(softwareRevision)+'</b></div></div>'
@@ -144,6 +144,8 @@ function enhancementScript() {
         +'<button type="button" data-settings-preflight>Run read-only preflight</button>'
         +'<button type="button" data-settings-app-auth>Run APP auth probe (GET only)</button>'
         +'<button type="button" data-settings-firmware-canary>Verify WEBUI canary file (no flash)</button>'
+        +'<button type="button" class="danger" data-settings-firmware-restore'+(firmwareAvailable?'':' disabled aria-disabled="true"')+'>'+(firmwareAvailable?'Firmware restore (Stage 0)':'Firmware restore locked · recovery + contract')+'</button>'
+        +'<button type="button" data-settings-firmware-journal>Stage 0 journal</button>'
         +'<button type="button" data-settings-last-power>Last power report</button>'
         +'<button type="button" class="danger" data-settings-power'+(powerAvailable?'':' disabled aria-disabled="true"')+'>Reboot / Power</button>'
         +'</div></div>';
@@ -154,6 +156,8 @@ function enhancementScript() {
       $('[data-settings-preflight]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#safePreflight');if(p)p.click();},0);};
       $('[data-settings-app-auth]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#appAuthProbe');if(p)p.click();},0);};
       $('[data-settings-firmware-canary]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#firmwareCanaryValidate');if(p)p.click();},0);};
+      $('[data-settings-firmware-restore]').onclick=()=>{if(!firmwareAvailable)return;closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#firmwareFlash');if(p)p.click();},0);};
+      $('[data-settings-firmware-journal]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#firmwareJournalBtn');if(p)p.click();},0);};
       $('[data-settings-last-power]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#lastPowerReportBtn');if(p)p.click();},0);};
       $('[data-settings-power]').onclick=()=>{closeOverlay('settings');setTimeout(()=>{const p=$('#powerBtn');if(p)p.click();},0);};
     }
