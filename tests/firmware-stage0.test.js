@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 const stage0 = require("../modules/firmware-stage0.js");
 
 const NOW = 1_000_000;
+const UNIT_FINGERPRINT="d".repeat(64);
+const exclusiveLease={async assertOwner(){return true;}};
 
 function imageEvidence(image, overrides = {}) {
   return {
@@ -21,6 +23,7 @@ function deviceEvidence(overrides = {}) {
     model: "MF885",
     hardware: "Ver.D",
     firmware: stage0.REQUIRED_FIRMWARE,
+    unitFingerprintSha256:UNIT_FINGERPRINT,
     source: "status1-live",
     observedAt: NOW,
     ...overrides
@@ -63,6 +66,7 @@ function transactionFixture(overrides = {}) {
     state: stage0.TRANSACTION_STATES.PRECHECK_OK,
     imageId: stage0.GOLDEN_IMAGE.id,
     imageSha256: stage0.GOLDEN_IMAGE.sha256,
+    unitFingerprintSha256:UNIT_FINGERPRINT,
     preflightFingerprint: "fixture",
     destructivePostCount: 0,
     events: [{ at: 1, event: "PRECHECK_OK" }],
@@ -126,6 +130,27 @@ test("caller booleans and arbitrary transport evidence cannot unlock RestoreFw",
   assert.match(report.errors.join(" "), /boolean cannot unlock|ignored/i);
   assert.match(report.errors.join(" "), /No matching RestoreFw transport contract/i);
   assert.equal(stage0.VERIFIED_RESTORE_TRANSPORTS.length, 0);
+});
+
+test("transport evidence binds every wire-significant field and polling bound", () => {
+  const result=stage0.validateTransportEvidence(transportEvidence());
+  const errors=result.errors.join(" ");
+  assert.match(errors,/full wire-contract schema/i);
+  assert.match(errors,/upload query order/i);
+  assert.match(errors,/MIME type, filename rule, and encoding/i);
+  assert.match(errors,/authentication, session, and acceptance-response/i);
+  assert.match(errors,/GET-only status route, query, and raw-value map/i);
+  assert.match(errors,/polling bounds/i);
+});
+
+test("physical recovery evidence is a separate compiled destructive gate", () => {
+  const candidate={schema:stage0.RECOVERY_EVIDENCE_SCHEMA,evidenceId:"bench-capture",model:"MF885",hardware:"Ver.D",norPart:"MX25U25635FZ4I-10G",norSizeBytes:stage0.FULL_NOR_SIZE_BYTES,ioVoltage:1.8,fullDumpCopies:3,dumpsIdentical:true,fullDumpSha256:"b".repeat(64),unitFingerprintSha256:UNIT_FINGERPRINT,goldenBackupSha256:stage0.GOLDEN_IMAGE.sha256,recoveryEntryVerified:true,captureSha256:"c".repeat(64)};
+  const result=stage0.validateRecoveryEvidence(candidate);
+  assert.equal(result.ok,false);
+  assert.match(result.errors.join(" "),/No matching physical recovery evidence/i);
+  assert.equal(stage0.VERIFIED_RECOVERY_EVIDENCE.length,0);
+  assert.equal(stage0.validateRecoveryEvidence({...candidate,ioVoltage:3.3}).ok,false);
+  assert.equal(stage0.validateRecoveryEvidence({...candidate,fullDumpCopies:2}).ok,false);
 });
 
 test("a forged preflight report cannot create a transaction", () => {
@@ -208,6 +233,85 @@ test("persistent journal is verified before the one-shot send can begin", async 
   assert.equal(stage0.canSendRestore(persisted), false);
 
   await assert.rejects(stage0.persistTransition(journal, initial, "POST_ARMED", "", 3), /changed concurrently/i);
+});
+
+test("one-shot executor reads back POST_ARMED before one sender call", async () => {
+  const journal=stage0.createMemoryJournal(transactionFixture());
+  let calls=0;
+  const result=await stage0.executeArmedRestoreOnce(journal,transactionFixture(),async armed=>{
+    calls++;
+    const stored=await stage0.loadJournal(journal);
+    assert.equal(stored.state,stage0.TRANSACTION_STATES.POST_ARMED);
+    assert.equal(stored.revision,armed.revision);
+    return {accepted:true,statusCode:200};
+  },{now:()=>2+calls,exclusiveLease});
+  assert.equal(calls,1);
+  assert.equal(result.transaction.state,stage0.TRANSACTION_STATES.POST_SENT);
+  assert.equal(result.destructivePostsAttempted,1);
+  assert.equal(result.automaticRetries,0);
+});
+
+test("one-shot timeout becomes terminal UNKNOWN and never calls the sender twice", async () => {
+  const journal=stage0.createMemoryJournal(transactionFixture());
+  let calls=0;
+  await assert.rejects(stage0.executeArmedRestoreOnce(journal,transactionFixture(),async()=>{
+    calls++;
+    throw new Error("network connection was lost");
+  },{now:()=>2+calls,exclusiveLease}),/connection was lost/i);
+  assert.equal(calls,1);
+  const stored=await stage0.loadJournal(journal);
+  assert.equal(stored.state,stage0.TRANSACTION_STATES.UNKNOWN);
+  assert.equal(stored.destructivePostCount,1);
+  await assert.rejects(stage0.executeArmedRestoreOnce(journal,stored,async()=>{calls++;return {accepted:true};},{exclusiveLease}),/Invalid Stage 0 transition/i);
+  assert.equal(calls,1);
+});
+
+test("two concurrent callers sharing one journal cannot invoke two senders", async()=>{
+  const journal=stage0.createMemoryJournal(transactionFixture());
+  let sends=0,release;
+  const hold=new Promise(resolve=>{release=resolve;});
+  const first=stage0.executeArmedRestoreOnce(journal,transactionFixture(),async()=>{sends++;await hold;return {accepted:true};},{exclusiveLease,now:()=>2});
+  const second=stage0.executeArmedRestoreOnce(journal,transactionFixture(),async()=>{sends++;return {accepted:true};},{exclusiveLease,now:()=>2});
+  await assert.rejects(second,/already active.*no second sender/i);
+  release();
+  await first;
+  assert.equal(sends,1);
+});
+
+test("GET-only monitor reaches BOOT_VERIFIED through the reviewed classifier", async () => {
+  const postSent=transactionFixture({
+    revision:2,updatedAt:3,state:stage0.TRANSACTION_STATES.POST_SENT,destructivePostCount:1,
+    transportContractId:"capture-v1",transportCaptureSha256:"a".repeat(64),
+    recoveryEvidenceId:"bench-v1",recoveryCaptureSha256:"b".repeat(64),
+    unitFingerprintSha256:UNIT_FINGERPRINT,
+    events:[{at:1,event:"PRECHECK_OK"},{at:2,event:"POST_ARMED"},{at:3,event:"POST_SENT"}]
+  });
+  const journal=stage0.createMemoryJournal(postSent);
+  let polls=0,time=3;
+  const verified=await stage0.monitorPersistentRestore(journal,postSent,{
+    async readStatus(){polls++;return {status:polls===1?"restoring":"reboot"};},
+    async classifyStatus(value){return value.status==="restoring"?{event:"RESTORING",detail:"progress=50"}:{event:"REBOOT_WAIT"};},
+    async verifyBoot({transaction}){return {transactionId:transaction.transactionId,imageSha256:transaction.imageSha256,observedAt:++time,device:deviceEvidence({observedAt:time}),checks:{status1Reachable:true,wifiReachable:true,smsApiReachable:true,mobileDataConnected:true}};}
+  },{now:()=>++time,sleep:async()=>{},maxPolls:3,intervalMs:250});
+  assert.equal(polls,2);
+  assert.equal(verified.state,stage0.TRANSACTION_STATES.BOOT_VERIFIED);
+  const qualification=stage0.createGoldenQualification(verified,++time);
+  assert.equal(qualification.imageSha256,stage0.GOLDEN_IMAGE.sha256);
+  assert.equal(qualification.transportContractId,"capture-v1");
+  assert.equal(qualification.recoveryEvidenceId,"bench-v1");
+});
+
+test("post-boot checks stop at the compiled bound and finish UNKNOWN",async()=>{
+  const postSent=transactionFixture({revision:2,updatedAt:3,state:stage0.TRANSACTION_STATES.POST_SENT,destructivePostCount:1,events:[{at:1,event:"PRECHECK_OK"},{at:2,event:"POST_ARMED"},{at:3,event:"POST_SENT"}]});
+  const journal=stage0.createMemoryJournal(postSent);
+  let bootChecks=0,time=3;
+  const result=await stage0.monitorPersistentRestore(journal,postSent,{
+    async readStatus(){return {status:"reboot"};},
+    async classifyStatus(){return {event:"REBOOT_WAIT"};},
+    async verifyBoot(){bootChecks++;return {ready:false};}
+  },{now:()=>++time,sleep:async()=>{},maxPolls:1,maxBootPolls:2,bootIntervalMs:250});
+  assert.equal(bootChecks,2);
+  assert.equal(result.state,stage0.TRANSACTION_STATES.UNKNOWN);
 });
 
 test("restart after arming becomes terminal UNKNOWN and can never be cleared automatically", async () => {

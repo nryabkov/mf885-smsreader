@@ -27,18 +27,20 @@ The canary is derived from the exact golden image, has no native OSLO patch and 
 A destructive restore is permitted only when all of the following are true:
 
 1. full SHA-256 and size match an allowlisted image;
-2. device is positively identified as MF885 / MF96-ROUTER-C2;
+2. device is positively identified as the exact LV01 / MF885 target;
 3. hardware revision is Ver.D;
 4. base firmware is exactly `2.5.94_release_MF855_NZ_CP_2.129.003`;
 5. external USB power is connected;
 6. battery is at least 50%;
-7. the exact `RestoreFw` multipart transport has been live-verified on this firmware family and its immutable evidence record exactly matches a contract compiled into the allowlist.
+7. the exact `RestoreFw` multipart transport has been live-verified and its immutable full wire contract exactly matches the compiled allowlist;
+8. physical recovery evidence exactly matches a compiled record: three identical full 32 MiB dumps of the 1.8 V `MX25U25635FZ4I`, the exact golden backup, a positively verified recovery-mode entry, and the privacy-safe fingerprint of the same live router;
+9. a WEBUI Canary restore has a prior golden-to-golden transaction under the same contract/capture that reached `BOOT_VERIFIED`.
 
-The transport allowlist is intentionally empty. `restoreTransportVerified=true`, a caller-built evidence object, or a configuration override cannot unlock it. Evidence must bind the exact firmware, operation, HTTP method, request path, Digest URI, multipart field, status model, and SHA-256 of a redacted capture artifact. This keeps Stage 0 validate-only until the request contract is proven on hardware and reviewed into the source.
+The transport and recovery allowlists are intentionally empty. `restoreTransportVerified=true`, caller-built evidence, or a configuration override cannot unlock them. Transport evidence binds the exact firmware, operation, HTTP method, physical request path, Digest URI, upload query order/escaping, multipart field/MIME/filename/encoding, authentication/session profile, acceptance predicate, GET-only status route/query/raw-value map, polling bounds, reviewed adapter artifact SHA-256, platform-backed exclusive-lease profile, and SHA-256 of a redacted capture artifact. Recovery evidence independently binds the physical NOR facts, one live unit fingerprint, and reviewed recovery artifact. Filling only a URL or multipart field is insufficient. The shipped build also has no production adapter fallback: adding allowlist data alone leaves the UI locked until a core-owned adapter is reviewed into `scriptable.js`.
 
-Image metadata is also insufficient. Stage 0 computes SHA-256 itself from the exact Scriptable `Data`/byte array selected for upload and seals that evidence for the current process; caller-built metadata is rejected. Device identity, hardware revision, firmware, battery level, and charger state must come from a fresh live `status1` read immediately before arming a transaction.
+Image metadata is also insufficient. Stage 0 computes SHA-256 itself from the exact Scriptable `Data`/byte array selected for upload and seals that evidence for the current process; caller-built metadata is rejected. The installer retains immutable native `Data` privately and completes the second hash before authentication/arming, so no fallible local hash occurs after `POST_ARMED`. Device identity, unit fingerprint, hardware revision, firmware, battery level, and charger state come from the final live status observation of the prepared session immediately before arming.
 
-The Scriptable dashboard exposes this validate-only path as **Verify WEBUI canary file (no flash)**. It uses the native Files picker, computes SHA-256 from the selected bytes, accepts only WEBUI canary r3, and performs one fresh `status1` read for the identity and power gates. The report records `routerWritesAttempted: 0`, `firmwarePostsAttempted: 0`, and `flashAllowed: false`. The file path and selected bytes are not included in the result, and there is no upload handler or WebView command for a firmware POST.
+The Scriptable dashboard keeps **Verify WEBUI canary file (no flash)** as a read-only action and adds a separate **Firmware restore (Stage 0)** control. Its WebView command exists so the complete workflow can be tested, but the runtime control and backend both fail closed before file selection while either compiled allowlist is empty. No Request is constructed and no router read or POST is made in that state.
 
 For the exact LV01/MF885 firmware above, the recovered companion client defines `Battery_status=1` as external charging input; `Charger_status=0` is normal charging, `4` is full, and `5` is abnormal charging. `Battery_status=2` means USB-A feeding and `3` means normal battery operation. Any future live Stage 0 integration must derive its normalized power gate from those raw fields and reject missing or mismatched identity; the current validate-only module still accepts a normalized boolean and cannot transmit because the restore transport allowlist is empty.
 
@@ -52,6 +54,8 @@ Transaction states:
 
 Transitions use an explicit adjacency matrix. `FAILED`, `UNKNOWN`, and `BOOT_VERIFIED` are terminal. A Scriptable restart before arming invalidates the preflight; a restart after arming records terminal `UNKNOWN`. The persistent Keychain journal is read back after every write, rejects stale concurrent revisions, and an `UNKNOWN` journal cannot be cleared through the normal completion API.
 
+The in-process sender guard rejects concurrent calls sharing one journal. Cross-process safety is a separate compiled gate: the future core adapter must hold a platform-backed exclusive lease and Stage 0 rechecks its ownership before arming and again immediately before the sole Request. Without that reviewed lease profile, the production adapter remains absent. While firmware mode is active, WebView auto-refresh is paused and the backend rejects SMS, USSD, cellular, power, refresh, and other router actions. The **Stage 0 journal** view recovers interrupted states and permits acknowledgement only for `BOOT_VERIFIED` or explicit `FAILED`; `UNKNOWN` stays locked.
+
 `BOOT_VERIFIED` is not a label-only transition. It requires a transaction- and image-bound post-boot observation confirming the exact MF885 identity and firmware plus live `status1`, Wi-Fi, SMS API, and mobile-data checks. The WEBUI canary additionally requires its expected marker.
 
 ## Intended first hardware sequence
@@ -59,10 +63,11 @@ Transitions use an explicit adjacency matrix. `FAILED`, `UNKNOWN`, and `BOOT_VER
 1. verify recovery-mode entry without flashing;
 2. save golden firmware backup and configuration backup;
 3. capture and review the exact RestoreFw transport without sending a firmware payload;
-4. add the reviewed immutable transport contract to the source allowlist;
-5. stock golden -> stock golden restore;
-6. stock golden -> WEBI-only canary r3;
-7. canary -> stock golden rollback;
-8. only then consider native OSLO canaries.
+4. add the reviewed immutable transport and physical recovery records to the source allowlists;
+5. run the Scriptable Stage 0 installer dry path and verify all gates with zero POSTs;
+6. stock golden -> stock golden restore;
+7. stock golden -> WEBI-only canary r3;
+8. canary -> stock golden rollback;
+9. only then consider native OSLO canaries.
 
-Static validation is not hardware validation. Stage 0 currently has no uploader and cannot send `RestoreFw`. It must remain conservative when any identity, power, image, journal, transport, or post-boot evidence is missing.
+Static validation is not hardware validation. Stage 0 now has the guarded installer transaction path, but the shipped build cannot construct or send `RestoreFw` because both compiled evidence allowlists and the reviewed transport adapter are absent. It remains conservative when any identity, power, image, journal, recovery, transport, sequence, or post-boot evidence is missing.

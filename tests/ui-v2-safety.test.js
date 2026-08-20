@@ -83,12 +83,18 @@ test("software build and GET-only APP auth probe are visible and copyable", () =
   assert.match(html, /Copy diagnostic report/);
 });
 
-test("WEBUI canary control validates only and never advertises a flash action", () => {
+test("WEBUI canary remains validate-only while the Stage 0 restore control is visibly locked", () => {
   const html = ui.buildHtml(model({ available:false, reason:"Locked", actions:{} }));
   assert.match(html, /id="firmwareCanaryValidate">Verify WEBUI canary file \(no flash\)/);
   assert.match(html, /command\('firmwareCanaryValidate',\{\}\)/);
   assert.match(html, /Flash remains locked/);
-  assert.doesNotMatch(html, /command\('firmwareFlash'/);
+  assert.match(html, /id="firmwareFlash" disabled aria-disabled="true"[^>]*>Firmware restore locked · recovery \+ contract/);
+  assert.match(html, /command\('firmwareFlash',\{confirmed:true\}\)/);
+  assert.match(html,/id="firmwareJournalBtn">Stage 0 journal/);
+  assert.match(html,/command\('firmwareJournalStatus',\{\}\)/);
+  assert.match(html,/command\('firmwareJournalAcknowledge',\{confirmed:true\}\)/);
+  assert.match(html, /ONE POST/);
+  assert.match(html, /NO automatic retry/);
   assert.match(html, /@media\(max-width:560px\)\{[\s\S]*?\.dashboard-grid\{grid-template-columns:minmax\(0,1fr\)/);
   assert.match(html, /\.sheet button\{[^}]*white-space:normal;overflow-wrap:anywhere/);
   assert.match(html, /\.device-row b\{[^}]*overflow-wrap:anywhere/);
@@ -132,6 +138,8 @@ test("every v2 control is either actionable or rendered as non-interactive statu
   assert.match(html,/\$\('#safePreflight'\)\.onclick/);
   assert.match(html,/\$\('#appAuthProbe'\)\.onclick/);
   assert.match(html,/\$\('#firmwareCanaryValidate'\)\.onclick/);
+  assert.match(html,/\$\('#firmwareFlash'\)\.onclick/);
+  assert.match(html,/\$\('#firmwareJournalBtn'\)\.onclick/);
   assert.match(html,/\$\('#lastPowerReportBtn'\)\.onclick/);
   assert.match(html,/\$\('#newSms'\)\.onclick/);
   assert.match(html,/\$\('#refreshNow'\)\.onclick=refresh/);
@@ -152,7 +160,7 @@ test("SMS send and verified delete avoid redundant full-history reloads", () => 
 
 test("state-changing commands stay single-flight while the native result is pending", () => {
   const html=ui.buildHtml(model({available:false,reason:"Locked",actions:{}}));
-  assert.match(html,/const nonRepeatableActions=new Set\(\['sendSms','deleteSms','ussd','firmwareCanaryValidate','deviceAccess','cellularReconnect','cellularMode','resetTraffic','reboot','powerOff'\]\)/);
+  assert.match(html,/const nonRepeatableActions=new Set\(\['sendSms','deleteSms','ussd','firmwareCanaryValidate','firmwareFlash','firmwareJournalAcknowledge','deviceAccess','cellularReconnect','cellularMode','resetTraffic','reboot','powerOff'\]\)/);
   assert.match(html,/state\.mutationPending\.has\(key\)[\s\S]*?it was not sent again/);
   assert.match(html,/if\(key\)\{toast\('Still waiting for the router; do not repeat the action'\);return;\}/);
   assert.match(html,/if\(p\.mutationKey\)state\.mutationPending\.delete\(p\.mutationKey\)/);
