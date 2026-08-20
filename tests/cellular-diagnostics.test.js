@@ -26,10 +26,13 @@ test("preserves missing fields, partial endpoint errors, IPv4-only, and unknown 
   assert.equal(result.endpointErrors.wan, "timeout");
 });
 
-test("2.5.94 status1 aliases are decoded without guessing enum meanings", () => {
-  const result = diagnostics.normalize({status1:"<RGW><sim_status>0</sim_status><ip>10.0.0.2</ip><v4gateway>10.0.0.1</v4gateway><v4dns1>1.1.1.1</v4dns1><v4dns2>8.8.8.8</v4dns2><lte_apn>internet</lte_apn></RGW>"});
-  assert.equal(result.values.sim.value, "Initializing");
+test("2.5.94 status1 aliases use the live WebUI SIM and PDP enums", () => {
+  const result = diagnostics.normalize({status1:"<RGW><sim_status>0</sim_status><connect_disconnect>cellular</connect_disconnect><ip>10.0.0.2</ip><v4gateway>10.0.0.1</v4gateway><v4dns1>1.1.1.1</v4dns1><v4dns2>8.8.8.8</v4dns2><lte_apn>internet</lte_apn></RGW>"});
+  assert.equal(result.values.sim.value, "Ready");
   assert.equal(result.values.sim.confirmed, true);
+  assert.equal(result.stages.sim.state,"ok");
+  assert.equal(result.values.pdpState.value,"Connected");
+  assert.equal(result.stages.pdp.state,"ok");
   assert.equal(result.values.ipv4.raw, "10.0.0.2");
   assert.equal(result.values.gateway4.raw, "10.0.0.1");
   assert.equal(result.values.dns2.raw, "8.8.8.8");

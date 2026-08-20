@@ -53,7 +53,8 @@ test('dashboard has native Alert fallback for WebView failures',()=>{const sourc
 test('SMS deletion sends the confirmed API contract before any firmware-specific alternative',async()=>{
   const calls=[];
   const result=await app.deleteSms({},'42&7',{
-    request:async(...args)=>{calls.push(args);return '<RGW><sms_cmd_status_result>1</sms_cmd_status_result></RGW>';}
+    request:async(...args)=>{calls.push(args);return '<RGW><sms_cmd_status_result>1</sms_cmd_status_result></RGW>';},
+    poll:async()=>({ok:false,message:'The router rejected the SMS deletion command.'})
   });
   assert.equal(result.ok,false);
   assert.equal(calls.length,1,'an unconfirmed fallback must not be sent after rejection');
@@ -63,8 +64,9 @@ test('SMS deletion sends the confirmed API contract before any firmware-specific
   assert.equal(file,'message');
   assert.match(xml,/<message_flag>DELETE_SMS<\/message_flag>/);
   assert.match(xml,/<sms_cmd>6<\/sms_cmd>/);
-  assert.match(xml,/<message_id>42&amp;7<\/message_id>/);
-  assert.doesNotMatch(xml,/DELETE_SMS_LOCAL|<index>/);
+  assert.match(xml,/<get_message><tags>12<\/tags><mem_store>1<\/mem_store><\/get_message>/);
+  assert.match(xml,/<set_message><delete_message_id>42&amp;7,<\/delete_message_id><\/set_message>/);
+  assert.doesNotMatch(xml,/DELETE_SMS_LOCAL|<delete_message>|<message_id>/);
 });
 
 function dashboardLifecycle({channelError}={}) {
@@ -272,7 +274,8 @@ test('delete failures stay in the card accessible live region instead of the glo
   assert.match(js,/bridge\('deleteSms'[\s\S]*?\.catch\(function\(\)\{\}\)/);
 });
 test('router deletion statuses require an explicit known success and reject known failures',()=>{
-  assert.equal(app.routerAccepted('<RGW><message><sms_cmd_status_result>0</sms_cmd_status_result></message></RGW>'),true);
+  assert.equal(app.routerAccepted('<RGW><message><sms_cmd>6</sms_cmd><sms_cmd_status_result>3</sms_cmd_status_result></message></RGW>'),true);
+  assert.equal(app.routerAccepted('<RGW><message><sms_cmd>6</sms_cmd><sms_cmd_status_result>1</sms_cmd_status_result></message></RGW>'),false);
   assert.equal(app.routerAccepted('<RGW><delete_status>completed</delete_status></RGW>'),true);
   assert.equal(app.routerAccepted('<RGW><delete_status>3</delete_status></RGW>'),false);
   assert.equal(app.routerAccepted('<RGW><status>failed</status></RGW>'),false);
@@ -292,6 +295,21 @@ test('total_number is page metadata and never becomes the SMS total',()=>{
 test('in-flight guard shares concurrent operation',async()=>{const guard=app.createInFlightGuard();let calls=0,release;const gate=new Promise(r=>release=r);const a=guard.run(async()=>{calls++;await gate;return 7});const b=guard.run(async()=>{calls++;return 8});assert.equal(a,b);release();assert.equal(await b,7);assert.equal(calls,1);});
 test('capability cache keeps positives and expires negative entries after 24 hours',()=>{const now=Date.now(),base={schema:1,host:'router',checkedAt:now};assert.equal(app.capabilityCacheValid({...base,positive:true},'router',now+99*86400000),true);assert.equal(app.capabilityCacheValid({...base,positive:false},'router',now+23*3600000),true);assert.equal(app.capabilityCacheValid({...base,positive:false},'router',now+25*3600000),false);assert.equal(app.capabilityCacheValid({...base,positive:true,schema:2},'router',now),false);});
 test('dispatcher whitelists actions, validates parameters and correlates ids',async()=>{const replies=[];const dispatch=app.createWebViewDispatcher({refresh:async()=>({fresh:true}),sendSms:async p=>p.text},r=>replies.push(r));assert.equal((await dispatch({id:'one',action:'refresh',params:{}})).id,'one');assert.equal((await dispatch({id:'two',action:'sendSms',params:{to:'+1',text:'hi'}})).result,'hi');assert.equal((await dispatch({id:'bad',action:'arbitraryFunction',params:{}})).ok,false);assert.deepEqual(replies.map(x=>x.id),['one','two','bad']);});
+
+test('explicit router action failures become failed bridge responses',async()=>{
+  const accepted={ok:true,message:'accepted'};
+  assert.equal(app.requireSuccessfulActionResult(accepted),accepted);
+  const rejected={ok:false,message:'The router rejected the send command',diagnostics:'password=secret'};
+  assert.throws(()=>app.requireSuccessfulActionResult(rejected),error=>{
+    assert.equal(error.message,rejected.message);
+    assert.doesNotMatch(error.diagnostics,/secret/);
+    return true;
+  });
+  const source=require('node:fs').readFileSync(require.resolve('../scriptable.js'),'utf8');
+  for(const action of ['sendSms','ussd','deviceAccess','cellularReconnect','cellularMode']){
+    assert.match(source,new RegExp(`${action}:[^\\n]*requireSuccessfulActionResult`));
+  }
+});
 test('dispatcher requires danger confirmation and converts handler errors',async()=>{let called=0;const dispatch=app.createWebViewDispatcher({reboot:async()=>{called++;return 'ok'},refresh:async()=>{throw new Error('offline')} });assert.equal((await dispatch({id:'a',action:'reboot',params:{}})).ok,false);assert.equal(called,0);assert.equal((await dispatch({id:'b',action:'reboot',params:{confirmed:true}})).ok,true);const failed=await dispatch({id:'c',action:'refresh',params:{}});assert.equal(failed.ok,false);assert.equal(failed.error,'offline');});
 test('arbitrary function names can never be selected by WebView data',()=>{assert.throws(()=>app.validateWebViewCommand({id:'x',action:'constructor',params:{}}),/not allowed/);assert.throws(()=>app.validateWebViewCommand({id:'x',action:'cellularMode',params:{mode:'evil',confirmed:true}}),/Invalid cellular mode/);});
 
@@ -741,7 +759,7 @@ test('v2 client delegates SMS long press copying and suppresses its following cl
 
 test('Delete confirmation dispatches one command, reloads history, and removes the card only after verification',async()=>{
   const calls=[];
-  const deleteSms=async id=>app.deleteSms({},id,{request:async(...args)=>{calls.push(args);return '<RGW><sms_cmd_status_result>0</sms_cmd_status_result></RGW>';},wait:async()=>{},verify:async()=>({messages:[]})});
+  const deleteSms=async id=>app.deleteSms({},id,{request:async(...args)=>{calls.push(args);return '<RGW><sms_cmd_status_result>1</sms_cmd_status_result></RGW>';},poll:async()=>({ok:true,status:'3'}),wait:async()=>{},verify:async()=>({messages:[]})});
   let cards=[{id:'42'}];
   const dispatch=app.createWebViewDispatcher({deleteSms:async({id})=>{const result=await deleteSms(id);if(!result.ok)throw new Error(result.message);cards=result.history.messages;return result;}});
   // The first click only opens the client-side confirmation; no command is dispatched.
@@ -749,16 +767,41 @@ test('Delete confirmation dispatches one command, reloads history, and removes t
   const result=await dispatch({id:'confirmed',action:'deleteSms',params:{id:'42',confirmed:true}});
   assert.equal(result.ok,true); assert.equal(calls.length,1); assert.equal(cards.length,0);
   assert.match(calls[0][3],/<message_flag>DELETE_SMS<\/message_flag><sms_cmd>6<\/sms_cmd>/);
-  assert.match(calls[0][3],/<delete_message><message_id>42<\/message_id><\/delete_message>/);
+  assert.match(calls[0][3],/<get_message><tags>12<\/tags><mem_store>1<\/mem_store><\/get_message>/);
+  assert.match(calls[0][3],/<set_message><delete_message_id>42,<\/delete_message_id><\/set_message>/);
 });
 
 for(const scenario of [
-  ['router refusal',async()=>'<RGW><sms_cmd_status_result>1</sms_cmd_status_result></RGW>',async()=>({messages:[]}),/rejected/],
-  ['network error',async()=>{throw new Error('network offline')},async()=>({messages:[]}),/connection was lost/],
-  ['message remains',async()=>'<RGW><sms_cmd_status_result>0</sms_cmd_status_result></RGW>',async()=>({messages:[{id:'42'}]}),/still present/]
+  ['router refusal',async()=>'<RGW><sms_cmd_status_result>1</sms_cmd_status_result></RGW>',async()=>({messages:[]}),async()=>({ok:false,message:'The router rejected the SMS deletion command.'}),/rejected/],
+  ['network error',async()=>{throw new Error('network offline')},async()=>({messages:[]}),async()=>({ok:true,status:'3'}),/connection was lost/],
+  ['message remains',async()=>'<RGW><sms_cmd_status_result>1</sms_cmd_status_result></RGW>',async()=>({messages:[{id:'42'}]}),async()=>({ok:true,status:'3'}),/still present/]
 ]) test(`Delete keeps the card when ${scenario[0]}`,async()=>{
   let cards=[{id:'42'}];
-  const result=await app.deleteSms({},'42',{request:scenario[1],wait:async()=>{},verify:scenario[2]});
+  const result=await app.deleteSms({},'42',{request:scenario[1],wait:async()=>{},verify:scenario[2],poll:scenario[3]});
   if(result.ok)cards=result.history.messages;
-  assert.equal(result.ok,false); assert.match(result.message,scenario[3]); assert.equal(cards.length,1);
+  assert.equal(result.ok,false); assert.match(result.message,scenario[4]); assert.equal(cards.length,1);
+});
+
+test('SMS command polling waits through status 1 and accepts only matching status 3',async()=>{
+  const responses=[
+    '<RGW><sms_cmd>6</sms_cmd><sms_cmd_status_result>1</sms_cmd_status_result></RGW>',
+    '<RGW><sms_cmd>6</sms_cmd><sms_cmd_status_result>3</sms_cmd_status_result></RGW>'
+  ];
+  const waits=[];
+  const result=await app.waitForSmsCommand({},'6',{request:async(_auth,method,file)=>{assert.equal(method,'GET');assert.equal(file,'message');return responses.shift();},wait:async ms=>waits.push(ms),attempts:2,intervalMs:1});
+  assert.equal(result.ok,true);assert.equal(result.status,'3');assert.deepEqual(waits,[1]);
+  assert.equal(app.parseSendResult('<RGW><sms_cmd>4</sms_cmd><sms_cmd_status_result>3</sms_cmd_status_result></RGW>').ok,true);
+  assert.equal(app.parseSendResult('<RGW><sms_cmd>4</sms_cmd><sms_cmd_status_result>1</sms_cmd_status_result></RGW>').ok,false);
+  assert.equal(app.parseSendResult('<RGW><sms_cmd>6</sms_cmd><sms_cmd_status_result>3</sms_cmd_status_result></RGW>').ok,false);
+});
+
+test('SMS send posts once and waits for command 4 status 3',async()=>{
+  const calls=[];
+  const final='<RGW><sms_cmd>4</sms_cmd><sms_cmd_status_result>3</sms_cmd_status_result></RGW>';
+  const result=await app.sendSms({},'+123','hello',{request:async(...args)=>{calls.push(args);return '<RGW/>';},poll:async(_auth,command)=>{assert.equal(command,'4');return {ok:true,status:'3',xml:final};},wait:async()=>{}});
+  assert.equal(result,final);assert.equal(calls.length,1);
+  assert.equal(calls[0][1],'POST');assert.equal(calls[0][2],'message');
+  assert.match(calls[0][3],/<message_flag>SEND_SMS<\/message_flag><sms_cmd>4<\/sms_cmd>/);
+  assert.match(calls[0][3],/<contacts>\+123<\/contacts>/);
+  await assert.rejects(()=>app.sendSms({},'+123','hello',{request:async()=>'<RGW/>',poll:async()=>({ok:false,status:'2',message:'The router rejected the send command'}),wait:async()=>{}}),/rejected/);
 });

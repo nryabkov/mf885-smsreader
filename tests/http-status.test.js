@@ -99,3 +99,20 @@ test("dashboard does not load additional SMS pages after the initial message req
   await flow;
   assert.equal(historyLoads, 0);
 });
+
+test("polling marks a failed status request explicitly for the persistent UI", async () => {
+  const originalRequest=global.Request;
+  global.Request=class {
+    constructor(url){this.url=url;this.method="GET";this.headers={};this.response=null;}
+    async loadString(){this.response={statusCode:503,headers:{}};return "<RGW><error>offline</error></RGW>";}
+  };
+  try {
+    const snapshot=await app.loadPollingSnapshot(auth(),{messages:[],loadedPages:0,totalPages:null,totalMessages:null});
+    assert.equal(snapshot.errors.statusRequest,true);
+    assert.match(snapshot.errors.status,/status1 request failed: HTTP 503/);
+    const payload=app.webPollPayload(snapshot);
+    assert.equal(payload.errors.statusRequest,true);
+    assert.equal(payload.networkMode,"Unknown");
+    assert.equal(payload.batteryPercent,undefined);
+  } finally { global.Request=originalRequest; }
+});

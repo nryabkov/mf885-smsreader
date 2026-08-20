@@ -66,7 +66,7 @@ function enhancementScript() {
     }
 
     function setDiagTab(name){
-      $$('[data-diag-tab]').forEach(b=>b.classList.toggle('active',b.dataset.diagTab===name));
+      $$('[data-diag-tab]').forEach(b=>{const selected=b.dataset.diagTab===name;b.classList.toggle('active',selected);b.setAttribute('aria-selected',String(selected));b.tabIndex=selected?0:-1;});
       $$('[data-diag-section]').forEach(card=>{
         const sections=String(card.dataset.diagSection||'').split(/\\s+/);
         card.classList.toggle('diag-hidden',!sections.includes(name));
@@ -149,7 +149,7 @@ function enhancementScript() {
       $('.settings-close').onclick=()=>closeOverlay('settings');
       $('.settings-backdrop').onclick=e=>{if(e.target.classList.contains('settings-backdrop'))closeOverlay('settings')};
       $('[data-settings-open-diag]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="diagnostics"]');if(t)t.click();};
-      $('[data-settings-capabilities]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const d=$('#detectAll');if(d){d.scrollIntoView({behavior:'smooth',block:'center'});d.focus();}},100);};
+      $('[data-settings-capabilities]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const d=$('#detectAll');if(d){d.scrollIntoView({behavior:'smooth',block:'center'});d.focus();d.click();}},100);};
       $('[data-settings-preflight]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#safePreflight');if(p)p.click();},0);};
       $('[data-settings-app-auth]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#appAuthProbe');if(p)p.click();},0);};
       $('[data-settings-last-power]').onclick=()=>{closeOverlay('settings');const t=$('[data-tab="overview"]');if(t)t.click();setTimeout(()=>{const p=$('#lastPowerReportBtn');if(p)p.click();},0);};
@@ -177,7 +177,7 @@ function enhancementScript() {
     if(settings) settings.onclick=e=>{e.preventDefault();e.stopPropagation();openSettings();};
 
     // Diagnostics sub-tabs were visual only in the first v2 build. Make them functional.
-    $$('[data-diag-tab]').forEach(b=>b.onclick=()=>setDiagTab(b.dataset.diagTab));
+    $$('[data-diag-tab]').forEach(b=>{b.onclick=()=>setDiagTab(b.dataset.diagTab);b.onkeydown=e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const tabs=$$('[data-diag-tab]'),current=tabs.indexOf(b),next=e.key==='Home'?0:e.key==='End'?tabs.length-1:(current+(e.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;setDiagTab(tabs[next].dataset.diagTab);tabs[next].focus();};});
     setDiagTab('connection');
 
     // Delegation also covers rows replaced later by zmiApplySmsHistory/applySms.
@@ -236,14 +236,14 @@ function enhanceHtml(html, model) {
 
   output = output.replace(
     '<div class="diag-tabs"><button class="active">Connection</button><button>SIM</button><button>Network</button><button>Logs</button></div>',
-    '<div class="diag-tabs"><button class="active" type="button" data-diag-tab="connection">Connection</button><button type="button" data-diag-tab="sim">SIM</button><button type="button" data-diag-tab="network">Network</button><button type="button" data-diag-tab="logs">Logs</button></div>'
+    '<div class="diag-tabs" role="tablist" aria-label="Diagnostic sections"><button class="active" type="button" role="tab" aria-selected="true" data-diag-tab="connection">Connection</button><button type="button" role="tab" aria-selected="false" data-diag-tab="sim">SIM</button><button type="button" role="tab" aria-selected="false" data-diag-tab="network">Network</button><button type="button" role="tab" aria-selected="false" data-diag-tab="logs">Logs</button></div>'
   );
   output = output.replace('<article class="card diag-card"><h3>Connection state', '<article class="card diag-card" data-diag-section="connection sim"><h3>Connection state');
   output = output.replace('<article class="card diag-card"><h3>Network details', '<article class="card diag-card" data-diag-section="network"><h3>Network details');
   output = output.replace('<article class="card diag-card"><h3>APN details', '<article class="card diag-card" data-diag-section="connection network"><h3>APN details');
   output = output.replace('<article class="card diag-card"><h3>Ping / reachability</h3>', '<article class="card diag-card" data-diag-section="connection logs"><h3>Ping / reachability</h3>');
 
-  const logCard = `<article class="card diag-card diag-hidden" data-diag-section="logs"><h3>Diagnostic log <button class="help-button" type="button" data-help-key="diagnosticLog" aria-label="Explain Diagnostic log">?</button></h3>${diagnosticsLogHtml(model)}</article>`;
+  const logCard = `<article class="card diag-card diag-hidden" data-diag-section="logs"><h3>Diagnostic log <button class="help-button" type="button" data-help-key="diagnosticLog" aria-label="Explain Diagnostic log">?</button></h3><div id="diagnosticLog">${diagnosticsLogHtml(model)}</div></article>`;
   output = output.replace('</section>\n  </div><footer class="footerbar">', `${logCard}</section>\n  </div><footer class="footerbar">`);
 
   // A replacement callback keeps the script's `$$` selector helper intact;
