@@ -206,14 +206,18 @@ Example delete tree for the confirmed contract:
       <message_flag>DELETE_SMS</message_flag>
       <sms_cmd>6</sms_cmd>
     </flag>
-    <delete_message>
-      <message_id>42</message_id>
-    </delete_message>
+    <get_message>
+      <tags>12</tags>
+      <mem_store>1</mem_store>
+    </get_message>
+    <set_message>
+      <delete_message_id>LRCV42,</delete_message_id>
+    </set_message>
   </message>
 </RGW>
 ```
 
-This is the only supported deletion request. Alternative command names and identifier elements are not sent.
+This inbox deletion tree is taken directly from the live MF885 WebUI. Its selected-row path terminates the ID set with a comma, including for one `LRCV…` identifier. The initial POST starts the command; completion is read separately from `GET file=message`. `sms_cmd=6` with `sms_cmd_status_result=3` is success, while `1` is still pending. The application then reloads the entire inbox and verifies that the selected index is absent before removing the card.
 
 SMS pagination fields can behave inconsistently across builds; deduplicate and guard against repeated/empty pages.
 

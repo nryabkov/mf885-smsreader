@@ -162,6 +162,45 @@ test("live power flow reuses the exact APK login header for status and one reset
   }
 });
 
+test("mocked power-off flow has reboot-parity without touching a live router", async () => {
+  const originalRequest=global.Request;
+  const requests=[];
+  global.Request=class {
+    constructor(url){this.url=url;requests.push(this);}
+    async loadString(){
+      if(this.url===ROUTER_LOGIN){this.response={statusCode:401,headers:{"WWW-Authenticate":'Digest realm="Highwmg", nonce="1000", qop="auth"'}};throw new Error("HTTP 401 challenge");}
+      if(this.url.includes("/login.cgi?")){this.response={statusCode:200,headers:{"Set-Cookie":"app_session=poweroff-test; Path=/; HttpOnly"}};return "<RGW><login_status>0</login_status></RGW>";}
+      if(this.url.includes("file=status1")){this.response={statusCode:200,headers:{}};return EXACT_STATUS;}
+      if(this.url.includes("file=poweroff")){this.response={statusCode:200,headers:{}};return "<RGW><shutdown/></RGW>";}
+      throw new Error(`Unexpected URL ${this.url}`);
+    }
+  };
+  try {
+    const result=await app.executePowerCommand({},"powerOff"),report=JSON.parse(result.diagnostics);
+    assert.equal(result.outcome,"request-accepted");
+    assert.match(result.message,/shutdown effect is not yet confirmed/i);
+    assert.doesNotMatch(result.message,/reboot effect/i);
+    assert.equal(requests.length,4);
+    const login=requests.find(request=>request.url.includes("/login.cgi?"));
+    const status=requests.find(request=>/file=status1$/.test(request.url));
+    const poweroff=requests.find(request=>/file=poweroff$/.test(request.url));
+    assert.ok(login&&status&&poweroff);
+    assert.equal(status.headers.Authorization,login.headers.Authorization);
+    assert.equal(poweroff.headers.Authorization,login.headers.Authorization);
+    assert.equal(status.headers.Cookie,"app_session=poweroff-test");
+    assert.equal(poweroff.headers.Cookie,"app_session=poweroff-test");
+    assert.equal(poweroff.method,"GET");
+    assert.equal(poweroff.body,undefined);
+    assert.equal(requestCount(requests,/file=poweroff$/),1);
+    assert.equal(requestCount(requests,/file=reset$/),0);
+    assert.equal(report.command.file,"poweroff");
+    assert.equal(report.command.effectConfirmed,false);
+    assert.equal(report.safety.destructiveAttempts,1);
+    assert.equal(report.safety.automaticRetries,0);
+    assert.equal(report.safety.replayed,false);
+  } finally { global.Request=originalRequest; }
+});
+
 test("standalone APP auth probe is GET-only and never touches reset or poweroff", async () => {
   const originalRequest = global.Request;
   const requests = [];
@@ -344,22 +383,24 @@ test("APP session cookie extraction is bounded to cookie name/value pairs", () =
   assert.equal(app.responseCookieHeader({ headers:{"Set-Cookie":"safe=name; injected=1\r\nX-Evil: yes"} }), "safe=name");
 });
 
-test("power submit reports effect-unconfirmed acceptance and never replays", async () => {
-  let calls = 0;
-  const accepted = await app.submitAppPowerCommand(auth(), { name:"reset", method:"GET" }, {
-    get: async file => { calls++; assert.equal(file, "reset"); return { responseClass:"model-schema", statusCode:200, bytes:22, durationMs:8 }; }
-  });
-  assert.equal(calls, 1);
-  assert.equal(accepted.outcome, "request-accepted");
-  assert.equal(accepted.effectConfirmed, false);
+test("reboot and power-off submit once, stay effect-unconfirmed, and never replay", async () => {
+  for(const file of ["reset","poweroff"]){
+    let calls=0;
+    const accepted=await app.submitAppPowerCommand(auth(),{name:file,method:"GET"},{
+      get:async actual=>{calls++;assert.equal(actual,file);return {responseClass:"model-schema",statusCode:200,bytes:22,durationMs:8};}
+    });
+    assert.equal(calls,1);
+    assert.equal(accepted.outcome,"request-accepted");
+    assert.equal(accepted.effectConfirmed,false);
 
-  calls = 0;
-  const unknown = await app.submitAppPowerCommand(auth(), { name:"reset", method:"GET" }, {
-    get: async () => { calls++; throw new Error("network connection was lost"); }
-  });
-  assert.equal(calls, 1);
-  assert.equal(unknown.outcome, "delivery-unknown");
-  assert.equal(unknown.effectConfirmed, false);
+    calls=0;
+    const unknown=await app.submitAppPowerCommand(auth(),{name:file,method:"GET"},{
+      get:async()=>{calls++;throw new Error("network connection was lost");}
+    });
+    assert.equal(calls,1);
+    assert.equal(unknown.outcome,"delivery-unknown");
+    assert.equal(unknown.effectConfirmed,false);
+  }
 });
 
 test("probe authentication failures stop before reset without reauth", async t => {

@@ -88,3 +88,84 @@ test("missing dashboard revision is displayed explicitly as unknown", () => {
   const html=ui.buildHtml(value);
   assert.match(html,/id="deviceSoftwareRevision" title="unknown">unknown<\/b>/);
 });
+
+test("router availability starts and refreshes as one consistent state", () => {
+  const offline=model({available:false,reason:"Offline",actions:{}});
+  offline.errors={status:"network connection lost",statusRequest:true};
+  const html=ui.buildHtml(offline);
+  assert.match(html,/id="onlineState"[^>]*>Offline<\/div>/);
+  assert.match(html,/id="connectionStatus"[^>]*>Unavailable<\/div>/);
+  assert.match(html,/id="routerReachability"[^>]*>Unreachable<\/b>/);
+
+  const script=ui.buildHtml(model({available:true,reason:"Exact profile matched",actions:{reboot:true,powerOff:true}}));
+  assert.match(script,/const statusFailed=!!\(p\.errors&&p\.errors\.statusRequest\)/);
+  assert.match(script,/setRouterAvailability\(!statusFailed\)/);
+  assert.match(script,/function setRouterAvailability\(available\)[\s\S]*?Online[\s\S]*?Connected[\s\S]*?Reachable/);
+  const guarded=script.match(/if\(!statusFailed\)\{[\s\S]*?\n    \}/);
+  assert.ok(guarded,"live measurements must be guarded by successful status polling");
+  for(const field of ["state.data.network.dbm=p.dbm","state.data.battery.percent=p.batteryPercent","#trafficDown","updatePanel(p)"]){
+    assert.match(guarded[0],new RegExp(field.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")));
+  }
+});
+
+test("every v2 control is either actionable or rendered as non-interactive status", () => {
+  const html=fixes.enhanceHtml(ui.buildHtml(model({available:true,reason:"Exact profile matched",actions:{reboot:true,powerOff:true}})),model({}));
+  assert.doesNotMatch(html,/<button class="filter-pill"/);
+  assert.match(html,/<span class="filter-pill">Inbox/);
+  assert.match(html,/data-cap-row="cellularControl" role="button" tabindex="0"/);
+  assert.match(html,/\$\$\('\[data-cap-row\]'\)\.forEach\(row=>\{row\.onclick=/);
+  assert.match(html,/event\.key==='Enter'\|\|event\.key===' '/);
+  assert.match(html,/\$\('#detectAll'\)[\s\S]*?command\('detectExperimental'/);
+  assert.match(html,/data-settings-capabilities[\s\S]*?d\.click\(\)/);
+  assert.match(html,/\$\('#safePreflight'\)\.onclick/);
+  assert.match(html,/\$\('#appAuthProbe'\)\.onclick/);
+  assert.match(html,/\$\('#lastPowerReportBtn'\)\.onclick/);
+  assert.match(html,/\$\('#newSms'\)\.onclick/);
+  assert.match(html,/\$\('#refreshNow'\)\.onclick=refresh/);
+  assert.match(html,/\$\('#diagRefresh'\)\.onclick=refresh/);
+  assert.match(html,/\$\('#pauseBtn'\)\.onclick/);
+  assert.match(html,/data-reboot[\s\S]*?power\('reboot'\)/);
+  assert.match(html,/data-off[\s\S]*?power\('powerOff'\)/);
+});
+
+test("SMS send and verified delete avoid redundant full-history reloads", () => {
+  const html=ui.buildHtml(model({available:false,reason:"Locked",actions:{}}));
+  assert.doesNotMatch(html,/command\('refreshSms'/);
+  assert.match(html,/const result=await command\('deleteSms',\{id,confirmed:true\}\);if\(result&&result\.history\)applySms\(result\.history\)/);
+  assert.doesNotMatch(html,/command\('deleteSms'[\s\S]{0,220}await refresh\(\)/);
+  assert.match(html,/const result=await command\('sendSms',\{to,text\}\);if\(result&&result\.ok===false\)throw new Error/);
+  assert.match(html,/result&&result\.historyWarning\?'SMS sent; history refresh failed':'SMS sent'/);
+});
+
+test("state-changing commands stay single-flight while the native result is pending", () => {
+  const html=ui.buildHtml(model({available:false,reason:"Locked",actions:{}}));
+  assert.match(html,/const nonRepeatableActions=new Set\(\['sendSms','deleteSms','ussd','deviceAccess','cellularReconnect','cellularMode','resetTraffic','reboot','powerOff'\]\)/);
+  assert.match(html,/state\.mutationPending\.has\(key\)[\s\S]*?it was not sent again/);
+  assert.match(html,/if\(key\)\{toast\('Still waiting for the router; do not repeat the action'\);return;\}/);
+  assert.match(html,/if\(p\.mutationKey\)state\.mutationPending\.delete\(p\.mutationKey\)/);
+});
+
+test("cellular writes are fail-closed until explicitly confirmed writable", () => {
+  const html=ui.buildHtml(model({available:false,reason:"Locked",actions:{}}));
+  assert.match(html,/kind==='cellularControl'&&value\.state==='available'&&value\.supported===true&&value\.readOnly===false/);
+});
+
+test("the page queues commands before Scriptable finishes native channel registration", () => {
+  const html=ui.buildHtml(model({available:false,reason:"Locked",actions:{}}));
+  assert.match(html,/if\(!Array\.isArray\(window\.__zmiCommandQueue\)\)window\.__zmiCommandQueue=\[\]/);
+  assert.match(html,/window\.__zmiCommandListenerInstalled=true/);
+  const source=require("node:fs").readFileSync(require.resolve("../scriptable.js"),"utf8");
+  assert.match(source,/if\(!Array\.isArray\(window\.__zmiCommandQueue\)\)window\.__zmiCommandQueue=\[\]/);
+  assert.match(source,/if\(window\.__zmiCommandListenerInstalled!==true\)/);
+});
+
+test("diagnostic refresh updates current overview values and the Logs tab", () => {
+  const html=fixes.enhanceHtml(ui.buildHtml(model({available:false,reason:"Locked",actions:{}})),model({}));
+  assert.match(html,/id="diagnosticLog"/);
+  assert.match(html,/const log=\$\('#diagnosticLog'\)/);
+  for(const target of ["#band","#rsrp","#rsrq","#sinr","#headerSignal"]){
+    assert.match(html,new RegExp(target.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")));
+  }
+  assert.match(html,/Object\.entries\(state\.data\.errors\|\|\{\}\)/);
+  assert.match(html,/Router status request failed/);
+});

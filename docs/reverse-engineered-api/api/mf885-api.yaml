@@ -231,7 +231,7 @@ models:
     known_commands:
       GET_RCV_SMS_LOCAL: { purpose: Read inbox page. }
       SEND_SMS: { purpose: Send SMS., sms_cmd: "4" }
-      DELETE_SMS: { purpose: Delete SMS., sms_cmd: "6" }
+      DELETE_SMS: { purpose: Delete local inbox SMS., sms_cmd: "6", tags: "12", mem_store: "1", id_field: delete_message_id, success_status: "3" }
     encoding:
       sms_content: UTF-16BE hexadecimal on analysed client path
 

@@ -186,6 +186,6 @@ For a first live check, use the fixed [read-only preflight](READ_ONLY_PREFLIGHT.
 
 ## MF885 2.5.94 read-mapping evidence
 
-The dedicated `2.5.94` profile's read mappings come from simultaneous `status1`, `wan`, and `Engineer_parameter` responses in `tests/fixtures/mf885-2.5.94`: `sys_mode=17` (LTE), SIM `1` (ready), registration `1` (home), roaming `0`, PDP state `1` (connected), PDP type `IP` (IPv4), and `signalbar` 0–5.
+The dedicated `2.5.94` profile's read mappings come from simultaneous `status1`, `wan`, and `Engineer_parameter` responses plus the live firmware WebUI: `sys_mode=17` (LTE), `sim_status=0` (SIM present/ready), registration `1` (home), roaming `0`, `connect_disconnect=cellular` (connected), PDP type `IP` (IPv4), and `signalbar` 0–5.
 
 Unknown values—including the fixture's deliberately unknown `sys_submode=99`—remain raw rather than borrowing enum meaning from MF855 or 2.5.96.

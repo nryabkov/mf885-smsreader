@@ -84,7 +84,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, createInFlightGuard, capabilityCacheValid, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -265,7 +265,12 @@ async function loadPollingSnapshot(auth, currentSms) {
     ACTIVE_POWER_PROFILE=powerProfileForIdentity(identity);
     model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE);
   }
-  catch(error){ ACTIVE_POWER_PROFILE=powerProfileForIdentity({}); model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE); model.errors.status=cleanError(error); }
+  catch(error){
+    ACTIVE_POWER_PROFILE=powerProfileForIdentity({});
+    model.powerControls=powerCompatibilityModule.publicState(ACTIVE_POWER_PROFILE);
+    model.errors.status=cleanError(error);
+    model.errors.statusRequest=true;
+  }
   model.cellularDiagnostics = await loadCellularDiagnostics(auth, status);
   if (status && model.cellularDiagnostics.values) model.network=parseNetwork(model.cellularDiagnostics);
   try { const edges=await inspectSmsEdges(auth); if(!unchangedSms(currentSms,edges)) model.sms=await loadAllSms(auth); }
@@ -911,20 +916,33 @@ async function getSmsPage(auth, page) {
   const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><message><flag><message_flag>GET_RCV_SMS_LOCAL</message_flag></flag><get_message><page_number>${page}</page_number></get_message></message></RGW>`;
   return xmlRequest(auth, "POST", "message", xml);
 }
-async function sendSms(auth, to, text) {
+async function sendSms(auth, to, text, dependencies = {}) {
+  const request = dependencies.request || xmlRequest;
+  const poll = dependencies.poll || waitForSmsCommand;
+  const wait = dependencies.wait || sleep;
   const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><message><flag><message_flag>SEND_SMS</message_flag><sms_cmd>4</sms_cmd></flag><send_save_message><contacts>${escapeXml(to)}</contacts><content>${utf16Hex(text)}</content><encode_type>UNICODE</encode_type><sms_time>${smsTime()}</sms_time></send_save_message></message></RGW>`;
-  return xmlRequest(auth, "POST", "message", xml);
+  await request(auth, "POST", "message", xml);
+  const completion = await poll(auth, "4", { request, wait });
+  if (!completion.ok && completion.status !== "") {
+    const error = new Error(completion.message || "The router rejected the send command");
+    error.diagnostics = completion.diagnostics || "";
+    throw error;
+  }
+  if (!completion.ok) throw new Error(completion.message || "SMS command status timed out");
+  return completion.xml;
 }
 
 async function deleteSms(auth, id, dependencies = {}) {
   const request = dependencies.request || xmlRequest;
   const verify = dependencies.verify || loadAllSms;
   const wait = dependencies.wait || sleep;
-  const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><message><flag><message_flag>DELETE_SMS</message_flag><sms_cmd>6</sms_cmd></flag><delete_message><message_id>${escapeXml(id)}</message_id></delete_message></message></RGW>`;
-  let response;
-  try { response = await request(auth, "POST", "message", xml); }
+  const poll = dependencies.poll || waitForSmsCommand;
+  const rawId=String(id||"").trim(),deleteId=/,$/.test(rawId)?rawId:`${rawId},`;
+  const xml = `<?xml version="1.0" encoding="US-ASCII"?><RGW><message><flag><message_flag>DELETE_SMS</message_flag><sms_cmd>6</sms_cmd></flag><get_message><tags>12</tags><mem_store>1</mem_store></get_message><set_message><delete_message_id>${escapeXml(deleteId)}</delete_message_id></set_message></message></RGW>`;
+  try { await request(auth, "POST", "message", xml); }
   catch (error) { return { ok:false, message:"Deletion could not be verified because the router connection was lost.", diagnostics:cleanError(error) }; }
-  if (!routerAccepted(response)) return { ok:false, message:"The router rejected the SMS deletion command.", diagnostics:compactDebug(response) };
+  const completion = await poll(auth, "6", { request, wait });
+  if (!completion.ok) return { ok:false, message:completion.message || "The router rejected the SMS deletion command.", diagnostics:completion.diagnostics || "" };
   await wait(500);
   let current;
   try { current = await verify(auth); }
@@ -935,7 +953,31 @@ async function deleteSms(auth, id, dependencies = {}) {
 
 function compactDebug(value, limit = 240) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, limit); }
 
+function smsCommandState(xml) {
+  return { command:firstText(xml,["sms_cmd"]), status:firstText(xml,["sms_cmd_status_result"]) };
+}
+
+async function waitForSmsCommand(auth, expectedCommand, dependencies = {}) {
+  const request = dependencies.request || xmlRequest;
+  const wait = dependencies.wait || sleep;
+  const attempts = Math.max(1, Number(dependencies.attempts) || 11);
+  const intervalMs = Math.max(0, Number(dependencies.intervalMs) || 1500);
+  let last = { command:"", status:"" };
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await wait(intervalMs);
+    let xml;
+    try { xml = await request(auth, "GET", "message", null, true, 10); }
+    catch (error) { return { ok:false, command:last.command, status:last.status, message:"SMS command status could not be read because the router connection was lost.", diagnostics:cleanError(error) }; }
+    last = smsCommandState(xml);
+    if (last.command === String(expectedCommand) && last.status === "3") return { ok:true, ...last, xml };
+    if (last.command === String(expectedCommand) && last.status && last.status !== "1") return { ok:false, ...last, xml, message:`The router rejected SMS command ${expectedCommand} (status ${last.status}).`, diagnostics:`sms_cmd=${last.command}; sms_cmd_status_result=${last.status}` };
+  }
+  return { ok:false, ...last, message:`SMS command ${expectedCommand} did not complete before the status timeout.`, diagnostics:`sms_cmd=${last.command||"unknown"}; sms_cmd_status_result=${last.status||"unknown"}` };
+}
+
 function routerAccepted(xml) {
+  const sms = smsCommandState(xml);
+  if (sms.command && sms.status) return sms.status === "3";
   const fields = ["sms_cmd_status_result", "delete_status", "status", "result"];
   const values = fields.map(name => tag(xml, name).trim().toLowerCase()).filter(Boolean);
   if (!values.length) return false;
@@ -1084,7 +1126,7 @@ function smsSegments(message) {
   return { encoding, units, segments:units<=single?1:Math.ceil(units/multipart), singleLimit:single, multipartLimit:multipart, multipart:units>single };
 }
 function smsTime() { const d = new Date(); const offset = -d.getTimezoneOffset(); const sign = offset >= 0 ? "%2B" : "-"; return [d.getFullYear() % 100, d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), `${sign}${Math.floor(Math.abs(offset) / 60)}`].join(","); }
-function parseSendResult(xml) { const lower = String(xml || "").toLowerCase(); const status = firstText(xml, ["sms_cmd_status_result", "send_status"]); const ok = !unauthorized(xml) && !/error|fail/.test(lower) && status !== "0" && status !== "2"; return { ok, message: ok ? "The router accepted the send command" : "The router rejected the send command" }; }
+function parseSendResult(xml) { const lower = String(xml || "").toLowerCase(),state=smsCommandState(xml),status=state.status||firstText(xml,["send_status"]); const ok=!unauthorized(xml)&&!/error|fail/.test(lower)&&state.command==="4"&&status==="3"; return { ok, message: ok ? "The router confirmed the send command" : "The router rejected the send command" }; }
 
 // Router status
 function sectionWithError(data, errorKey, message) { return data && data.hasData ? data : Object.assign({}, data || {}, { [errorKey]: message }); }
@@ -1320,6 +1362,12 @@ function createInFlightGuard() {
   let active = null;
   return { get active(){return !!active;}, run(task){ if(active)return active; active=Promise.resolve().then(task).finally(()=>{active=null;}); return active; } };
 }
+function requireSuccessfulActionResult(result, fallbackMessage = "Router action failed") {
+  if (!result || result.ok !== false) return result;
+  const error = new Error(result.message || fallbackMessage);
+  error.diagnostics = sanitizeDiagnostics(result.diagnostics || "");
+  throw error;
+}
 const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","shareSms","ussd","detectCapability","detectExperimental","safePreflight","appAuthProbe","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
 const DANGEROUS_ACTIONS = new Set(["cellularReconnect","cellularMode","deviceAccess","resetTraffic","reboot","powerOff"]);
 function validateWebViewCommand(input) {
@@ -1348,7 +1396,7 @@ function createWebViewDispatcher(handlers, reply) {
 }
 async function applyWebView(web, method, payload) { await web.evaluateJavaScript(`window.${method} && window.${method}(${JSON.stringify(payload)})`,false); }
 async function registerWebViewCommandChannel(web) {
-  await web.evaluateJavaScript(`(function(){if(window.__zmiCommandQueue)return true;window.__zmiCommandQueue=[];window.addEventListener('ZMICommand',function(e){window.__zmiCommandQueue.push(e.detail)});return true})()`, false);
+  await web.evaluateJavaScript(`(function(){if(!Array.isArray(window.__zmiCommandQueue))window.__zmiCommandQueue=[];if(window.__zmiCommandListenerInstalled!==true){window.addEventListener('ZMICommand',function(e){window.__zmiCommandQueue.push(e.detail)});window.__zmiCommandListenerInstalled=true;}return true})()`, false);
 }
 async function nextWebViewCommand(web, sleep = scriptableSleep, stopped = () => false) {
   // Scriptable completion callbacks can contend with present(). Polling keeps
@@ -1388,12 +1436,12 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
       if(pasteboard&&typeof pasteboard.copyString==="function"){pasteboard.copyString(p.text);return {shared:false,copied:true,fallback:true};}
       throw new Error("System sharing and clipboard fallback are unavailable");
     },
-    sendSms:async p=>{const r=parseSendResult(await sendSms(auth,p.to.trim(),p.text));await refreshSms();return r;},
+    sendSms:async p=>{const r=requireSuccessfulActionResult(parseSendResult(await sendSms(auth,p.to.trim(),p.text)),"The router rejected the send command");try{await refreshSms();}catch(error){r.historyWarning=`SMS was accepted, but history refresh failed: ${cleanError(error)}`;}return r;},
     deleteSms:async p=>{const r=await deleteSms(auth,p.id);if(!r.ok){const error=new Error(r.message||"SMS deletion was not confirmed");error.diagnostics=sanitizeDiagnostics(r.diagnostics||"");throw error;}model.sms=await loadAllSms(auth);if(model.sms.messages.some(message=>String(message.id)===String(p.id))){const error=new Error("The SMS is still present in the updated history.");error.diagnostics=sanitizeDiagnostics(r.diagnostics||"");throw error;}return {...r,id:String(p.id),history:model.sms};},
-    ussd:async p=>executeUssd(auth,readCapabilityCache("ussd")||await detectUssdCapability(auth),p.code),
-    deviceAccess:async p=>{const detected=readCapabilityCache("deviceAccess");if(!detected)throw new Error("Run Detect first");return executeDeviceAccess(auth,p.deviceAction,p.deviceAction);},
-    cellularReconnect:async()=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth);const r=await cellularControlModule.executeReconnect(cellularControlApi(auth),c);await refresh();return r;},
-    cellularMode:async p=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth),m=cellularControlModule.modeById(p.mode);if(!m)throw new Error("Unknown cellular network mode");const r=await cellularControlModule.executeSetMode(cellularControlApi(auth),c,m.id);await refresh();return r;},
+    ussd:async p=>requireSuccessfulActionResult(await executeUssd(auth,readCapabilityCache("ussd")||await detectUssdCapability(auth),p.code),"USSD request failed"),
+    deviceAccess:async p=>{const detected=readCapabilityCache("deviceAccess");if(!detected)throw new Error("Run Detect first");return requireSuccessfulActionResult(await executeDeviceAccess(auth,p.deviceAction,p.deviceAction),"Device-access action failed");},
+    cellularReconnect:async()=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth);const r=requireSuccessfulActionResult(await cellularControlModule.executeReconnect(cellularControlApi(auth),c),"Cellular reconnect failed");await refresh();return r;},
+    cellularMode:async p=>{const c=readCapabilityCache("cellularControl")||await detectCellularControl(auth),m=cellularControlModule.modeById(p.mode);if(!m)throw new Error("Unknown cellular network mode");const r=requireSuccessfulActionResult(await cellularControlModule.executeSetMode(cellularControlApi(auth),c,m.id),"Cellular mode change failed");await refresh();return r;},
     resetTraffic:async()=>{throw new Error("Traffic reset is unavailable because no universal write contract is confirmed");},
     reboot:()=>runPower("reboot"),powerOff:()=>runPower("powerOff")};
   return createWebViewDispatcher(handlers,response=>applyWebView(web,"zmiApplyActionResult",response));
@@ -1442,7 +1490,8 @@ async function executePowerCommand(auth,kind,options={}) {
     const accepted=result.outcome==="request-accepted"||result.outcome==="submitted";
     const diagnostics=powerDiagnostics(result.method,spec.operation,spec.file,result.error,result.outcome,result.responseClass,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,result,destructiveAttempted:true,software:options.software,checkpoint:"completed"});
     rememberLastPowerReport(diagnostics);
-    return {...result,effectConfirmed:false,message:accepted?"The APP-compatible request was accepted; the reboot effect is not yet confirmed.":"The command was attempted once; delivery is unknown after connection loss.",diagnostics};
+    const effect=kind==="powerOff"?"shutdown":"reboot";
+    return {...result,effectConfirmed:false,message:accepted?`The APP-compatible request was accepted; the ${effect} effect is not yet confirmed.`:"The command was attempted once; delivery is unknown after connection loss.",diagnostics};
   } catch(error) {
     const operation=spec&&spec.operation||phase,file=spec&&spec.file||{name:phase==="identity-probe"?"status1":"login",method:"GET"};
     error.diagnostics=powerDiagnostics(null,operation,file,error,"failed",null,{login:powerAuth&&powerAuth.appLogin,probe:appProbe,result:error&&error.appStage,destructiveAttempted,software:options.software,checkpoint:"failed"});
