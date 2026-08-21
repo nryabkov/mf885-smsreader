@@ -56,23 +56,49 @@ The transport, physical-recovery, and software-risk allowlists are intentionally
 
 On 2026-08-20 a GET-only live read-side observation on the exact LV01 / Ver.D / 2.5.94 target confirmed that both `method=get&file=GetRestoreStatus` variants (with and without `module=duster`) return `<process><status>0</status><progress>0</progress><cause>No Error!</cause></process>` while idle. Native reverse additionally proves the POST route, exact MIME marker, byte extraction, HTTP acceptance body, raw restore states and the preceding active-login-session gate; `RestoreFw` is not in that gate's public-request bypass list. The corresponding `upgrade_firmware` reads expose `support_32m_flash=1` and separate upgrade, backup, and restore status fields. The dashboard can reproduce and export the redacted read-side observation through **Capture firmware status contract (GET only)**. A reviewed exact APP session bootstrap and first-POST behavior are still absent and therefore cannot populate `VERIFIED_RESTORE_TRANSPORTS`.
 
-On 2026-08-21 two independent live `BackupFwStart` acquisitions were completed on
-that same target, at 97% and 96% battery with external power confirmed. Each
+On 2026-08-21 two new independent live `BackupFwStart` acquisitions were completed on
+that same target, both at 99% battery with external power confirmed. Each
 used exactly one start and one accepted download, produced 8,323,644 bytes with
 SHA-256 `2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531`,
 and compared byte-for-byte identical to the other acquisition and the reviewed
 golden. Independent inspection again verified the global and six partition byte
 sums, every LZMA stream, and every CAFE/Adler archive. The legacy Mongoose
-download holds the connection without response headers for about 181 seconds;
+download can hold the connection without response headers for several minutes;
 over the VDS `wg-mesh` path it requires TCP keepalive, but this affects only the
 read-side acquisition harness. A separate clean session captured six private
-configuration models with both Wi-Fi and APN settings present (artifact SHA-256
-`b0c4df72c3357b401f3bcdb55333d3cf917c296dcc14dbdb242ab990f7cf799e`).
+configuration models with both Wi-Fi and APN settings present (current evidence
+SHA-256 `5f30e8870c90fb558b899c6eaa029a46438b875db2b24f448ddc2ebfb42d1a5b`).
 The stock `config_save` flow returned an empty response through fresh fetch and
 raw HTTP reproductions, and its own headless-browser `doLogin`/`getHeader`/form
 flow emitted no download. The bundle is therefore the explicit fallback
-configuration-evidence candidate; it still requires review/compilation and
-does not unlock `RestoreFw`.
+configuration evidence. Its validator recomputes the exact unit fingerprint,
+model-set completeness, non-empty SSID/key presence, APN structure and the
+three-method stock-export-unavailable proof from the private raw responses;
+caller-supplied booleans are insufficient.
+
+## VDS-only golden qualification sender
+
+The Scriptable restore control remains production-locked. A separate VDS-only
+qualification sender is compiled for exactly one golden-to-golden experiment on
+the reviewed unit. It accepts only the fixed unit fingerprint, literal endpoint
+`192.168.21.1:80`, physical route `/xml_action.cgi?Action=RestoreFw`, exact
+8,323,644-byte golden SHA-256, and the deterministic 8,323,893-byte multipart
+body SHA-256 `5a58dbb564229dc118d305c51dfbb4ecb925075574086aeb86bb05e1add39d22`.
+It refuses other images, units, hosts, ports, paths, boundaries, nonce counts,
+session profiles or byte bodies before arming.
+
+The VDS transaction uses a local ext4 create-once gate, immutable fsynced
+hash-chained records, and a permanent remote create-once fence at
+`refs/tags/mf885-restore-fence-v1-42063835281d6f41828bc7a1b1960e21559b6dad5dada8016991fd1dc0351167`.
+The remote request must return exactly HTTP 201 plus the expected ref and pinned
+commit. Every other response or uncertain outcome blocks the router request.
+After the fence, the core constructs one direct `http.request` with a fixed
+Content-Length, no agent, redirect, retry, auth replay, `Expect`, or transfer
+encoding. The guarantee is **at most one RestoreFw POST attempt**, conditional
+on trusted local code and the GitHub fence tag never being deleted or rewritten.
+It does not promise exactly-once delivery or exactly-once flash effect. Private
+firmware/configuration bytes, Digest material, cookies and transaction evidence
+remain ignored under `.runtime/` and are never committed.
 
 Image metadata is also insufficient. Stage 0 computes SHA-256 itself from the exact Scriptable `Data`/byte array selected for upload and seals that evidence for the current process; caller-built metadata is rejected. The installer retains immutable native `Data` privately and completes the second hash before authentication/arming, so no fallible local hash occurs after `POST_ARMED`. Device identity, unit fingerprint, hardware revision, firmware, battery level, and charger state come from the final live status observation of the prepared session immediately before arming.
 
