@@ -120,6 +120,21 @@ test("Stage 0 restore is compiled but makes zero calls while the transport allow
   assert.equal(sends,0);
 });
 
+test("software-only restore requires the explicit no-recovery native phrase",async()=>{
+  let observed=null;
+  const accepted=await app.confirmFirmwareRestore(
+    stage0.GOLDEN_IMAGE,
+    {model:"MF885",hardware:"Ver.D",unitFingerprintSha256:"d".repeat(64)},
+    {batteryPercent:100},
+    {contractId:"restore-v1",captureSha256:"a".repeat(64)},
+    {profile:stage0.SOFTWARE_RISK_PROFILE,evidenceId:"software-risk-v1"},
+    {confirm:async value=>{observed=value;return true;}}
+  );
+  assert.equal(accepted,true);
+  assert.equal(observed.phrase,`NO RECOVERY FLASH ${stage0.GOLDEN_IMAGE.sha256.slice(0,12)}`);
+  assert.equal(observed.risk.profile,stage0.SOFTWARE_RISK_PROFILE);
+});
+
 test("compiled Stage 0 flow rehashes the same Data and submits exactly once after native confirmation", async () => {
   const timeline=[];
   const data={getBytes:()=>[1,2,3]};
@@ -166,7 +181,7 @@ test("compiled Stage 0 flow rehashes the same Data and submits exactly once afte
 });
 
 test("journal status recovers an interrupted armed run to non-clearable UNKNOWN",async()=>{
-  const transaction={schema:stage0.JOURNAL_SCHEMA,transactionId:"interrupted",revision:1,startedAt:1,updatedAt:2,state:stage0.TRANSACTION_STATES.POST_ARMED,imageId:stage0.GOLDEN_IMAGE.id,imageSha256:stage0.GOLDEN_IMAGE.sha256,unitFingerprintSha256:"d".repeat(64),preflightFingerprint:"fixture",destructivePostCount:1,events:[{at:1,event:"PRECHECK_OK"},{at:2,event:"POST_ARMED"}]};
+  const transaction={schema:stage0.JOURNAL_SCHEMA,transactionId:"interrupted",revision:1,startedAt:1,updatedAt:2,state:stage0.TRANSACTION_STATES.POST_ARMED,imageId:stage0.GOLDEN_IMAGE.id,imageSha256:stage0.GOLDEN_IMAGE.sha256,unitFingerprintSha256:"d".repeat(64),riskProfile:"physical-nor-v1",riskEvidenceId:"bench-v1",riskCaptureSha256:"b".repeat(64),preflightFingerprint:"fixture",destructivePostCount:1,events:[{at:1,event:"PRECHECK_OK"},{at:2,event:"POST_ARMED"}]};
   const journal=stage0.createMemoryJournal(transaction);
   const result=await app.readFirmwareJournalStatus({stage0,journal,now:()=>3});
   assert.equal(result.transaction.state,stage0.TRANSACTION_STATES.UNKNOWN);
@@ -176,7 +191,7 @@ test("journal status recovers an interrupted armed run to non-clearable UNKNOWN"
 });
 
 test("completed golden journal can clear only after its qualification was saved",async()=>{
-  const transaction={schema:stage0.JOURNAL_SCHEMA,transactionId:"golden-complete",revision:5,startedAt:1,updatedAt:6,state:stage0.TRANSACTION_STATES.BOOT_VERIFIED,imageId:stage0.GOLDEN_IMAGE.id,imageSha256:stage0.GOLDEN_IMAGE.sha256,unitFingerprintSha256:"d".repeat(64),preflightFingerprint:"fixture",destructivePostCount:1,events:[{at:1,event:"PRECHECK_OK"},{at:2,event:"POST_ARMED"},{at:3,event:"POST_SENT"},{at:4,event:"RESTORING"},{at:5,event:"REBOOT_WAIT"},{at:6,event:"BOOT_VERIFIED"}]};
+  const transaction={schema:stage0.JOURNAL_SCHEMA,transactionId:"golden-complete",revision:5,startedAt:1,updatedAt:6,state:stage0.TRANSACTION_STATES.BOOT_VERIFIED,imageId:stage0.GOLDEN_IMAGE.id,imageSha256:stage0.GOLDEN_IMAGE.sha256,unitFingerprintSha256:"d".repeat(64),riskProfile:"physical-nor-v1",riskEvidenceId:"bench-v1",riskCaptureSha256:"b".repeat(64),preflightFingerprint:"fixture",destructivePostCount:1,events:[{at:1,event:"PRECHECK_OK"},{at:2,event:"POST_ARMED"},{at:3,event:"POST_SENT"},{at:4,event:"RESTORING"},{at:5,event:"REBOOT_WAIT"},{at:6,event:"BOOT_VERIFIED"}]};
   const missingJournal=stage0.createMemoryJournal(transaction);
   await assert.rejects(app.acknowledgeFirmwareJournal({stage0,journal:missingJournal,qualificationStore:{async load(){return null;}}}),/qualification is missing/i);
   const journal=stage0.createMemoryJournal(transaction);

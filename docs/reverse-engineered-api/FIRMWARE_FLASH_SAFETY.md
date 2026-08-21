@@ -49,12 +49,30 @@ A destructive restore is permitted only when all of the following are true:
 6. battery is at least 50%;
 7. the exact `RestoreFw` multipart transport has been live-verified and its immutable full wire contract exactly matches the compiled allowlist;
 8. the current build's physical recovery evidence exactly matches a compiled record: three identical full 32 MiB dumps of the 1.8 V `MX25U25635FZ4I`, the exact golden backup, a positively verified recovery-mode entry, and the privacy-safe fingerprint of the same live router;
-9. a future explicitly compiled `software-only-risk-v1` alternative, if implemented, must replace—not forge—the physical record and bind two fresh identical logical backups, configuration evidence, exact unit/transport identity, typed no-recovery risk acceptance, 80% battery, wall power and the one-shot journal;
+9. the separately implemented `software-only-risk-v1` alternative, when its reviewed record is compiled, must replace—not forge—the physical record and bind two fresh identical logical backups, configuration evidence, exact unit/transport identity, typed no-recovery risk acceptance, 80% battery, wall power and the one-shot journal;
 10. a future WEBUI Canary restore has a prior golden-to-golden transaction under the same contract/capture that reached `BOOT_VERIFIED` and uses a new structurally verified artifact; r3 can never satisfy this gate.
 
-The transport and recovery allowlists are intentionally empty. `restoreTransportVerified=true`, caller-built evidence, or a configuration override cannot unlock them. Transport evidence binds the exact firmware, operation, HTTP method, physical request path, Digest URI, upload query order/escaping, multipart field/MIME/filename/encoding, authentication/session profile, acceptance predicate, GET-only status route/query/raw-value map, polling bounds, reviewed adapter artifact SHA-256, platform-backed exclusive-lease profile, and SHA-256 of a redacted capture artifact. Current recovery evidence independently binds the physical NOR facts, one live unit fingerprint, and reviewed recovery artifact. A future no-dump profile requires a new schema and explicit source record; pretending the physical fields exist is forbidden. Filling only a URL, multipart field, or risk-acceptance boolean is insufficient. The shipped build also has no production adapter fallback: adding allowlist data alone leaves the UI locked until a core-owned adapter is reviewed into `scriptable.js`.
+The transport, physical-recovery, and software-risk allowlists are intentionally empty. `restoreTransportVerified=true`, caller-built evidence, or a configuration override cannot unlock them. Transport evidence binds the exact firmware, operation, HTTP method, physical request path, Digest URI, upload query order/escaping, multipart field/MIME/filename/encoding, authentication/session profile, acceptance predicate, GET-only status route/query/raw-value map, polling bounds, reviewed adapter artifact SHA-256, platform-backed exclusive-lease profile, and SHA-256 of a redacted capture artifact. Physical evidence independently binds the NOR facts, one live unit fingerprint, and reviewed recovery artifact. The separate software-only schema instead binds two fresh golden captures, configuration/Wi-Fi/APN evidence, explicit no-recovery acceptance, the same live unit, and the reviewed transport. Configuration evidence is either a real stock export or a separate reviewed private-settings bundle with at least six captured models and proof that the stock export is unavailable. Pretending physical fields exist is forbidden. Filling only a URL, multipart field, or risk-acceptance boolean is insufficient. The shipped build also has no production adapter fallback: adding allowlist data alone leaves the UI locked until a core-owned adapter is reviewed into `scriptable.js`.
 
 On 2026-08-20 a GET-only live read-side observation on the exact LV01 / Ver.D / 2.5.94 target confirmed that both `method=get&file=GetRestoreStatus` variants (with and without `module=duster`) return `<process><status>0</status><progress>0</progress><cause>No Error!</cause></process>` while idle. Native reverse additionally proves the POST route, exact MIME marker, byte extraction, HTTP acceptance body, raw restore states and the preceding active-login-session gate; `RestoreFw` is not in that gate's public-request bypass list. The corresponding `upgrade_firmware` reads expose `support_32m_flash=1` and separate upgrade, backup, and restore status fields. The dashboard can reproduce and export the redacted read-side observation through **Capture firmware status contract (GET only)**. A reviewed exact APP session bootstrap and first-POST behavior are still absent and therefore cannot populate `VERIFIED_RESTORE_TRANSPORTS`.
+
+On 2026-08-21 two independent live `BackupFwStart` acquisitions were completed on
+that same target, at 97% and 96% battery with external power confirmed. Each
+used exactly one start and one accepted download, produced 8,323,644 bytes with
+SHA-256 `2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531`,
+and compared byte-for-byte identical to the other acquisition and the reviewed
+golden. Independent inspection again verified the global and six partition byte
+sums, every LZMA stream, and every CAFE/Adler archive. The legacy Mongoose
+download holds the connection without response headers for about 181 seconds;
+over the VDS `wg-mesh` path it requires TCP keepalive, but this affects only the
+read-side acquisition harness. A separate clean session captured six private
+configuration models with both Wi-Fi and APN settings present (artifact SHA-256
+`b0c4df72c3357b401f3bcdb55333d3cf917c296dcc14dbdb242ab990f7cf799e`).
+The stock `config_save` flow returned an empty response through fresh fetch and
+raw HTTP reproductions, and its own headless-browser `doLogin`/`getHeader`/form
+flow emitted no download. The bundle is therefore the explicit fallback
+configuration-evidence candidate; it still requires review/compilation and
+does not unlock `RestoreFw`.
 
 Image metadata is also insufficient. Stage 0 computes SHA-256 itself from the exact Scriptable `Data`/byte array selected for upload and seals that evidence for the current process; caller-built metadata is rejected. The installer retains immutable native `Data` privately and completes the second hash before authentication/arming, so no fallible local hash occurs after `POST_ARMED`. Device identity, unit fingerprint, hardware revision, firmware, battery level, and charger state come from the final live status observation of the prepared session immediately before arming.
 
@@ -87,9 +105,9 @@ The in-process sender guard rejects concurrent calls sharing one journal. Cross-
 ## Intended first live sequence without a NOR dump
 
 1. retain physical recovery as the preferred alternative, but record the operator's explicit decision to proceed without it;
-2. acquire two new clean BackupFw files and a configuration export; verify both images against the exact golden hash and full ZIMI structure;
+2. acquire two new clean BackupFw files and hashed configuration evidence (stock export, or the reviewed private bundle only after stock-export failure is proven); verify both images against the exact golden hash and full ZIMI structure;
 3. finish the native session/auth reverse and review the exact RestoreFw sender without sending a payload;
-4. implement a separate compiled `software-only-risk-v1` schema, typed no-recovery confirmation, 80% battery gate and one-shot exclusive execution; do not weaken or fabricate physical evidence;
+4. populate and review the implemented `software-only-risk-v1` schema, typed no-recovery confirmation, 80% battery gate and one-shot exclusive execution; do not weaken or fabricate physical evidence;
 5. run the Scriptable Stage 0 dry path and verify all gates with zero POSTs;
 6. stock golden -> stock golden exactly once;
 7. verify restore status, reboot, identity, Wi-Fi, SMS and mobile-data service, then save another clean backup;
@@ -97,4 +115,4 @@ The in-process sender guard rejects concurrent calls sharing one journal. Cross-
 9. only after a successful golden qualification consider golden -> replacement WEBUI Canary -> golden rollback;
 10. only then consider native OSLO canaries.
 
-Static validation is not hardware validation. Stage 0 now has the guarded installer transaction path, but the shipped build cannot construct or send `RestoreFw` because both compiled evidence allowlists and the reviewed transport adapter are absent. The no-dump route is a documented implementation target, not a current override. Stage 0 remains conservative when any identity, power, image, journal, risk/recovery, transport, sequence, or post-boot evidence is missing.
+Static validation is not hardware validation. Stage 0 now has the guarded installer transaction path and a fail-closed software-only evidence schema, but the shipped build cannot construct or send `RestoreFw` because all production evidence allowlists and the reviewed transport adapter are absent. The no-dump route is not a boolean override: it becomes available only after exact evidence is captured, compiled and reviewed. Stage 0 remains conservative when any identity, power, image, journal, risk/recovery, transport, sequence, or post-boot evidence is missing.

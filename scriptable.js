@@ -90,7 +90,7 @@ async function run(options = {}) {
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, runFirmwareTransportProbe, firmwareStatusRouteDefinitions, validateFirmwareCanary, runFirmwareRestore, firmwareRestoreAvailability, readFirmwareJournalStatus, acknowledgeFirmwareJournal, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, assertAppLoginResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, debugLogSnapshot, parseDetailedLogSummary, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, runFirmwareTransportProbe, firmwareStatusRouteDefinitions, validateFirmwareCanary, runFirmwareRestore, firmwareRestoreAvailability, confirmFirmwareRestore, readFirmwareJournalStatus, acknowledgeFirmwareJournal, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, assertAppLoginResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, debugLogSnapshot, parseDetailedLogSummary, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -1809,7 +1809,9 @@ function firmwareRestoreAvailability(stage0 = firmwareStage0Module, adapter) {
   }
   const safety = transport.safety || {};
   const evidence=transport.transportEvidence||{};
-  if(!Object.isFrozen(evidence)||!Object.isFrozen(transport.recoveryEvidence||{}))return {available:false,installerCompiled:true,allowlistedContracts:base.allowlistedContracts,reason:"Compiled firmware evidence records are not immutable."};
+  const physicalEvidence=transport.recoveryEvidence||null,softwareRiskEvidence=transport.softwareRiskEvidence||null;
+  if((physicalEvidence&&softwareRiskEvidence)||(!physicalEvidence&&!softwareRiskEvidence))return {available:false,installerCompiled:true,allowlistedContracts:base.allowlistedContracts,reason:"The firmware adapter must bind exactly one physical recovery or software-only risk record."};
+  if(!Object.isFrozen(evidence)||!Object.isFrozen(physicalEvidence||softwareRiskEvidence))return {available:false,installerCompiled:true,allowlistedContracts:base.allowlistedContracts,reason:"Compiled firmware evidence records are not immutable."};
   if(!/^[0-9a-f]{64}$/.test(String(transport.artifactSha256||""))||transport.artifactSha256!==evidence.adapterArtifactSha256)return {available:false,installerCompiled:true,allowlistedContracts:base.allowlistedContracts,reason:"The reviewed firmware adapter artifact hash does not match the compiled contract."};
   if (safety.destructivePostLimit !== 1 || safety.automaticRetries !== 0 || safety.redirectsAllowed !== false || safety.statusHttpMethod !== "GET" || safety.platformExclusiveLease!==true || safety.exclusiveLeaseProfile!==evidence.exclusiveLeaseProfile) {
     return { available:false, installerCompiled:true, allowlistedContracts:base.allowlistedContracts, reason:"The compiled firmware adapter does not satisfy ONE POST / NO RETRY / NO REDIRECT / GET-only status rules." };
@@ -1822,8 +1824,8 @@ function createFirmwareQualificationStore(stage0, keychain) {
   const key = stage0 && stage0.GOLDEN_QUALIFICATION_KEY;
   const secretKey=`${key}-integrity-secret`;
   if (!storage || !key || typeof storage.get !== "function" || typeof storage.set !== "function") throw new Error("Persistent golden qualification storage is unavailable.");
-  const canonical=value=>JSON.stringify([value.schema,value.completedAt,value.transactionId,value.state,value.imageId,value.imageSha256,value.unitFingerprintSha256,value.transportContractId,value.transportCaptureSha256,value.recoveryEvidenceId,value.recoveryCaptureSha256]);
-  const signature=(value,secret)=>stage0.sha256Hex(utf8Bytes(`mf885-golden-qualification-v1|${secret}|${canonical(value)}`));
+  const canonical=value=>JSON.stringify([value.schema,value.completedAt,value.transactionId,value.state,value.imageId,value.imageSha256,value.unitFingerprintSha256,value.transportContractId,value.transportCaptureSha256,value.riskProfile,value.riskEvidenceId,value.riskCaptureSha256,value.recoveryEvidenceId,value.recoveryCaptureSha256]);
+  const signature=(value,secret)=>stage0.sha256Hex(utf8Bytes(`mf885-golden-qualification-v2|${secret}|${canonical(value)}`));
   const secret=()=>{
     if(typeof storage.contains==="function"&&storage.contains(secretKey))return storage.get(secretKey);
     const UUIDType=typeof UUID!=="undefined"?UUID:null;
@@ -1836,13 +1838,14 @@ function createFirmwareQualificationStore(stage0, keychain) {
       let raw;
       try { raw=storage.get(key); } catch (_) { return null; }
       if (!raw) return null;
-      try { const parsed=JSON.parse(raw),expected=signature(parsed,secret());if(!parsed.integrity||parsed.integrity.scheme!=="sha256-secret-prefix-v1"||parsed.integrity.signature!==expected)throw new Error("mismatch");return Object.freeze({...parsed,integrityVerified:true}); } catch (_) { throw new Error("Stored golden qualification is corrupt or failed integrity verification; canary flashing is locked."); }
+      try { const parsed=JSON.parse(raw),expected=signature(parsed,secret());if(!parsed.integrity||parsed.integrity.scheme!=="sha256-secret-prefix-v2"||parsed.integrity.signature!==expected)throw new Error("mismatch");return Object.freeze({...parsed,integrityVerified:true}); } catch (_) { throw new Error("Stored golden qualification is corrupt or failed integrity verification; canary flashing is locked."); }
     },
     async save(value) {
-      const signed={...value,integrity:{scheme:"sha256-secret-prefix-v1",signature:signature(value,secret())}};
+      const signed={...value,integrity:{scheme:"sha256-secret-prefix-v2",signature:signature(value,secret())}};
       storage.set(key,JSON.stringify(signed));
       const saved=await this.load();
-      if(!saved||saved.transactionId!==value.transactionId||saved.transportCaptureSha256!==value.transportCaptureSha256||saved.recoveryCaptureSha256!==value.recoveryCaptureSha256||saved.unitFingerprintSha256!==value.unitFingerprintSha256)throw new Error("Golden qualification could not be read back; canary flashing remains locked.");
+      const expectedRiskCapture=value.riskCaptureSha256||value.recoveryCaptureSha256,savedRiskCapture=saved&&saved.riskCaptureSha256||saved&&saved.recoveryCaptureSha256;
+      if(!saved||saved.transactionId!==value.transactionId||saved.transportCaptureSha256!==value.transportCaptureSha256||savedRiskCapture!==expectedRiskCapture||saved.unitFingerprintSha256!==value.unitFingerprintSha256)throw new Error("Golden qualification could not be read back; canary flashing remains locked.");
       return saved;
     }
   };
@@ -1873,14 +1876,15 @@ async function acknowledgeFirmwareJournal(options={}){
   return {cleared:true,transactionId:transaction.transactionId,previousState:transaction.state};
 }
 
-async function confirmFirmwareRestore(image, device, power, transport, options = {}) {
-  const prefix=String(image.sha256||"").slice(0,12), phrase=`FLASH ${prefix}`;
-  if (typeof options.confirm === "function") return options.confirm({ phrase, image, device, power, transport });
+async function confirmFirmwareRestore(image, device, power, transport, risk, options = {}) {
+  const prefix=String(image.sha256||"").slice(0,12),softwareOnly=risk&&risk.profile==="software-only-risk-v1",phrase=softwareOnly?`NO RECOVERY FLASH ${prefix}`:`FLASH ${prefix}`;
+  if (typeof options.confirm === "function") return options.confirm({ phrase, image, device, power, transport, risk });
   const AlertType=options.Alert||(typeof Alert!=="undefined"?Alert:null);
   if(!AlertType)throw new Error("Native firmware confirmation is unavailable.");
   const alert=new AlertType();
   alert.title="Stage 0 firmware restore";
-  alert.message=`Image: ${image.file}\nSHA-256: ${image.sha256}\nDevice: ${device.model} ${device.hardware} · unit ${String(device.unitFingerprintSha256||"").slice(0,12)}\nBattery: ${power.batteryPercent}% · external power connected\nContract: ${transport.contractId} · capture ${String(transport.captureSha256||"").slice(0,12)}\n\nONE POST. NO AUTOMATIC RETRY. A timeout becomes UNKNOWN. Type ${phrase} to continue.`;
+  const riskLine=softwareOnly?"Risk: SOFTWARE-ONLY · NO HARDWARE RECOVERY · worst case is a bricked router":`Recovery: ${String(risk&&risk.evidenceId||"reviewed physical record")}`;
+  alert.message=`Image: ${image.file}\nSHA-256: ${image.sha256}\nDevice: ${device.model} ${device.hardware} · unit ${String(device.unitFingerprintSha256||"").slice(0,12)}\nBattery: ${power.batteryPercent}% · external power connected\nContract: ${transport.contractId} · capture ${String(transport.captureSha256||"").slice(0,12)}\n${riskLine}\n\nONE POST. NO AUTOMATIC RETRY. A timeout becomes UNKNOWN. Type ${phrase} to continue.`;
   alert.addTextField(phrase,"");
   alert.addDestructiveAction("Arm one firmware POST");
   alert.addCancelAction("Cancel");
@@ -1925,8 +1929,10 @@ async function runFirmwareRestore(auth, options = {}) {
   if(!firstImageValidation.ok)throw new Error(firstImageValidation.errors.join(" "));
   const image=firstImageValidation.image;
   const suppliedTransportEvidence=adapter.transportEvidence;
-  const suppliedRecoveryEvidence=adapter.recoveryEvidence;
-  if(!suppliedTransportEvidence||!suppliedRecoveryEvidence||!Object.isFrozen(suppliedTransportEvidence)||!Object.isFrozen(suppliedRecoveryEvidence))throw new Error("Compiled transport and recovery evidence must be immutable plain records.");
+  const suppliedRecoveryEvidence=adapter.recoveryEvidence||null;
+  const suppliedSoftwareRiskEvidence=adapter.softwareRiskEvidence||null;
+  const suppliedRiskEvidence=suppliedRecoveryEvidence||suppliedSoftwareRiskEvidence;
+  if(!suppliedTransportEvidence||!suppliedRiskEvidence||(suppliedRecoveryEvidence&&suppliedSoftwareRiskEvidence)||!Object.isFrozen(suppliedTransportEvidence)||!Object.isFrozen(suppliedRiskEvidence))throw new Error("Compiled transport and exactly one recovery/risk evidence record must be immutable plain records.");
   const goldenQualification=await qualificationStore.load();
 
   let status=await (options.getStatus||getStatus)(auth);
@@ -1934,11 +1940,14 @@ async function runFirmwareRestore(auth, options = {}) {
   let device={model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status),unitFingerprintSha256:firmwareUnitFingerprint(status,stage0),source:"status1-live",observedAt};
   let battery=parseBattery(status,device);
   let power={batteryPercent:battery.percent,chargerConnected:battery.chargerConnected===true,source:"status1-live",observedAt};
-  const preview=stage0.preflight({image:firstImageEvidence,device,power,restoreTransportEvidence:suppliedTransportEvidence,recoveryEvidence:suppliedRecoveryEvidence,goldenQualification},clock());
+  const preview=stage0.preflight({image:firstImageEvidence,device,power,restoreTransportEvidence:suppliedTransportEvidence,recoveryEvidence:suppliedRecoveryEvidence,softwareRiskEvidence:suppliedSoftwareRiskEvidence,goldenQualification},clock());
   if(!preview.destructiveAllowed)throw new Error(preview.errors.join(" "));
   const transportEvidence=Object.freeze({...preview.restoreTransportEvidence});
-  const recoveryEvidence=Object.freeze({...preview.recoveryEvidence});
-  const confirmed=await confirmFirmwareRestore(image,device,power,transportEvidence,options);
+  const riskProfile=String(preview.riskProfile||"physical-nor-v1");
+  const riskEvidence=Object.freeze({...(preview.riskEvidence||preview.recoveryEvidence||{})});
+  const recoveryEvidence=riskProfile==="physical-nor-v1"?riskEvidence:null;
+  const softwareRiskEvidence=riskProfile==="software-only-risk-v1"?riskEvidence:null;
+  const confirmed=await confirmFirmwareRestore(image,device,power,transportEvidence,{...riskEvidence,profile:riskProfile},options);
   if(!confirmed)return {cancelled:true,ok:false,flashAllowed:false};
 
   // Finish all fallible local byte work before authentication and arming.
@@ -1947,20 +1956,20 @@ async function runFirmwareRestore(auth, options = {}) {
   // that session between preparation and the one-shot POST.
   const finalImageEvidence=stage0.createImageEvidence(data,clock());
   if(finalImageEvidence.sha256!==firstImageEvidence.sha256||finalImageEvidence.size!==firstImageEvidence.size)throw new Error("Firmware bytes changed after confirmation; no upload was attempted.");
-  const prepared=await adapter.prepare({auth,image,transportEvidence,recoveryEvidence});
+  const prepared=await adapter.prepare({auth,image,transportEvidence,riskProfile,riskEvidence,recoveryEvidence,softwareRiskEvidence});
   if(!prepared||!prepared.status||!Number.isFinite(Number(prepared.statusObservedAt))||!prepared.exclusiveLease||typeof prepared.exclusiveLease.assertOwner!=="function")throw new Error("The reviewed prepared session did not return final live status and an exclusive firmware lease.");
   status=prepared.status;
   observedAt=Number(prepared.statusObservedAt);
   device={model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status),unitFingerprintSha256:firmwareUnitFingerprint(status,stage0),source:"status1-live",observedAt};
   battery=parseBattery(status,device);
   power={batteryPercent:battery.percent,chargerConnected:battery.chargerConnected===true,source:"status1-live",observedAt};
-  const preflight=stage0.preflight({image:finalImageEvidence,device,power,restoreTransportEvidence:transportEvidence,recoveryEvidence,goldenQualification},clock());
+  const preflight=stage0.preflight({image:finalImageEvidence,device,power,restoreTransportEvidence:transportEvidence,recoveryEvidence,softwareRiskEvidence,goldenQualification},clock());
   if(!preflight.destructiveAllowed)throw new Error(preflight.errors.join(" "));
 
   let finalTransaction;
   try{
     const oneShot=await stage0.executePersistentRestoreOnce(journal,preflight,async transaction=>{
-      return adapter.sendOnce({prepared,transaction,data,image,transportEvidence,recoveryEvidence});
+      return adapter.sendOnce({prepared,transaction,data,image,transportEvidence,riskProfile,riskEvidence,recoveryEvidence,softwareRiskEvidence});
     },{now:clock,exclusiveLease:prepared.exclusiveLease});
     finalTransaction=await stage0.monitorPersistentRestore(journal,oneShot.transaction,{
       readStatus:context=>adapter.readStatus({prepared,transportEvidence,...context}),
@@ -1974,10 +1983,10 @@ async function runFirmwareRestore(auth, options = {}) {
     let stored=error&&error.stage0Transaction||null;
     if(!stored){try{stored=await stage0.loadJournal(journal);}catch(_){stored=null;}}
     const attempted=Number(error&&error.destructivePostsAttempted)||(stored&&stored.destructivePostCount===1?1:0);
-    error.diagnostics=formatDiagnosticReport({schema:1,mode:"firmware-restore-stage0",generatedAt:clock(),selectedFile:{name:selectedFileName(path),size:image.size,sha256:image.sha256},transport:{contractId:transportEvidence.contractId,captureSha256:transportEvidence.captureSha256},recovery:{evidenceId:recoveryEvidence.evidenceId,captureSha256:recoveryEvidence.captureSha256},transaction:stored?{id:stored.transactionId,state:stored.state,destructivePostCount:stored.destructivePostCount}:null,safety:{firmwarePostsAttempted:attempted,automaticRetries:0,redirectsAllowed:false,statusMethod:"GET"},error:cleanError(error)});
+    error.diagnostics=formatDiagnosticReport({schema:1,mode:"firmware-restore-stage0",generatedAt:clock(),selectedFile:{name:selectedFileName(path),size:image.size,sha256:image.sha256},transport:{contractId:transportEvidence.contractId,captureSha256:transportEvidence.captureSha256},risk:{profile:riskProfile,evidenceId:riskEvidence.evidenceId,captureSha256:riskEvidence.captureSha256},transaction:stored?{id:stored.transactionId,state:stored.state,destructivePostCount:stored.destructivePostCount}:null,safety:{firmwarePostsAttempted:attempted,automaticRetries:0,redirectsAllowed:false,statusMethod:"GET"},error:cleanError(error)});
     throw error;
   }
-  const report={schema:1,mode:"firmware-restore-stage0",generatedAt:clock(),software:softwareIdentity(options.software||{}),selectedFile:{name:selectedFileName(path),size:image.size,sha256:image.sha256},device:{model:device.model,hardware:device.hardware,firmware:device.firmware},power:{batteryPercent:power.batteryPercent,chargerConnected:power.chargerConnected},transport:{contractId:transportEvidence.contractId,captureSha256:transportEvidence.captureSha256},recovery:{evidenceId:recoveryEvidence.evidenceId,captureSha256:recoveryEvidence.captureSha256},transaction:{id:finalTransaction.transactionId,state:finalTransaction.state,destructivePostCount:finalTransaction.destructivePostCount},safety:{firmwarePostsAttempted:1,automaticRetries:0,redirectsAllowed:false,statusMethod:"GET"}};
+  const report={schema:1,mode:"firmware-restore-stage0",generatedAt:clock(),software:softwareIdentity(options.software||{}),selectedFile:{name:selectedFileName(path),size:image.size,sha256:image.sha256},device:{model:device.model,hardware:device.hardware,firmware:device.firmware},power:{batteryPercent:power.batteryPercent,chargerConnected:power.chargerConnected},transport:{contractId:transportEvidence.contractId,captureSha256:transportEvidence.captureSha256},risk:{profile:riskProfile,evidenceId:riskEvidence.evidenceId,captureSha256:riskEvidence.captureSha256},transaction:{id:finalTransaction.transactionId,state:finalTransaction.state,destructivePostCount:finalTransaction.destructivePostCount},safety:{firmwarePostsAttempted:1,automaticRetries:0,redirectsAllowed:false,statusMethod:"GET"}};
   return {ok:finalTransaction.state===stage0.TRANSACTION_STATES.BOOT_VERIFIED,flashAllowed:false,destructiveAttempted:true,state:finalTransaction.state,report,text:formatDiagnosticReport(report)};
 }
 
