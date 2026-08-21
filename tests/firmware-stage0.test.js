@@ -56,6 +56,37 @@ function transportEvidence(overrides = {}) {
   };
 }
 
+function softwareRiskEvidence(overrides = {}) {
+  return {
+    schema:stage0.SOFTWARE_RISK_EVIDENCE_SCHEMA,
+    profile:stage0.SOFTWARE_RISK_PROFILE,
+    evidenceId:"software-risk-capture-v1",
+    model:"MF885",
+    hardware:"Ver.D",
+    firmware:stage0.REQUIRED_FIRMWARE,
+    unitFingerprintSha256:UNIT_FINGERPRINT,
+    goldenBackupSha256:stage0.GOLDEN_IMAGE.sha256,
+    backupCaptureCount:2,
+    backup1Sha256:stage0.GOLDEN_IMAGE.sha256,
+    backup1CapturedAt:NOW-2000,
+    backup2Sha256:stage0.GOLDEN_IMAGE.sha256,
+    backup2CapturedAt:NOW-1000,
+    backupsByteIdentical:true,
+    configurationEvidenceKind:"private-settings-bundle-v1",
+    configurationEvidenceSha256:"e".repeat(64),
+    configurationCapturedAt:NOW-500,
+    configurationModelsCaptured:6,
+    stockConfigurationExportUnavailable:true,
+    wifiSettingsRecorded:true,
+    apnSettingsRecorded:true,
+    noHardwareRecoveryAccepted:true,
+    transportContractId:"unverified-capture",
+    transportCaptureSha256:"a".repeat(64),
+    captureSha256:"f".repeat(64),
+    ...overrides
+  };
+}
+
 function transactionFixture(overrides = {}) {
   return {
     schema: stage0.JOURNAL_SCHEMA,
@@ -67,6 +98,11 @@ function transactionFixture(overrides = {}) {
     imageId: stage0.GOLDEN_IMAGE.id,
     imageSha256: stage0.GOLDEN_IMAGE.sha256,
     unitFingerprintSha256:UNIT_FINGERPRINT,
+    riskProfile:"physical-nor-v1",
+    riskEvidenceId:"bench-v1",
+    riskCaptureSha256:"b".repeat(64),
+    recoveryEvidenceId:"bench-v1",
+    recoveryCaptureSha256:"b".repeat(64),
     preflightFingerprint: "fixture",
     destructivePostCount: 0,
     events: [{ at: 1, event: "PRECHECK_OK" }],
@@ -178,6 +214,36 @@ test("physical recovery evidence is a separate compiled destructive gate", () =>
   assert.equal(stage0.VERIFIED_RECOVERY_EVIDENCE.length,0);
   assert.equal(stage0.validateRecoveryEvidence({...candidate,ioVoltage:3.3}).ok,false);
   assert.equal(stage0.validateRecoveryEvidence({...candidate,fullDumpCopies:2}).ok,false);
+});
+
+test("software-only-risk-v1 is separate, compiled, fresh, and requires the 80 percent power gate", () => {
+  const candidate=softwareRiskEvidence();
+  const checked=stage0.validateSoftwareRiskEvidence(candidate,transportEvidence(),NOW);
+  assert.equal(checked.ok,false);
+  assert.match(checked.errors.join(" "),/No matching software-only-risk-v1 evidence/i);
+  assert.doesNotMatch(checked.errors.join(" "),/full NOR dumps/i);
+  assert.equal(stage0.VERIFIED_SOFTWARE_RISK_EVIDENCE.length,0);
+  assert.equal(stage0.validateSoftwareRiskEvidence({...candidate,backup2Sha256:"0".repeat(64)},transportEvidence(),NOW).ok,false);
+  assert.equal(stage0.validateSoftwareRiskEvidence({...candidate,configurationEvidenceSha256:""},transportEvidence(),NOW).ok,false);
+  assert.equal(stage0.validateSoftwareRiskEvidence({...candidate,configurationModelsCaptured:5},transportEvidence(),NOW).ok,false);
+  assert.equal(stage0.validateSoftwareRiskEvidence({...candidate,stockConfigurationExportUnavailable:false},transportEvidence(),NOW).ok,false);
+  const stockConfiguration=stage0.validateSoftwareRiskEvidence({...candidate,configurationEvidenceKind:"stock-config-export-v1",configurationModelsCaptured:0,stockConfigurationExportUnavailable:false},transportEvidence(),NOW);
+  assert.doesNotMatch(stockConfiguration.errors.join(" "),/private settings bundle/i);
+  assert.equal(stage0.validateSoftwareRiskEvidence({...candidate,wifiSettingsRecorded:false},transportEvidence(),NOW).ok,false);
+  assert.equal(stage0.validateSoftwareRiskEvidence({...candidate,noHardwareRecoveryAccepted:false},transportEvidence(),NOW).ok,false);
+  const selected=stage0.validateRiskEvidence(null,candidate,transportEvidence(),NOW);
+  assert.equal(selected.profile,stage0.SOFTWARE_RISK_PROFILE);
+  assert.equal(selected.minBatteryPercent,80);
+  assert.equal(stage0.validatePower(powerEvidence({batteryPercent:79}),NOW,selected.minBatteryPercent).ok,false);
+  assert.equal(stage0.validatePower(powerEvidence({batteryPercent:80}),NOW,selected.minBatteryPercent).ok,true);
+});
+
+test("physical and software-only risk evidence cannot be combined",()=>{
+  const physical={schema:stage0.RECOVERY_EVIDENCE_SCHEMA,evidenceId:"physical"};
+  const selected=stage0.validateRiskEvidence(physical,softwareRiskEvidence(),transportEvidence(),NOW);
+  assert.equal(selected.ok,false);
+  assert.equal(selected.profile,"ambiguous");
+  assert.match(selected.errors.join(" "),/exactly one recovery\/risk profile/i);
 });
 
 test("a forged preflight report cannot create a transaction", () => {
@@ -326,6 +392,25 @@ test("GET-only monitor reaches BOOT_VERIFIED through the reviewed classifier", a
   assert.equal(qualification.imageSha256,stage0.GOLDEN_IMAGE.sha256);
   assert.equal(qualification.transportContractId,"capture-v1");
   assert.equal(qualification.recoveryEvidenceId,"bench-v1");
+});
+
+test("golden qualification preserves the software-only risk binding",()=>{
+  const transaction=transactionFixture({
+    state:stage0.TRANSACTION_STATES.BOOT_VERIFIED,
+    destructivePostCount:1,
+    riskProfile:stage0.SOFTWARE_RISK_PROFILE,
+    riskEvidenceId:"software-risk-capture-v1",
+    riskCaptureSha256:"f".repeat(64),
+    recoveryEvidenceId:"",
+    recoveryCaptureSha256:"",
+    transportContractId:"restore-v1",
+    transportCaptureSha256:"a".repeat(64)
+  });
+  const qualification=stage0.createGoldenQualification(transaction,NOW);
+  assert.equal(qualification.riskProfile,stage0.SOFTWARE_RISK_PROFILE);
+  assert.equal(qualification.riskEvidenceId,"software-risk-capture-v1");
+  assert.equal(qualification.riskCaptureSha256,"f".repeat(64));
+  assert.equal(qualification.recoveryEvidenceId,"");
 });
 
 test("post-boot checks stop at the compiled bound and finish UNKNOWN",async()=>{

@@ -506,7 +506,8 @@ python3 tools/mf885_canary_repair.py \
 - a reviewed Scriptable `Request` construction that sends the exact hashed
   `Data` once, with redirects/retries disabled and no mutable adapter escape;
 - a credible single-instance/exclusive-lease rule for Scriptable;
-- two newly captured identical golden BackupFw files and configuration export;
+- two newly captured identical golden BackupFw files and reviewed hashed
+  configuration evidence (stock export or the explicit private-bundle fallback);
 - explicit operator acceptance of the no-dump brick risk;
 - a GET-only boot-verification profile and timeout bounds fixed in source.
 

@@ -43,8 +43,16 @@ reviewed.
 
 ## Current point
 
-Gate 0 is in progress. The observer-only Gate 2 source and structural artifact
-are already built, but Gate 1 and the production RestoreFw transport are not yet
+Gate 0 has confirmed live identity/power, status/SMS/detailed-log reads and one
+verified SMS deletion. Its first safe `*#06#` USSD attempt was rejected, proving
+that the guessed XML models are not the target firmware contract; USSD stays
+locked until the native handler is recovered instead of being retried. Two new
+independent live BackupFw acquisitions are byte-identical to each other and the
+exact golden, and both pass the complete structural inspector. Six live private
+configuration models separately preserve Wi-Fi and APN settings; the stock
+`config_save` path was also proven empty through fetch, raw HTTP and its own
+browser form, so that bundle requires review as the explicit fallback evidence
+type. The exclusive sender and production RestoreFw transport are not yet
 qualified. Therefore `0.0-logs-r1` is available for audit, not for upload.
 
 The structural artifact is 8,323,644 bytes with SHA-256

@@ -43,12 +43,16 @@ const REQUIRED_FIRMWARE = "2.5.94_release_MF855_NZ_CP_2.129.003";
 const MIN_BATTERY_PERCENT = 50;
 const MAX_LIVE_EVIDENCE_AGE_MS = 60 * 1000;
 const MAX_IMAGE_EVIDENCE_AGE_MS = 5 * 60 * 1000;
-const JOURNAL_SCHEMA = 2;
-const JOURNAL_KEY = "mf885-safeflash-stage0-transaction-v2";
-const GOLDEN_QUALIFICATION_SCHEMA = 1;
-const GOLDEN_QUALIFICATION_KEY = "mf885-safeflash-stage0-golden-qualification-v1";
+const JOURNAL_SCHEMA = 3;
+const JOURNAL_KEY = "mf885-safeflash-stage0-transaction-v3";
+const GOLDEN_QUALIFICATION_SCHEMA = 2;
+const GOLDEN_QUALIFICATION_KEY = "mf885-safeflash-stage0-golden-qualification-v2";
 const RECOVERY_EVIDENCE_SCHEMA = 1;
 const FULL_NOR_SIZE_BYTES = 32 * 1024 * 1024;
+const SOFTWARE_RISK_EVIDENCE_SCHEMA = 1;
+const SOFTWARE_RISK_PROFILE = "software-only-risk-v1";
+const SOFTWARE_ONLY_MIN_BATTERY_PERCENT = 80;
+const MAX_SOFTWARE_RISK_EVIDENCE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 // Intentionally empty. A caller-provided boolean or object must never be able
 // to unlock RestoreFw. A captured contract is added here only after its exact
@@ -57,6 +61,10 @@ const VERIFIED_RESTORE_TRANSPORTS = Object.freeze([]);
 // Also intentionally empty until the target unit has three identical full
 // 32 MiB dumps from the 1.8 V MX25U25635FZ4I and a proven recovery entry.
 const VERIFIED_RECOVERY_EVIDENCE = Object.freeze([]);
+// This is a separate, explicitly higher-risk alternative to physical
+// recovery. It is populated only from reviewed fresh BackupFw/configuration
+// evidence for one exact unit; it never fabricates NOR dump fields.
+const VERIFIED_SOFTWARE_RISK_EVIDENCE = Object.freeze([]);
 const AUTHORIZED_PREFLIGHTS = new WeakSet();
 const COMPUTED_IMAGE_EVIDENCE = new WeakSet();
 const ACTIVE_RESTORE_JOURNALS = new WeakSet();
@@ -279,18 +287,19 @@ function validateDevice(device, now = Date.now()) {
   return { ok: errors.length === 0, value, errors };
 }
 
-function validatePower(power, now = Date.now()) {
+function validatePower(power, now = Date.now(), minimumBatteryPercent = MIN_BATTERY_PERCENT) {
   const batteryPercent = Number(power && power.batteryPercent);
   const chargerConnected = power && power.chargerConnected === true;
   const observedAt = finiteTimestamp(power && power.observedAt);
   const source = String(power && power.source || "").trim();
+  const requiredPercent = Number.isFinite(Number(minimumBatteryPercent)) ? Number(minimumBatteryPercent) : MIN_BATTERY_PERCENT;
   const errors = [];
   if (!Number.isFinite(batteryPercent)) errors.push("Battery percentage is unavailable.");
-  else if (batteryPercent < MIN_BATTERY_PERCENT) errors.push(`Battery must be at least ${MIN_BATTERY_PERCENT}%.`);
+  else if (batteryPercent < requiredPercent) errors.push(`Battery must be at least ${requiredPercent}%.`);
   if (!chargerConnected) errors.push("Stable external USB power must be connected.");
   if (source !== "status1-live") errors.push("Power state must come from a fresh live status1 read.");
   if (!evidenceFresh(observedAt, now, MAX_LIVE_EVIDENCE_AGE_MS)) errors.push("Live power evidence is missing, stale, or timestamped in the future.");
-  return { ok: errors.length === 0, batteryPercent, chargerConnected, observedAt, source, errors };
+  return { ok: errors.length === 0, batteryPercent, chargerConnected, observedAt, source, minimumBatteryPercent:requiredPercent, errors };
 }
 
 function normalizedTransportEvidence(evidence) {
@@ -394,25 +403,103 @@ function validateRecoveryEvidence(evidence) {
   return {ok:errors.length===0,value,evidence:matched,errors};
 }
 
-function restoreAvailability() {
-  const count = VERIFIED_RESTORE_TRANSPORTS.length;
-  const recoveryCount=VERIFIED_RECOVERY_EVIDENCE.length;
+function normalizedSoftwareRiskEvidence(evidence) {
+  const source=evidence&&typeof evidence==="object"?evidence:{};
   return {
-    available: count > 0&&recoveryCount>0,
-    allowlistedContracts: count,
-    recoveryEvidenceRecords:recoveryCount,
-    reason: count===0
-      ? "Locked until the exact RestoreFw upload, authentication, response, and GET-only status contract is captured and compiled into the allowlist."
-      : recoveryCount===0
-        ? "Locked until three identical full 32 MiB 1.8 V NOR dumps and recovery-mode entry are reviewed and compiled."
-        : "Reviewed RestoreFw and physical recovery evidence are compiled. Native preflight and the persistent one-shot journal still apply."
+    schema:Number(source.schema),
+    profile:String(source.profile||"").trim(),
+    evidenceId:String(source.evidenceId||"").trim(),
+    model:String(source.model||"").trim(),
+    hardware:String(source.hardware||"").trim(),
+    firmware:String(source.firmware||"").trim(),
+    unitFingerprintSha256:cleanSha(source.unitFingerprintSha256),
+    goldenBackupSha256:cleanSha(source.goldenBackupSha256),
+    backupCaptureCount:Number(source.backupCaptureCount),
+    backup1Sha256:cleanSha(source.backup1Sha256),
+    backup1CapturedAt:finiteTimestamp(source.backup1CapturedAt),
+    backup2Sha256:cleanSha(source.backup2Sha256),
+    backup2CapturedAt:finiteTimestamp(source.backup2CapturedAt),
+    backupsByteIdentical:source.backupsByteIdentical===true,
+    configurationEvidenceKind:String(source.configurationEvidenceKind||"").trim(),
+    configurationEvidenceSha256:cleanSha(source.configurationEvidenceSha256||source.configurationExportSha256),
+    configurationCapturedAt:finiteTimestamp(source.configurationCapturedAt),
+    configurationModelsCaptured:Number(source.configurationModelsCaptured),
+    stockConfigurationExportUnavailable:source.stockConfigurationExportUnavailable===true,
+    wifiSettingsRecorded:source.wifiSettingsRecorded===true,
+    apnSettingsRecorded:source.apnSettingsRecorded===true,
+    noHardwareRecoveryAccepted:source.noHardwareRecoveryAccepted===true,
+    transportContractId:String(source.transportContractId||"").trim(),
+    transportCaptureSha256:cleanSha(source.transportCaptureSha256),
+    captureSha256:cleanSha(source.captureSha256)
   };
 }
 
-function validateGoldenQualification(qualification, transportEvidence, recoveryEvidence) {
+function sameSoftwareRiskEvidence(value,compiled) {
+  return ["schema","profile","evidenceId","model","hardware","firmware","unitFingerprintSha256","goldenBackupSha256","backupCaptureCount","backup1Sha256","backup1CapturedAt","backup2Sha256","backup2CapturedAt","backupsByteIdentical","configurationEvidenceKind","configurationEvidenceSha256","configurationCapturedAt","configurationModelsCaptured","stockConfigurationExportUnavailable","wifiSettingsRecorded","apnSettingsRecorded","noHardwareRecoveryAccepted","transportContractId","transportCaptureSha256","captureSha256"]
+    .every(field=>value[field]===compiled[field]);
+}
+
+function validateSoftwareRiskEvidence(evidence,transportEvidence,now=Date.now()) {
+  const value=normalizedSoftwareRiskEvidence(evidence),transport=normalizedTransportEvidence(transportEvidence),errors=[];
+  if(value.schema!==SOFTWARE_RISK_EVIDENCE_SCHEMA||value.profile!==SOFTWARE_RISK_PROFILE)errors.push("Reviewed software-only-risk-v1 evidence is missing.");
+  if(!/^(?:LV01|MF885)$/i.test(value.model)||!/Ver\.?\s*D/i.test(value.hardware)||value.firmware!==REQUIRED_FIRMWARE)errors.push("Software-only risk evidence is not bound to the exact LV01 / MF885 Ver.D target firmware.");
+  if(!/^[0-9a-f]{64}$/.test(value.unitFingerprintSha256))errors.push("Software-only risk evidence is not bound to one privacy-safe router fingerprint.");
+  if(value.goldenBackupSha256!==GOLDEN_IMAGE.sha256||value.backupCaptureCount!==2||value.backup1Sha256!==GOLDEN_IMAGE.sha256||value.backup2Sha256!==GOLDEN_IMAGE.sha256||value.backupsByteIdentical!==true)errors.push("Exactly two byte-identical fresh BackupFw captures with the stock golden SHA-256 are required.");
+  if(!value.backup1CapturedAt||!value.backup2CapturedAt||value.backup1CapturedAt>=value.backup2CapturedAt||!evidenceFresh(value.backup1CapturedAt,now,MAX_SOFTWARE_RISK_EVIDENCE_AGE_MS)||!evidenceFresh(value.backup2CapturedAt,now,MAX_SOFTWARE_RISK_EVIDENCE_AGE_MS))errors.push("The two BackupFw acquisition timestamps are missing, stale, future-dated, or not independent.");
+  if(!["stock-config-export-v1","private-settings-bundle-v1"].includes(value.configurationEvidenceKind)||!/^[0-9a-f]{64}$/.test(value.configurationEvidenceSha256)||!evidenceFresh(value.configurationCapturedAt,now,MAX_SOFTWARE_RISK_EVIDENCE_AGE_MS))errors.push("Fresh hashed router configuration evidence is required.");
+  if(value.configurationEvidenceKind==="private-settings-bundle-v1"&&(!Number.isInteger(value.configurationModelsCaptured)||value.configurationModelsCaptured<6||!value.stockConfigurationExportUnavailable))errors.push("A private settings bundle requires at least six captured configuration models and reviewed evidence that the stock export is unavailable.");
+  if(!value.wifiSettingsRecorded||!value.apnSettingsRecorded)errors.push("Wi-Fi and APN settings must be recorded separately from the configuration export.");
+  if(!value.noHardwareRecoveryAccepted)errors.push("The operator has not explicitly accepted that this profile has no hardware recovery guarantee.");
+  if(!transport.contractId||value.transportContractId!==transport.contractId||value.transportCaptureSha256!==transport.captureSha256)errors.push("Software-only risk evidence is not bound to the current reviewed RestoreFw transport contract.");
+  if(!/^[0-9a-f]{64}$/.test(value.captureSha256))errors.push("Software-only risk evidence requires the SHA-256 of its reviewed redacted evidence artifact.");
+  const matched=VERIFIED_SOFTWARE_RISK_EVIDENCE.find(compiled=>sameSoftwareRiskEvidence(value,compiled))||null;
+  if(!matched)errors.push("No matching software-only-risk-v1 evidence is compiled into this build; destructive send remains locked.");
+  return {ok:errors.length===0,value,evidence:matched,errors};
+}
+
+function validateRiskEvidence(recoveryEvidence,softwareRiskEvidence,transportEvidence,now=Date.now()) {
+  const hasPhysical=!!(recoveryEvidence&&typeof recoveryEvidence==="object"&&Object.keys(recoveryEvidence).length);
+  const hasSoftware=!!(softwareRiskEvidence&&typeof softwareRiskEvidence==="object"&&Object.keys(softwareRiskEvidence).length);
+  if(hasPhysical&&hasSoftware)return {ok:false,profile:"ambiguous",value:{},evidence:null,minBatteryPercent:SOFTWARE_ONLY_MIN_BATTERY_PERCENT,errors:["Choose exactly one recovery/risk profile; physical and software-only evidence cannot be combined."]};
+  if(hasSoftware){
+    const checked=validateSoftwareRiskEvidence(softwareRiskEvidence,transportEvidence,now);
+    return {...checked,profile:SOFTWARE_RISK_PROFILE,minBatteryPercent:SOFTWARE_ONLY_MIN_BATTERY_PERCENT};
+  }
+  const checked=validateRecoveryEvidence(recoveryEvidence);
+  return {...checked,profile:"physical-nor-v1",minBatteryPercent:MIN_BATTERY_PERCENT};
+}
+
+function restoreAvailability() {
+  const count = VERIFIED_RESTORE_TRANSPORTS.length;
+  const recoveryCount=VERIFIED_RECOVERY_EVIDENCE.length;
+  const softwareRiskCount=VERIFIED_SOFTWARE_RISK_EVIDENCE.length;
+  const riskCount=recoveryCount+softwareRiskCount;
+  return {
+    available: count > 0&&riskCount>0,
+    allowlistedContracts: count,
+    recoveryEvidenceRecords:recoveryCount,
+    softwareRiskEvidenceRecords:softwareRiskCount,
+    reason: count===0
+      ? "Locked until the exact RestoreFw upload, authentication, response, and GET-only status contract is captured and compiled into the allowlist."
+      : riskCount===0
+        ? "Locked until either physical recovery evidence or a complete software-only-risk-v1 record is reviewed and compiled."
+        : softwareRiskCount>0&&recoveryCount===0
+          ? "Reviewed RestoreFw and software-only-risk-v1 evidence are compiled. The 80% power gate, typed no-recovery confirmation, native preflight, and persistent one-shot journal still apply."
+          : "Reviewed RestoreFw and physical recovery evidence are compiled. Native preflight and the persistent one-shot journal still apply."
+  };
+}
+
+function validateGoldenQualification(qualification, transportEvidence, recoveryEvidence, softwareRiskEvidence) {
   const value = qualification && typeof qualification === "object" ? qualification : {};
   const transport = normalizedTransportEvidence(transportEvidence);
-  const recovery=normalizedRecoveryEvidence(recoveryEvidence);
+  const useSoftware=!!(softwareRiskEvidence&&typeof softwareRiskEvidence==="object"&&Object.keys(softwareRiskEvidence).length);
+  const risk=useSoftware?normalizedSoftwareRiskEvidence(softwareRiskEvidence):normalizedRecoveryEvidence(recoveryEvidence);
+  const riskProfile=useSoftware?SOFTWARE_RISK_PROFILE:"physical-nor-v1";
+  const riskEvidenceId=risk.evidenceId;
+  const riskCaptureSha256=risk.captureSha256;
+  const qualifiedProfile=String(value.riskProfile||(!useSoftware&&value.recoveryEvidenceId?"physical-nor-v1":""));
+  const qualifiedEvidenceId=String(value.riskEvidenceId||value.recoveryEvidenceId||"");
+  const qualifiedCaptureSha256=cleanSha(value.riskCaptureSha256||value.recoveryCaptureSha256);
   const errors = [];
   if(value.integrityVerified!==true)errors.push("The stock golden qualification did not pass local integrity verification.");
   if (value.schema !== GOLDEN_QUALIFICATION_SCHEMA) errors.push("A completed stock golden-to-golden qualification is required before the WEBUI canary can be flashed.");
@@ -423,29 +510,31 @@ function validateGoldenQualification(qualification, transportEvidence, recoveryE
   if (String(value.transportContractId || "") !== transport.contractId || cleanSha(value.transportCaptureSha256) !== transport.captureSha256) {
     errors.push("The stock golden qualification belongs to a different RestoreFw contract or capture.");
   }
-  if(String(value.recoveryEvidenceId||"")!==recovery.evidenceId||cleanSha(value.recoveryCaptureSha256)!==recovery.captureSha256){
-    errors.push("The stock golden qualification belongs to different physical recovery evidence.");
+  if(qualifiedProfile!==riskProfile||qualifiedEvidenceId!==riskEvidenceId||qualifiedCaptureSha256!==riskCaptureSha256){
+    errors.push("The stock golden qualification belongs to a different recovery/risk evidence profile.");
   }
-  if(cleanSha(value.unitFingerprintSha256)!==recovery.unitFingerprintSha256)errors.push("The stock golden qualification belongs to a different physical router.");
+  if(cleanSha(value.unitFingerprintSha256)!==risk.unitFingerprintSha256)errors.push("The stock golden qualification belongs to a different physical router.");
   if (!finiteTimestamp(value.completedAt)) errors.push("The stock golden qualification completion time is missing.");
   return { ok: errors.length === 0, value: { ...value }, errors };
 }
 
-function validateRestoreSequence(image, qualification, transportEvidence, recoveryEvidence) {
+function validateRestoreSequence(image, qualification, transportEvidence, recoveryEvidence, softwareRiskEvidence) {
   if (!image || image.id === GOLDEN_IMAGE.id) return { ok: true, errors: [] };
   if (image.id !== WEBUI_CANARY_LOGS_R1.id) return { ok: false, errors: ["The selected image is not part of the Stage 0 restore sequence."] };
-  return validateGoldenQualification(qualification, transportEvidence, recoveryEvidence);
+  return validateGoldenQualification(qualification, transportEvidence, recoveryEvidence, softwareRiskEvidence);
 }
 
 function preflight(input, now = Date.now()) {
   const image = validateImageEvidence(input && input.image, now);
   const device = validateDevice(input && input.device, now);
-  const power = validatePower(input && input.power, now);
   const transport = validateTransportEvidence(input && input.restoreTransportEvidence);
-  const recovery = validateRecoveryEvidence(input && input.recoveryEvidence);
-  const sequence = validateRestoreSequence(image.image, input && input.goldenQualification, transport.value, recovery.value);
-  const errors = [...image.errors, ...device.errors, ...power.errors, ...transport.errors, ...recovery.errors, ...sequence.errors];
-  if(device.value.unitFingerprintSha256!==recovery.value.unitFingerprintSha256)errors.push("Live router fingerprint does not match the physical recovery evidence.");
+  const risk = validateRiskEvidence(input && input.recoveryEvidence,input && input.softwareRiskEvidence,transport.value,now);
+  const power = validatePower(input && input.power, now,risk.minBatteryPercent);
+  const recoveryEvidence=risk.profile==="physical-nor-v1"?risk.value:{};
+  const softwareRiskEvidence=risk.profile===SOFTWARE_RISK_PROFILE?risk.value:{};
+  const sequence = validateRestoreSequence(image.image, input && input.goldenQualification, transport.value, recoveryEvidence, softwareRiskEvidence);
+  const errors = [...image.errors, ...device.errors, ...power.errors, ...transport.errors, ...risk.errors, ...sequence.errors];
+  if(device.value.unitFingerprintSha256!==risk.value.unitFingerprintSha256)errors.push("Live router fingerprint does not match the selected recovery/risk evidence.");
   if (input && input.restoreTransportVerified === true) {
     errors.push("Legacy restoreTransportVerified=true is ignored; only an allowlisted immutable evidence record can unlock RestoreFw.");
   }
@@ -454,9 +543,12 @@ function preflight(input, now = Date.now()) {
     destructiveAllowed: errors.length === 0,
     image: image.image,
     device: device.value,
-    power: { batteryPercent: power.batteryPercent, chargerConnected: power.chargerConnected, observedAt: power.observedAt, source: power.source },
+    power: { batteryPercent: power.batteryPercent, chargerConnected: power.chargerConnected, observedAt: power.observedAt, source: power.source, minimumBatteryPercent:power.minimumBatteryPercent },
     restoreTransportEvidence: transport.value,
-    recoveryEvidence: recovery.value,
+    riskProfile:risk.profile,
+    riskEvidence:risk.value,
+    recoveryEvidence,
+    softwareRiskEvidence,
     restoreSequence: { ok: sequence.ok, goldenQualified: image.image && image.image.id === GOLDEN_IMAGE.id ? false : sequence.ok },
     errors
   };
@@ -489,8 +581,8 @@ function transactionIdFor(report, now) {
 function preflightFingerprint(report) {
   const device = report.device || {};
   const transport = report.restoreTransportEvidence || {};
-  const recovery=report.recoveryEvidence||{};
-  return [report.image && report.image.sha256, device.model, device.hardware, device.firmware,device.unitFingerprintSha256, transport.contractId, transport.captureSha256,recovery.evidenceId,recovery.captureSha256].join("|");
+  const risk=report.riskEvidence||report.recoveryEvidence||{};
+  return [report.image && report.image.sha256, device.model, device.hardware, device.firmware,device.unitFingerprintSha256, transport.contractId, transport.captureSha256,report.riskProfile,risk.evidenceId,risk.captureSha256].join("|");
 }
 
 function createTransaction(preflightReport, now = Date.now(), transactionId = "") {
@@ -510,6 +602,9 @@ function createTransaction(preflightReport, now = Date.now(), transactionId = ""
     unitFingerprintSha256:cleanSha(preflightReport.device&&preflightReport.device.unitFingerprintSha256),
     transportContractId: String(preflightReport.restoreTransportEvidence && preflightReport.restoreTransportEvidence.contractId || ""),
     transportCaptureSha256: cleanSha(preflightReport.restoreTransportEvidence && preflightReport.restoreTransportEvidence.captureSha256),
+    riskProfile:String(preflightReport.riskProfile||""),
+    riskEvidenceId:String(preflightReport.riskEvidence&&preflightReport.riskEvidence.evidenceId||""),
+    riskCaptureSha256:cleanSha(preflightReport.riskEvidence&&preflightReport.riskEvidence.captureSha256),
     recoveryEvidenceId:String(preflightReport.recoveryEvidence&&preflightReport.recoveryEvidence.evidenceId||""),
     recoveryCaptureSha256:cleanSha(preflightReport.recoveryEvidence&&preflightReport.recoveryEvidence.captureSha256),
     preflightFingerprint: preflightFingerprint(preflightReport),
@@ -525,6 +620,7 @@ function validateTransaction(transaction) {
   if (!transaction.transactionId) errors.push("Stage 0 transaction ID is missing.");
   if (!Object.values(TRANSACTION_STATES).includes(transaction.state) || transaction.state === TRANSACTION_STATES.IDLE) errors.push("Stage 0 transaction state is invalid.");
   if (!Number.isInteger(transaction.revision) || transaction.revision < 0) errors.push("Stage 0 transaction revision is invalid.");
+  if(!["physical-nor-v1",SOFTWARE_RISK_PROFILE].includes(String(transaction.riskProfile||""))||!String(transaction.riskEvidenceId||"")||!/^[0-9a-f]{64}$/.test(cleanSha(transaction.riskCaptureSha256)))errors.push("Stage 0 transaction is not bound to one reviewed recovery/risk profile.");
   if (![0, 1].includes(transaction.destructivePostCount)) errors.push("Stage 0 destructive POST count is invalid.");
   if (transaction.state === TRANSACTION_STATES.PRECHECK_OK && transaction.destructivePostCount !== 0) errors.push("PRECHECK_OK cannot have a destructive send count.");
   if (![TRANSACTION_STATES.PRECHECK_OK, TRANSACTION_STATES.FAILED].includes(transaction.state) && transaction.destructivePostCount !== 1) errors.push("Post-arm states require exactly one destructive send allowance to be consumed.");
@@ -761,8 +857,11 @@ function createGoldenQualification(transaction, now = Date.now()) {
   if (transaction.state !== TRANSACTION_STATES.BOOT_VERIFIED || transaction.imageId !== GOLDEN_IMAGE.id || cleanSha(transaction.imageSha256) !== GOLDEN_IMAGE.sha256) {
     throw new Error("Only an exact stock golden transaction that reached BOOT_VERIFIED can qualify the canary stage.");
   }
-  if (!transaction.transportContractId || !/^[0-9a-f]{64}$/.test(cleanSha(transaction.transportCaptureSha256))||!transaction.recoveryEvidenceId||!/^[0-9a-f]{64}$/.test(cleanSha(transaction.recoveryCaptureSha256))||!/^[0-9a-f]{64}$/.test(cleanSha(transaction.unitFingerprintSha256))) {
-    throw new Error("The completed golden transaction is not bound to reviewed RestoreFw and physical recovery evidence.");
+  const riskProfile=String(transaction.riskProfile||(transaction.recoveryEvidenceId?"physical-nor-v1":""));
+  const riskEvidenceId=String(transaction.riskEvidenceId||transaction.recoveryEvidenceId||"");
+  const riskCaptureSha256=cleanSha(transaction.riskCaptureSha256||transaction.recoveryCaptureSha256);
+  if (!transaction.transportContractId || !/^[0-9a-f]{64}$/.test(cleanSha(transaction.transportCaptureSha256))||!["physical-nor-v1",SOFTWARE_RISK_PROFILE].includes(riskProfile)||!riskEvidenceId||!/^[0-9a-f]{64}$/.test(riskCaptureSha256)||!/^[0-9a-f]{64}$/.test(cleanSha(transaction.unitFingerprintSha256))) {
+    throw new Error("The completed golden transaction is not bound to reviewed RestoreFw and recovery/risk evidence.");
   }
   return Object.freeze({
     schema: GOLDEN_QUALIFICATION_SCHEMA,
@@ -774,8 +873,11 @@ function createGoldenQualification(transaction, now = Date.now()) {
     unitFingerprintSha256:cleanSha(transaction.unitFingerprintSha256),
     transportContractId: transaction.transportContractId,
     transportCaptureSha256: cleanSha(transaction.transportCaptureSha256),
-    recoveryEvidenceId:transaction.recoveryEvidenceId,
-    recoveryCaptureSha256:cleanSha(transaction.recoveryCaptureSha256)
+    riskProfile,
+    riskEvidenceId,
+    riskCaptureSha256,
+    recoveryEvidenceId:riskProfile==="physical-nor-v1"?riskEvidenceId:"",
+    recoveryCaptureSha256:riskProfile==="physical-nor-v1"?riskCaptureSha256:""
   });
 }
 
@@ -817,8 +919,13 @@ module.exports = {
   GOLDEN_QUALIFICATION_KEY,
   RECOVERY_EVIDENCE_SCHEMA,
   FULL_NOR_SIZE_BYTES,
+  SOFTWARE_RISK_EVIDENCE_SCHEMA,
+  SOFTWARE_RISK_PROFILE,
+  SOFTWARE_ONLY_MIN_BATTERY_PERCENT,
+  MAX_SOFTWARE_RISK_EVIDENCE_AGE_MS,
   VERIFIED_RESTORE_TRANSPORTS,
   VERIFIED_RECOVERY_EVIDENCE,
+  VERIFIED_SOFTWARE_RISK_EVIDENCE,
   TRANSACTION_STATES,
   TERMINAL_STATES,
   ALLOWED_TRANSITIONS,
@@ -835,6 +942,9 @@ module.exports = {
   validateTransportEvidence,
   normalizedRecoveryEvidence,
   validateRecoveryEvidence,
+  normalizedSoftwareRiskEvidence,
+  validateSoftwareRiskEvidence,
+  validateRiskEvidence,
   restoreAvailability,
   validateGoldenQualification,
   validateRestoreSequence,

@@ -91,7 +91,7 @@ test("WEBUI Canary Logs remains audit-only while Stage 0 restore is visibly lock
   assert.match(html, /id="firmwareCanaryValidate">Audit WEBUI Canary Logs r1 \(no flash\)/);
   assert.match(html, /command\('firmwareCanaryValidate',\{\}\)/);
   assert.match(html, /Flash remains locked/);
-  assert.match(html, /id="firmwareFlash" disabled aria-disabled="true"[^>]*>Firmware restore locked · recovery \+ contract/);
+  assert.match(html, /id="firmwareFlash" disabled aria-disabled="true"[^>]*>Firmware restore locked · risk\/recovery \+ contract/);
   assert.match(html, /command\('firmwareFlash',\{confirmed:true\}\)/);
   assert.match(html,/id="firmwareJournalBtn">Stage 0 journal/);
   assert.match(html,/command\('firmwareJournalStatus',\{\}\)/);

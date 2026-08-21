@@ -144,7 +144,7 @@ function buildHtml(model){
   const firmwareRestore=data.firmwareRestore||{available:false,reason:"RestoreFw transport is locked."};
   const firmwareRestoreAvailable=firmwareRestore.available===true;
   const firmwareRestoreDisabled=firmwareRestoreAvailable?"":` disabled aria-disabled="true" title="${esc(firmwareRestore.reason)}"`;
-  const firmwareRestoreLabel=firmwareRestoreAvailable?"Firmware restore (Stage 0)":"Firmware restore locked · recovery + contract";
+  const firmwareRestoreLabel=firmwareRestoreAvailable?"Firmware restore (Stage 0)":"Firmware restore locked · risk/recovery + contract";
   const softwareRevisionDisplay=data.softwareRevision&&data.softwareRevision!=="unknown"?String(data.softwareRevision).slice(0,12):"unknown";
   const diagnosticValues=data.diagnostics.values||{}, rsrpContext=diagnosticValues.rsrp||{value:n.dbm}, batteryContext={value:b.percent===null||b.percent===undefined?"—":`${b.percent}%`};
   const online=!(data.errors&&data.errors.statusRequest);

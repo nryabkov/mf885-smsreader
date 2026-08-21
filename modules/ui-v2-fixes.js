@@ -145,7 +145,7 @@ function enhancementScript() {
         +'<button type="button" data-settings-preflight>Run read-only preflight</button>'
         +'<button type="button" data-settings-app-auth>Run APP auth probe (GET only)</button>'
         +'<button type="button" data-settings-firmware-canary>Verify WEBUI canary file (no flash)</button>'
-        +'<button type="button" class="danger" data-settings-firmware-restore'+(firmwareAvailable?'':' disabled aria-disabled="true"')+'>'+(firmwareAvailable?'Firmware restore (Stage 0)':'Firmware restore locked · recovery + contract')+'</button>'
+        +'<button type="button" class="danger" data-settings-firmware-restore'+(firmwareAvailable?'':' disabled aria-disabled="true"')+'>'+(firmwareAvailable?'Firmware restore (Stage 0)':'Firmware restore locked · risk/recovery + contract')+'</button>'
         +'<button type="button" data-settings-firmware-journal>Stage 0 journal</button>'
         +'<button type="button" data-settings-last-power>Last power report</button>'
         +'<button type="button" class="danger" data-settings-power'+(powerAvailable?'':' disabled aria-disabled="true"')+'>Reboot / Power</button>'
