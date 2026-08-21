@@ -53,6 +53,9 @@ const SOFTWARE_RISK_EVIDENCE_SCHEMA = 1;
 const SOFTWARE_RISK_PROFILE = "software-only-risk-v1";
 const SOFTWARE_ONLY_MIN_BATTERY_PERCENT = 80;
 const MAX_SOFTWARE_RISK_EVIDENCE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+// Scriptable Keychain provides no compare-and-set primitive. This flag can be
+// changed only after a non-stealable cross-process lease is proven on-device.
+const ATOMIC_RESTORE_LEASE_PROVEN = false;
 
 // Intentionally empty. A caller-provided boolean or object must never be able
 // to unlock RestoreFw. A captured contract is added here only after its exact
@@ -475,14 +478,17 @@ function restoreAvailability() {
   const softwareRiskCount=VERIFIED_SOFTWARE_RISK_EVIDENCE.length;
   const riskCount=recoveryCount+softwareRiskCount;
   return {
-    available: count > 0&&riskCount>0,
+    available: count > 0&&riskCount>0&&ATOMIC_RESTORE_LEASE_PROVEN,
     allowlistedContracts: count,
     recoveryEvidenceRecords:recoveryCount,
     softwareRiskEvidenceRecords:softwareRiskCount,
+    atomicCrossProcessLeaseProven:ATOMIC_RESTORE_LEASE_PROVEN,
     reason: count===0
       ? "Locked until the exact RestoreFw upload, authentication, response, and GET-only status contract is captured and compiled into the allowlist."
       : riskCount===0
         ? "Locked until either physical recovery evidence or a complete software-only-risk-v1 record is reviewed and compiled."
+        : !ATOMIC_RESTORE_LEASE_PROVEN
+          ? "Locked until an atomic, non-stealable cross-process firmware lease is proven on-device. Keychain read/write/read is not sufficient."
         : softwareRiskCount>0&&recoveryCount===0
           ? "Reviewed RestoreFw and software-only-risk-v1 evidence are compiled. The 80% power gate, typed no-recovery confirmation, native preflight, and persistent one-shot journal still apply."
           : "Reviewed RestoreFw and physical recovery evidence are compiled. Native preflight and the persistent one-shot journal still apply."
@@ -691,23 +697,28 @@ function createMemoryJournal(initial = null) {
 
 function createKeychainJournal(key = JOURNAL_KEY, keychain) {
   const storage = keychain || (typeof Keychain !== "undefined" ? Keychain : null);
-  if (!storage || typeof storage.get !== "function" || typeof storage.set !== "function") {
+  if (!storage || typeof storage.contains !== "function" || typeof storage.get !== "function" || typeof storage.set !== "function" || typeof storage.remove !== "function") {
     throw new Error("Persistent Keychain storage is unavailable for the Stage 0 journal.");
   }
   return {
     async load() {
-      if (typeof storage.contains === "function" && !storage.contains(key)) return null;
-      try { return storage.get(key); } catch (_) { return null; }
+      try {
+        if (!storage.contains(key)) return null;
+        const raw=storage.get(key);
+        if(typeof raw!=="string"||raw.length===0)throw new Error("empty or non-string journal");
+        return raw;
+      }
+      catch (_) { throw new Error("Stage 0 Keychain journal read failed; destructive operations are locked."); }
     },
     async save(transaction) { storage.set(key, JSON.stringify(transaction)); },
-    async clear() { if (typeof storage.remove === "function") storage.remove(key); else storage.set(key, ""); }
+    async clear() { storage.remove(key); }
   };
 }
 
 async function loadJournal(journal) {
   if (!journal || typeof journal.load !== "function") throw new Error("Stage 0 journal adapter is invalid.");
   const raw = await journal.load();
-  if (!raw) return null;
+  if (raw === null || raw === undefined) return null;
   let transaction;
   try { transaction = typeof raw === "string" ? JSON.parse(raw) : raw; }
   catch (_) { throw new Error("Stage 0 journal is corrupt; destructive operations are locked."); }
@@ -722,7 +733,7 @@ async function saveJournal(journal, transaction) {
   if (!journal || typeof journal.save !== "function" || typeof journal.load !== "function") throw new Error("Stage 0 journal adapter is invalid.");
   await journal.save(transaction);
   const persisted = await loadJournal(journal);
-  if (!persisted || persisted.transactionId !== transaction.transactionId || persisted.revision !== transaction.revision || persisted.state !== transaction.state) {
+  if (!persisted || JSON.stringify(persisted) !== JSON.stringify(transaction)) {
     throw new Error("Stage 0 journal write could not be verified; destructive operations are locked.");
   }
   return persisted;
@@ -767,13 +778,17 @@ async function executeArmedRestoreOnce(journal, precheckTransaction, sendOnce, o
   if(ACTIVE_RESTORE_JOURNALS.has(journal))throw new Error("A Stage 0 send is already active for this journal; no second sender was called.");
   ACTIVE_RESTORE_JOURNALS.add(journal);
   const clock = typeof options.now === "function" ? options.now : Date.now;
+  let sendAllowanceConsumed=false;
   try {
-    await lease.assertOwner(precheckTransaction.transactionId,"before-arm");
+    const beforeArm=await lease.assertOwner(precheckTransaction.transactionId,"before-arm");
+    if(beforeArm!==true)throw new Error("The exclusive firmware lease did not confirm ownership before arming.");
     const armed = await armPersistentRestore(journal, precheckTransaction, clock());
+    sendAllowanceConsumed=true;
     let result;
     // The durable POST_ARMED read-back above is the final boundary before any
     // transport code may construct or submit the single destructive request.
-    await lease.assertOwner(armed.transactionId,"before-send");
+    const beforeSend=await lease.assertOwner(armed.transactionId,"before-send");
+    if(beforeSend!==true)throw new Error("The exclusive firmware lease did not confirm ownership before send.");
     result = await sendOnce(armed);
     if (!result || result.accepted !== true) throw new Error("RestoreFw did not return a captured, explicitly accepted response.");
     const sent = await persistTransition(journal, armed, "POST_SENT", "captured acceptance response received", clock());
@@ -784,7 +799,7 @@ async function executeArmedRestoreOnce(journal, precheckTransaction, sendOnce, o
       ? await persistUnknownAfterArming(journal, current, "one-shot RestoreFw outcome is unknown; automatic retry is permanently locked", clock())
       : current;
     error.stage0Transaction = unknown;
-    error.destructivePostsAttempted = unknown&&unknown.destructivePostCount===1?1:0;
+    error.destructivePostsAttempted = (sendAllowanceConsumed || (unknown && unknown.destructivePostCount === 1)) ? 1 : 0;
     error.automaticRetries = 0;
     throw error;
   }finally{
@@ -923,6 +938,7 @@ module.exports = {
   SOFTWARE_RISK_PROFILE,
   SOFTWARE_ONLY_MIN_BATTERY_PERCENT,
   MAX_SOFTWARE_RISK_EVIDENCE_AGE_MS,
+  ATOMIC_RESTORE_LEASE_PROVEN,
   VERIFIED_RESTORE_TRANSPORTS,
   VERIFIED_RECOVERY_EVIDENCE,
   VERIFIED_SOFTWARE_RISK_EVIDENCE,

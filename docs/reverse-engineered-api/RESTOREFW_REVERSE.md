@@ -506,10 +506,44 @@ python3 tools/mf885_canary_repair.py \
 - a reviewed Scriptable `Request` construction that sends the exact hashed
   `Data` once, with redirects/retries disabled and no mutable adapter escape;
 - a credible single-instance/exclusive-lease rule for Scriptable;
-- two newly captured identical golden BackupFw files and reviewed hashed
-  configuration evidence (stock export or the explicit private-bundle fallback);
+- compilation/review of the already captured identical golden BackupFw files
+  and hashed private-settings fallback evidence into the exact unit-bound risk record;
 - explicit operator acceptance of the no-dump brick risk;
 - a GET-only boot-verification profile and timeout bounds fixed in source.
 
 Until those are closed, the correct operational decision is: **golden verified,
 Canary r3 rejected, RestoreFw not sent**.
+
+## 16. Deterministic zero-POST dry-run
+
+The Scriptable dashboard now exposes a distinct RestoreFw dry-run which has no
+sender export and never constructs a network POST. It reads the selected native
+`Data` once into a private byte snapshot and hashes the same snapshot twice. For
+the exact golden it builds a deterministic in-memory multipart fixture using
+field `file`, the exact golden filename, MIME `application/octet-stream`, and boundary
+`----mf885-stage0-dryrun-2b5880fc26805918bb574d07`. The fixture is then parsed
+back with the recovered native MIME marker and closing-boundary rules.
+
+The field and filename are conservative historical fixture assumptions, not
+native-confirmed gates: the recovered handler ignores both. The manifest marks
+their provenance `conservative-unverified`, and also hard-codes
+`qualification: false` and `flashAllowed: false` so this local fixture cannot be
+mistaken for a qualified live transport.
+
+Reproducible exact-golden result:
+
+```text
+payload bytes   8,323,644
+payload SHA-256 2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531
+body bytes      8,323,893
+body SHA-256    5a58dbb564229dc118d305c51dfbb4ecb925075574086aeb86bb05e1add39d22
+round trip      verified
+network POST    not constructed
+```
+
+After local verification the action may perform only a fresh APP login,
+`status1`, and the fixed `GetRestoreStatus`/`upgrade_firmware` GET reads. Its
+report hard-codes zero writes, zero firmware POSTs, no live-journal access and
+`flashAllowed=false`. The deterministic boundary is an audit fixture, not proof
+of Scriptable's automatic multipart boundary, transfer encoding, first-POST
+headers, session admission or redirect behavior.

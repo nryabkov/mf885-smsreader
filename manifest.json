@@ -1,5 +1,5 @@
 {
-  "version": "3.2.0-ui2",
+  "version": "3.2.1-ui2",
   "loaderProtocol": 2,
   "minimumLoaderProtocol": 2,
   "loader": "loader.js",
@@ -23,6 +23,7 @@
     "modules/telnet-control.js",
     "modules/localization.js",
     "modules/cellular-diagnostics.js",
-    "modules/firmware-stage0.js"
+    "modules/firmware-stage0.js",
+    "modules/firmware-restore-dry-run.js"
   ]
 }

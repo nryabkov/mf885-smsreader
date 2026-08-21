@@ -19,6 +19,7 @@ function responseFor(action){
   if(action==="copyDiagnosticLog")return {copied:true,events:0};
   if(action==="safePreflight")return {text:"read-only"};
   if(action==="appAuthProbe"||action==="firmwareTransportProbe")return {text:"GET only",readSideComplete:true};
+  if(action==="firmwareRestoreDryRun")return {text:"zero POST",dryRunReady:true,flashAllowed:false};
   if(action==="firmwareCanaryValidate")return {cancelled:true};
   if(action==="firmwareJournalStatus")return {transaction:null,text:"",clearable:false};
   if(action==="lastPowerReport")return {diagnostics:"saved report"};
@@ -40,7 +41,7 @@ function createPage(){
 function wait(){return new Promise(resolve=>setTimeout(resolve,8));}
 
 test("v2 enabled primary controls execute a local change or exactly one bridge command",{skip:!parseHTML},async()=>{
-  const ids=["settingsBtn","powerBtn","newSms","refreshNow","diagRefresh","pauseBtn","detectAll","safePreflight","appAuthProbe","firmwareTransportProbe","firmwareCanaryValidate","firmwareJournalBtn","lastPowerReportBtn"];
+  const ids=["settingsBtn","powerBtn","newSms","refreshNow","diagRefresh","pauseBtn","detectAll","safePreflight","appAuthProbe","firmwareTransportProbe","firmwareRestoreDryRun","firmwareCanaryValidate","firmwareJournalBtn","lastPowerReportBtn"];
   for(const id of ids){
     const page=createPage(),button=page.document.getElementById(id);
     assert.ok(button,`${id} exists`);assert.equal(button.disabled,false,`${id} is enabled in fixture`);assert.equal(typeof button.onclick,"function",`${id} has a handler`);

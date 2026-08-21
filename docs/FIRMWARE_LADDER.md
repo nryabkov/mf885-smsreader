@@ -52,8 +52,14 @@ exact golden, and both pass the complete structural inspector. Six live private
 configuration models separately preserve Wi-Fi and APN settings; the stock
 `config_save` path was also proven empty through fetch, raw HTTP and its own
 browser form, so that bundle requires review as the explicit fallback evidence
-type. The exclusive sender and production RestoreFw transport are not yet
-qualified. Therefore `0.0-logs-r1` is available for audit, not for upload.
+type. A new Scriptable zero-POST RestoreFw dry-run now double-hashes the exact
+golden, locally round-trips its deterministic multipart payload and performs
+only fresh APP identity/status GETs; it never constructs a POST Request or
+touches the live journal. The exact golden fixture round-trips 8,323,644 payload
+bytes inside an 8,323,893-byte body. The exclusive sender, actual Scriptable
+multipart wire behavior, atomic cross-process lease and production RestoreFw
+transport are still unqualified. Therefore `0.0-logs-r1` is available for
+audit, not for upload.
 
 The structural artifact is 8,323,644 bytes with SHA-256
 `65e5f5b507b9fcf49609a6fd1f010daa6f18111dc6a829d5655fa6bd30553517`.

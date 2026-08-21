@@ -16,6 +16,7 @@ let readOnlyPreflightModule = null;
 let engineerParameterModule = null;
 let cellularDiagnosticsModule = null;
 let firmwareStage0Module = null;
+let firmwareRestoreDryRunModule = null;
 let ACTIVE_POWER_PROFILE = { id: "unavailable", supported: false, commands: {}, reason: "Live device identity has not been read." };
 if (typeof require === "function") {
   cellularDiagnosticsModule = require("./modules/cellular-diagnostics.js");
@@ -23,6 +24,7 @@ if (typeof require === "function") {
   powerStatusModule = require("./modules/power-status.js");
   readOnlyPreflightModule = require("./modules/read-only-preflight.js");
   firmwareStage0Module = require("./modules/firmware-stage0.js");
+  firmwareRestoreDryRunModule = require("./modules/firmware-restore-dry-run.js");
 }
 
 const XML_REQUEST_PATH = "/xml_action.cgi";
@@ -85,12 +87,13 @@ async function run(options = {}) {
   engineerParameterModule = importModule(`${options.moduleDirectory}/modules/engineer-parameter.js`);
   cellularDiagnosticsModule = importModule(`${options.moduleDirectory}/modules/cellular-diagnostics.js`);
   firmwareStage0Module = importModule(`${options.moduleDirectory}/modules/firmware-stage0.js`);
+  firmwareRestoreDryRunModule = importModule(`${options.moduleDirectory}/modules/firmware-restore-dry-run.js`);
   ACTIVE_POWER_PROFILE = powerProfileForIdentity({});
   ACTIVE_XML_REQUEST_PATH = options.xmlRequestPath || XML_REQUEST_PATH;
   await main();
 }
 
-module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, runFirmwareTransportProbe, firmwareStatusRouteDefinitions, validateFirmwareCanary, runFirmwareRestore, firmwareRestoreAvailability, confirmFirmwareRestore, readFirmwareJournalStatus, acknowledgeFirmwareJournal, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, assertAppLoginResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, debugLogSnapshot, parseDetailedLogSummary, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
+module.exports = { run, dashboardFlow, executePowerCommand, runReadOnlyPreflight, runAppAuthProbe, runFirmwareTransportProbe, firmwareStatusRouteDefinitions, validateFirmwareCanary, runFirmwareRestoreDryRun, runFirmwareRestore, firmwareRestoreAvailability, confirmFirmwareRestore, readFirmwareJournalStatus, acknowledgeFirmwareJournal, readLastPowerReport, rememberLastPowerReport, softwareIdentity, powerProfileForIdentity, XML_REQUEST_PATH, XML_DIGEST_URI, APP_CLIENT, xmlRequestUrl, parseDigestChallenge, authorization, authenticatedRequest, digestProof, buildAppLogin, appAuthorization, appRequestHeaders, responseCookieHeader, classifyControlResponse, assertAppLoginResponse, createAppSession, appXmlGet, submitAppPowerCommand, buildHtml, clientScript, parseCounter, formatBytes, formatDuration, parseBattery, parseNetwork, parseTraffic, parseSmsPage, parseSendResult, smsCommandState, waitForSmsCommand, sendSms, deleteSms, loadAllSms, loadRemainingSms, mergeSmsPage, inspectSmsEdges, smsEdgeFingerprint, pageMessageFingerprint, unchangedSms, batteryInlineLabel, networkProtocol, signalBarsHtml, sanitizeDiagnostics, smsSegments, webPollPayload, loadPollingSnapshot, createInFlightGuard, capabilityCacheValid, requireSuccessfulActionResult, createWebViewDispatcher, createDashboardDispatcher, validateWebViewCommand, loadModel, configureDebug, debugLog, debugXml, debugLogSnapshot, parseDetailedLogSummary, redactDebugValue, redactDebugPayload, logXmlSummary, routerAccepted, firmwareUserVersion, hardwareRevision };
 
 function powerProfileForIdentity(identity) {
   return powerCompatibilityModule && typeof powerCompatibilityModule.resolve === "function"
@@ -1454,7 +1457,7 @@ function requireSuccessfulActionResult(result, fallbackMessage = "Router action 
   error.diagnostics = sanitizeDiagnostics(result.diagnostics || "");
   throw error;
 }
-const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","copyDiagnosticLog","shareSms","ussd","detectCapability","detectExperimental","diagnosticLogSnapshot","safePreflight","appAuthProbe","firmwareTransportProbe","firmwareCanaryValidate","firmwareFlash","firmwareJournalStatus","firmwareJournalAcknowledge","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
+const WEB_ACTIONS = new Set(["refresh","refreshSms","sendSms","deleteSms","copySms","copyDiagnosticLog","shareSms","ussd","detectCapability","detectExperimental","diagnosticLogSnapshot","safePreflight","appAuthProbe","firmwareTransportProbe","firmwareRestoreDryRun","firmwareCanaryValidate","firmwareFlash","firmwareJournalStatus","firmwareJournalAcknowledge","lastPowerReport","deviceAccess","cellularReconnect","cellularMode","resetTraffic","reboot","powerOff","resumePolling"]);
 const DANGEROUS_ACTIONS = new Set(["firmwareFlash","firmwareJournalAcknowledge","cellularReconnect","cellularMode","deviceAccess","resetTraffic","reboot","powerOff"]);
 function validateWebViewCommand(input) {
   if (!input || typeof input!=="object" || typeof input.id!=="string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(input.id)) throw new Error("Invalid command id");
@@ -1519,12 +1522,14 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
   const executePower=native.executePowerCommand||executePowerCommand;
   const validateCanary=native.validateFirmwareCanary||validateFirmwareCanary;
   const probeFirmwareTransport=native.runFirmwareTransportProbe||runFirmwareTransportProbe;
+  const dryRunFirmwareRestore=native.runFirmwareRestoreDryRun||runFirmwareRestoreDryRun;
   const restoreFirmware=native.runFirmwareRestore||runFirmwareRestore;
   const firmwareJournal=native.readFirmwareJournalStatus||readFirmwareJournalStatus;
   const acknowledgeJournal=native.acknowledgeFirmwareJournal||acknowledgeFirmwareJournal;
   const runPower=kind=>{if(powerGuard.active)throw new Error("A power request is already in progress; no second command was sent");return powerGuard.run(()=>executePower(auth,kind));};
   const runCanaryValidation=()=>{if(firmwareGuard.active)throw new Error("Firmware validation is already in progress");return firmwareGuard.run(()=>validateCanary(auth));};
   const runFirmwareProbe=()=>{if(firmwareGuard.active)throw new Error("Firmware diagnostics are already in progress");return firmwareGuard.run(()=>probeFirmwareTransport());};
+  const runFirmwareDryRun=async()=>{if(firmwareGuard.active||guards.smsGuard.active||guards.refreshGuard.active||powerGuard.active)throw new Error("Another router operation is still active; firmware dry-run was not started");FIRMWARE_EXCLUSIVE=true;try{return await firmwareGuard.run(()=>dryRunFirmwareRestore());}finally{FIRMWARE_EXCLUSIVE=false;}};
   const runFirmwareFlash=async()=>{if(firmwareGuard.active||guards.smsGuard.active||guards.refreshGuard.active||powerGuard.active)throw new Error("Another router operation is still active; firmware mode was not entered");FIRMWARE_EXCLUSIVE=true;try{const result=await firmwareGuard.run(()=>restoreFirmware(auth));if(result&&result.cancelled)FIRMWARE_EXCLUSIVE=false;return result;}catch(error){if(!error.stage0Transaction&&Number(error.destructivePostsAttempted)!==1)FIRMWARE_EXCLUSIVE=false;throw error;}};
   const runFirmwareJournalAcknowledge=async()=>{if(firmwareGuard.active)throw new Error("A firmware operation is already in progress");const result=await firmwareGuard.run(()=>acknowledgeJournal());if(result&&result.cleared)FIRMWARE_EXCLUSIVE=false;return result;};
   const refresh=()=>guards.refreshGuard.run(async()=>{const fresh=await loadPollingSnapshot(auth,model.sms);model.sms=fresh.sms;await applyWebView(web,"zmiApplyStatus",webPollPayload(fresh));return webPollPayload(fresh);});
@@ -1538,7 +1543,7 @@ function createDashboardDispatcher(auth, model, web, guards, native = {}) {
     await Promise.all(probes.map(async(probe,i)=>{const kind=kinds[i];let value;try{const found=await probe();value={...found,state:found&&found.supported===true?"available":"unavailable"};}catch(error){value={state:"error",supported:false,detail:cleanError(error)};}results[kind]=value;model[kind]=value;writeCapabilityCache(kind,value);completed++;await applyWebView(web,"zmiApplyCapability",{kind,value,progress:{completed,total:kinds.length}});}));
     return {results,completed,total:kinds.length,failed:kinds.filter(kind=>results[kind].state==="error")};
   };
-  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,diagnosticLogSnapshot:p=>debugLogSnapshot(p&&p.after,p&&p.limit),safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),firmwareTransportProbe:runFirmwareProbe,firmwareCanaryValidate:runCanaryValidation,firmwareFlash:runFirmwareFlash,firmwareJournalStatus:()=>firmwareJournal(),firmwareJournalAcknowledge:runFirmwareJournalAcknowledge,
+  const handlers={refresh,refreshSms,resumePolling:async()=>({resumed:true}),detectCapability:detect,detectExperimental,diagnosticLogSnapshot:p=>debugLogSnapshot(p&&p.after,p&&p.limit),safePreflight:()=>runReadOnlyPreflight(auth),appAuthProbe:()=>runAppAuthProbe(),firmwareTransportProbe:runFirmwareProbe,firmwareRestoreDryRun:runFirmwareDryRun,firmwareCanaryValidate:runCanaryValidation,firmwareFlash:runFirmwareFlash,firmwareJournalStatus:()=>firmwareJournal(),firmwareJournalAcknowledge:runFirmwareJournalAcknowledge,
     lastPowerReport:async()=>{const diagnostics=readLastPowerReport();if(!diagnostics)throw new Error("No power request report has been recorded yet");return {diagnostics};},
     copySms:async p=>{pasteboard.copyString(p.text);return {copied:true};},
     copyDiagnosticLog:async()=>{if(!pasteboard||typeof pasteboard.copyString!=="function")throw new Error("Clipboard is unavailable");const snapshot=debugLogSnapshot(0,400),text=formatDiagnosticReport(snapshot);pasteboard.copyString(text);return {copied:true,events:snapshot.events.length,bytes:text.length};},
@@ -1800,8 +1805,9 @@ function firmwareRestoreAvailability(stage0 = firmwareStage0Module, adapter) {
   if (!stage0) return { available:false, allowlistedContracts:0, reason:"SafeFlash Stage 0 module is unavailable." };
   const base = typeof stage0.restoreAvailability === "function"
     ? stage0.restoreAvailability()
-    : { available:Array.isArray(stage0.VERIFIED_RESTORE_TRANSPORTS)&&stage0.VERIFIED_RESTORE_TRANSPORTS.length>0, allowlistedContracts:Array.isArray(stage0.VERIFIED_RESTORE_TRANSPORTS)?stage0.VERIFIED_RESTORE_TRANSPORTS.length:0, reason:"RestoreFw transport is not compiled into this build." };
+    : { available:false, atomicCrossProcessLeaseProven:false, allowlistedContracts:Array.isArray(stage0.VERIFIED_RESTORE_TRANSPORTS)?stage0.VERIFIED_RESTORE_TRANSPORTS.length:0, reason:"SafeFlash Stage 0 does not expose the complete atomic-lease availability gate." };
   if (!base.available) return { ...base, installerCompiled:true };
+  if(stage0.ATOMIC_RESTORE_LEASE_PROVEN!==true||base.atomicCrossProcessLeaseProven!==true)return {available:false,installerCompiled:true,allowlistedContracts:base.allowlistedContracts,atomicCrossProcessLeaseProven:false,reason:"RestoreFw is locked because an atomic, non-stealable cross-process lease is not proven in both Stage 0 and its availability report."};
   const transport = adapter || null;
   const required = ["prepare", "sendOnce", "readStatus", "classifyStatus", "verifyBoot"];
   if (!transport || required.some(name => typeof transport[name] !== "function")) {
@@ -1890,6 +1896,91 @@ async function confirmFirmwareRestore(image, device, power, transport, risk, opt
   alert.addCancelAction("Cancel");
   const choice=await alert.presentAlert();
   return choice===0&&String(alert.textFieldValue(0)||"").trim()===phrase;
+}
+
+async function runFirmwareRestoreDryRun(options = {}) {
+  const stage0=options.stage0||firmwareStage0Module;
+  const dryRun=options.dryRunModule||firmwareRestoreDryRunModule;
+  if(!stage0||typeof stage0.createImageEvidence!=="function"||typeof stage0.validateImageEvidence!=="function"||typeof stage0.validateDevice!=="function"||typeof stage0.validatePower!=="function")throw new Error("SafeFlash Stage 0 dry-run prerequisites are unavailable.");
+  if(!dryRun||typeof dryRun.verifiedMultipartManifest!=="function"||typeof dryRun.validateGetOnlyTrace!=="function")throw new Error("RestoreFw dry-run core is unavailable.");
+  const clock=typeof options.now==="function"?options.now:Date.now;
+  const picker=options.documentPicker||(typeof DocumentPicker!=="undefined"?DocumentPicker:null);
+  const fileManager=options.fileManager||(typeof FileManager!=="undefined"?FileManager.local():null);
+  if(!picker||typeof picker.openFile!=="function"||!fileManager||typeof fileManager.read!=="function")throw new Error("Scriptable file selection is unavailable.");
+  const trace=[];
+  let phase="file-selection",selectedName="",image=null,manifest=null,identity=null,power=null,session=null,sessionComplete=false,observations=[];
+  const safety=()=>{
+    const checked=dryRun.validateGetOnlyTrace(trace);
+    const routerGetCountSemantics=phase==="app-session"&&!sessionComplete?"conservative-upper-bound":"attempted";
+    return {methodsUsed:trace.length?["GET"]:[],routerGetsAttempted:checked.routerGetsAttempted,routerGetCountSemantics,routerWritesAttempted:0,writesAttempted:0,firmwarePostsAttempted:0,multipartNetworkRequestsConstructed:0,automaticRetries:0,redirectsAllowed:false,liveJournalTouched:false,flashAllowed:false,traceValid:checked.ok,traceErrors:checked.errors};
+  };
+  const diagnostics=(error=null)=>formatDiagnosticReport({schema:dryRun.DRY_RUN_SCHEMA||1,mode:"firmware-restore-dry-run",generatedAt:clock(),phase,selectedFile:selectedName&&image?{name:selectedName,size:image.size,sha256:image.sha256}:selectedName?{name:selectedName}:null,image:image?{id:image.id,doubleHashVerified:!!manifest}:null,device:identity?{model:identity.model,hardware:identity.hardware,firmware:identity.firmware,unitFingerprintPrefix:String(identity.unitFingerprintSha256||"").slice(0,12)}:null,power:power?{batteryPercent:power.batteryPercent,chargerConnected:power.chargerConnected,minimumBatteryPercent:stage0.SOFTWARE_ONLY_MIN_BATTERY_PERCENT}:null,wireManifest:manifest,statusObservations:observations,productionAvailability:typeof stage0.restoreAvailability==="function"?stage0.restoreAvailability():{available:false},liveBlockers:Array.isArray(dryRun.LIVE_BLOCKERS)?dryRun.LIVE_BLOCKERS.slice():[],safety:safety(),error:error?cleanError(error):null});
+  try{
+    let selected;
+    try{selected=await picker.openFile();}
+    catch(error){if(error&&(error.cancelled===true||error.canceled===true||/cancel(?:led|ed)/i.test(String(error.message||""))))return {cancelled:true,ok:false,flashAllowed:false};throw new Error("Firmware file selection failed before any router request.");}
+    const path=Array.isArray(selected)?selected[0]:selected;
+    if(!path)return {cancelled:true,ok:false,flashAllowed:false};
+    selectedName=selectedFileName(path);
+    let data;
+    try{
+      if(typeof fileManager.downloadFileFromiCloud==="function")await fileManager.downloadFileFromiCloud(path);
+      data=fileManager.read(path);
+    }catch(_){throw new Error("The selected firmware file could not be downloaded or read. No router request was made.");}
+    if(!data||typeof data.getBytes!=="function")throw new Error("RestoreFw dry-run requires immutable Scriptable Data from the native file reader.");
+    let payloadBytes;
+    try{payloadBytes=new Uint8Array(data.getBytes());}
+    catch(_){throw new Error("The selected firmware bytes could not be sealed in memory. No router request was made.");}
+    phase="image-validation";
+    const firstEvidence=stage0.createImageEvidence(payloadBytes,clock());
+    const firstValidation=stage0.validateImageEvidence(firstEvidence,clock());
+    if(!firstValidation.ok)throw new Error(firstValidation.errors.join(" "));
+    image=firstValidation.image;
+    const secondEvidence=stage0.createImageEvidence(payloadBytes,clock());
+    if(secondEvidence.sha256!==firstEvidence.sha256||secondEvidence.size!==firstEvidence.size)throw new Error("Firmware bytes changed between the two dry-run hashes. No router request was made.");
+    manifest=dryRun.verifiedMultipartManifest({data:payloadBytes,image,sha256Hex:stage0.sha256Hex});
+    if(!manifest||manifest.networkRequestConstructed!==false||manifest.payloadRoundTripVerified!==true)throw new Error("The local RestoreFw wire manifest did not verify.");
+
+    phase="app-session";
+    trace.push({method:"GET",query:"login-challenge",bodyPresent:false},{method:"GET",query:"Action=Digest&client=APP",bodyPresent:false});
+    session=await (options.createAppSession||createAppSession)();
+    sessionComplete=true;
+    phase="identity";
+    trace.push({method:"GET",query:"method=get&module=duster&file=status1",bodyPresent:false});
+    const identityResponse=await (options.getAppStatus||((value)=>appXmlGet(value,"status1",5)))(session);
+    const status=identityResponse&&typeof identityResponse==="object"&&Object.prototype.hasOwnProperty.call(identityResponse,"text")?identityResponse.text:identityResponse;
+    const observedAt=clock();
+    identity={model:firstText(status,["model","model_name","product_name"]),hardware:hardwareRevision(status),firmware:firmwareVersion(status),unitFingerprintSha256:firmwareUnitFingerprint(status,stage0),source:"status1-live",observedAt};
+    const deviceCheck=stage0.validateDevice(identity,clock());
+    const battery=parseBattery(status,identity);
+    power={batteryPercent:battery.percent,chargerConnected:battery.chargerConnected===true,source:"status1-live",observedAt};
+    const powerCheck=stage0.validatePower(power,clock(),stage0.SOFTWARE_ONLY_MIN_BATTERY_PERCENT);
+    if(!deviceCheck.ok||!powerCheck.ok)throw new Error([...deviceCheck.errors,...powerCheck.errors].join(" "));
+
+    phase="get-only-status";
+    const routes=options.routes||firmwareStatusRouteDefinitions();
+    if(!Array.isArray(routes)||!routes.length||routes.some(route=>!route||route.method!=="GET"))throw new Error("RestoreFw dry-run refused a non-GET status route.");
+    const readRoute=options.readRoute||((value,route)=>readFirmwareStatusRoute(value,route,options));
+    for(const route of routes){
+      trace.push({method:"GET",query:route.query,bodyPresent:false});
+      try{
+        const response=await readRoute(session,route);
+        const text=response&&typeof response==="object"&&Object.prototype.hasOwnProperty.call(response,"text")?response.text:String(response||"");
+        const statusCode=response&&response.statusCode!==undefined?Number(response.statusCode):response&&response.response&&Number(response.response.statusCode);
+        const redirectCount=Number(response&&response.redirectCount)||0;
+        const values=firmwareStatusValues(route.schema,text);
+        const process=route.schema==="restore"?dryRun.processStatus(text,firstText):null;
+        observations.push({id:route.id,method:"GET",query:route.query,ok:Number.isFinite(statusCode)?statusCode>=200&&statusCode<=299&&!unauthorized(text)&&redirectCount===0:!unauthorized(text)&&redirectCount===0,statusCode:Number.isFinite(statusCode)?statusCode:null,redirectCount,values,processState:process?dryRun.classifyProcessStatus(process):null});
+      }catch(error){observations.push({id:route.id,method:"GET",query:route.query,ok:false,statusCode:null,redirectCount:0,values:{},processState:null,error:cleanError(error)});}
+    }
+    const traceCheck=dryRun.validateGetOnlyTrace(trace);
+    const restoreReads=observations.filter(item=>/^restore-status-/.test(item.id));
+    if(!traceCheck.ok||!observations.length||observations.some(item=>!item.ok)||!restoreReads.length||restoreReads.some(item=>item.processState!=="IDLE"))throw new Error("The GET-only restore status baseline is incomplete or not idle; live flashing remains locked.");
+    phase="complete";
+    const report={schema:dryRun.DRY_RUN_SCHEMA||1,mode:"firmware-restore-dry-run",generatedAt:clock(),software:softwareIdentity(options.software||{}),selectedFile:{name:selectedName,size:image.size,sha256:image.sha256},image:{id:image.id,doubleHashVerified:true},device:{model:identity.model,hardware:identity.hardware,firmware:identity.firmware,unitFingerprintPrefix:identity.unitFingerprintSha256.slice(0,12)},power:{batteryPercent:power.batteryPercent,chargerConnected:power.chargerConnected,minimumBatteryPercent:stage0.SOFTWARE_ONLY_MIN_BATTERY_PERCENT},session:{authFlow:"zmi-apk-1.2.42-persisted-login-header",authorizationPersisted:session&&session.appLogin&&session.appLogin.authHeaderPersisted===true,sessionCookieReceived:session&&session.appLogin&&session.appLogin.sessionCookieReceived===true},wireManifest:manifest,statusObservations:observations,productionAvailability:stage0.restoreAvailability(),liveBlockers:dryRun.LIVE_BLOCKERS.slice(),dryRunReady:true,safety:safety()};
+    const text=formatDiagnosticReport(report);
+    return {ok:true,dryRunReady:true,flashAllowed:false,report,text,diagnostics:text};
+  }catch(error){error.diagnostics=diagnostics(error);throw error;}
 }
 
 async function runFirmwareRestore(auth, options = {}) {
