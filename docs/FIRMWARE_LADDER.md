@@ -70,9 +70,13 @@ preserves v1 byte-for-byte, uses a separate create-once fence, and replaces the
 failed Web Digest hypothesis with a separately proven fresh APP `nc=4,
 client=APP` session. Its payload is still the exact golden image; every complete
 HTTP response is privately retained and every ambiguous result locks the new
-slot. There is no v3. Until retry-v2 reaches full boot verification, the
-production Scriptable transport remains locked and `0.0-logs-r1` is available
-for audit only, not upload.
+slot. Retry-v2 was consumed on 2026-08-21 and returned HTTP `500` with the exact
+56-byte text `Error 500: Internal Server Error\nNot support the request` (body
+SHA-256 `b8af09df9c01dbf183768d5cdf841abfcbef076fe13f70b9df636dc3e3fb72f0`).
+RestoreStatus remained `0/0/No Error!`, the exact stock firmware stayed online,
+and no restore/reboot boundary was proven. There is no v3. Both RestoreFw
+allowances are consumed, the production Scriptable transport remains locked,
+and `0.0-logs-r1` is available for audit only, not upload.
 
 The structural artifact is 8,323,644 bytes with SHA-256
 `65e5f5b507b9fcf49609a6fd1f010daa6f18111dc6a829d5655fa6bd30553517`.

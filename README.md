@@ -167,6 +167,22 @@ The first allowed live qualification attempt was consumed on 2026-08-21. The per
 
 An explicitly authorized, separate retry-v2 is not a replay of that slot. It is the only additional allowlisted qualification attempt and is bound to the immutable first gate, terminal record and GitHub fence. It uses a new permanent directory and deterministic v2 tag, proves `client=APP` POST Digest `nc=4` with a harmless SMS-history read in a disposable session, then reserves `nc=4` from a second fresh APP session for one golden `RestoreFw` POST. `retry-readiness` is local/GitHub-only; `retry-preflight` performs the live proof without a firmware POST; `execute-golden-retry-v2` requires `--confirm=RETRY-APP-NC4-GOLDEN-2b5880fc`. Every complete router reply, including a rejection, is stored byte-for-byte only in ignored mode-`0600` private evidence with a sanitized hash/length/header-presence record. Any response mismatch, timeout, crash, partial reply or monitor ambiguity permanently locks v2; there is no v3 or third firmware POST.
 
+Retry-v2 was consumed on 2026-08-21 after every live gate passed: exact unit,
+100% battery with external power, idle `GetRestoreStatus`, byte-identical golden
+payload/body, two distinct APP sessions and the reserved `nc=4, client=APP`
+Digest proof. The router returned HTTP `500`, content type `text/plain`, no
+`WWW-Authenticate`, `Location`, `Set-Cookie`, or `Server` header, and the exact
+56-byte body `Error 500: Internal Server Error\nNot support the request`. Its
+body SHA-256 is
+`b8af09df9c01dbf183768d5cdf841abfcbef076fe13f70b9df636dc3e3fb72f0`.
+The response was durably captured before the terminal journal transition. A
+two-minute observation then found the same stock identity and firmware online,
+with `GetRestoreStatus` fixed at `0/0/No Error!`; two isolated read failures did
+not form an independently confirmed reboot boundary. A subsequent root WebUI
+GET returned HTTP 200. The restore worker therefore was not observed starting,
+golden-to-golden is not qualified, retry-v2 is terminal `UNKNOWN`, and no third
+firmware POST is permitted.
+
 ### Power endpoint diagnostics
 
 Power-off and restart commands vary across MF855/MF885-family firmware builds. The dashboard enables them only after a live `status1` response exactly matches `LV01`/`MF885` plus `2.5.94_release_MF855_NZ_CP_2.129.003`; a reported hardware revision must be Ver.D, and a missing revision is accepted only for the `LV01` product label. The backend repeats that identity read immediately before submitting exactly one APK-confirmed command-on-read request: `GET file=reset` or `GET file=poweroff`, with no body and no automatic replay—not even after an authentication failure. A connection loss produces a `delivery-unknown` outcome and requires human review before any later attempt.

@@ -137,6 +137,28 @@ an immediate reboot boundary even if status `1` was too brief to sample, but
 full exact identity, WebUI and SMS-read verification remains mandatory. Every
 ambiguous or rejected result consumes v2 permanently. There is no third attempt.
 
+Retry-v2 was consumed on 2026-08-21. The exact unit/power/idle/image/session
+preflight passed and one APP `nc=4, client=APP` golden RestoreFw POST was
+dispatched. The complete reply was HTTP `500`, `Content-Type: text/plain`, with
+no authentication challenge, redirect, cookie, or server header and this exact
+56-byte body:
+
+```text
+Error 500: Internal Server Error
+Not support the request
+```
+
+The body SHA-256 is
+`b8af09df9c01dbf183768d5cdf841abfcbef076fe13f70b9df636dc3e3fb72f0`.
+The durable private response record was published before revision 5 entered
+terminal `UNKNOWN`. During 120 subsequent polls the exact stock router was
+online with RestoreStatus `0/0/No Error!` except for two isolated read errors;
+no active, success, failure, or independently confirmed reboot boundary was
+observed. A later root WebUI GET returned HTTP 200. This is evidence of an
+early unsupported-request rejection, not evidence that checksum verification
+or flash writing ran. Both reviewed RestoreFw allowances are consumed, golden
+qualification failed, and no v3/third POST is permitted.
+
 Image metadata is also insufficient. Stage 0 computes SHA-256 itself from the exact Scriptable `Data`/byte array selected for upload and seals that evidence for the current process; caller-built metadata is rejected. The installer retains immutable native `Data` privately and completes the second hash before authentication/arming, so no fallible local hash occurs after `POST_ARMED`. Device identity, unit fingerprint, hardware revision, firmware, battery level, and charger state come from the final live status observation of the prepared session immediately before arming.
 
 The Scriptable dashboard exposes **Audit WEBUI Canary Logs r1 (no flash)** as a
