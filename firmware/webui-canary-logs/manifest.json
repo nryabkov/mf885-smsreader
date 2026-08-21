@@ -1,0 +1,30 @@
+{
+  "schema": "mf885-webi-canary-source/v1",
+  "id": "0.0-logs-r1",
+  "artifact": {
+    "file": "MF885_Community_0.0-logs-r1.bin",
+    "size": 8323644,
+    "sha256": "65e5f5b507b9fcf49609a6fd1f010daa6f18111dc6a829d5655fa6bd30553517"
+  },
+  "base": {
+    "file": "MF885_firmware_backup_20260808_095130.bin",
+    "sha256": "2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531"
+  },
+  "marker": "MF885 Community Canary Logs 0.0-logs-r1",
+  "script": {
+    "path": "www\\js\\canary_logs.js",
+    "size": 11732,
+    "sha256": "dd35f7b2e2cfd7eb3d490ce6495b931295276d817a4b68e5f8c1a1d42de87da1"
+  },
+  "logical_changes": [
+    "WEBI:www/index.html (same-size 41-byte loader)",
+    "WEBI:www/js/canary_logs.js (new record)"
+  ],
+  "raw_diff_bytes": 12456,
+  "webi_padding_bytes_remaining": 1688,
+  "structurally_verified": true,
+  "reproducible": true,
+  "live_tested": false,
+  "flash_qualified": false,
+  "restore_allowlisted": false
+}

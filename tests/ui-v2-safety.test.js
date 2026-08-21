@@ -83,12 +83,12 @@ test("software build and GET-only APP auth probe are visible and copyable", () =
   assert.match(html, /Copy diagnostic report/);
 });
 
-test("WEBUI canary remains validate-only while the Stage 0 restore control is visibly locked", () => {
+test("WEBUI Canary Logs remains audit-only while Stage 0 restore is visibly locked", () => {
   const html = ui.buildHtml(model({ available:false, reason:"Locked", actions:{} }));
   assert.match(html, /id="firmwareTransportProbe">Capture firmware status contract \(GET only\)/);
   assert.match(html, /command\('firmwareTransportProbe',\{\}\)/);
   assert.match(html, /Restore upload remains locked/);
-  assert.match(html, /id="firmwareCanaryValidate">Verify WEBUI canary file \(no flash\)/);
+  assert.match(html, /id="firmwareCanaryValidate">Audit WEBUI Canary Logs r1 \(no flash\)/);
   assert.match(html, /command\('firmwareCanaryValidate',\{\}\)/);
   assert.match(html, /Flash remains locked/);
   assert.match(html, /id="firmwareFlash" disabled aria-disabled="true"[^>]*>Firmware restore locked · recovery \+ contract/);
@@ -193,4 +193,20 @@ test("diagnostic refresh updates current overview values and the Logs tab", () =
   }
   assert.match(html,/Object\.entries\(state\.data\.errors\|\|\{\}\)/);
   assert.match(html,/Router status request failed/);
+});
+
+test("Logs tab exposes full technical router events and opt-in live Scriptable streaming", () => {
+  const html=fixes.enhanceHtml(ui.buildHtml(model({available:false,reason:"Locked",actions:{}})),model({}));
+  for(const id of ["routerEventLog","liveDiagnosticLog","liveLogStatus","liveLogPause","liveLogRefresh","liveLogClear","liveLogCopy"]){
+    assert.match(html,new RegExp(`id="${id}"`));
+  }
+  assert.match(html,/window\.zmiSetLogsVisible\(name==='logs'\)/);
+  assert.match(html,/if\(state\.logPending\|\|state\.logPaused\|\|!state\.logsVisible\)return/);
+  assert.match(html,/command\('diagnosticLogSnapshot',\{after:state\.logCursor,limit:200\}\)/);
+  assert.match(html,/setInterval\(\(\)=>\{if\(state\.logsVisible&&!state\.logPaused\)refreshLiveLog\(\)\},1500\)/);
+  assert.match(html,/command\('copyDiagnosticLog',\{\}\)/);
+  assert.match(html,/state\.liveEvents=\[\]/);
+  assert.match(html,/renderRouterLog\(d\.routerLog\|\|\{\}\)/);
+  assert.match(html,/Full PDP and Wi-Fi session details/);
+  assert.match(html,/SMS hidden/);
 });

@@ -82,6 +82,7 @@ function enhancementScript() {
         const heading=$('h3',stageCard);
         if(heading) heading.textContent=name==='sim'?'SIM state':'Connection state';
       }
+      if(window.zmiSetLogsVisible)window.zmiSetLogsVisible(name==='logs');
     }
 
     function setMessageExpanded(row,expanded){
@@ -212,6 +213,16 @@ function enhanceHtml(html, model) {
     .diag-hidden,.diag-stage-hidden{display:none!important}
     .diag-log-error{color:var(--red)!important;max-width:62%;overflow-wrap:anywhere;text-align:right}
     .diag-empty{color:var(--muted);padding:8px 0;line-height:1.45}
+    .log-section{padding-top:14px;margin-top:14px;border-top:1px solid var(--line)}
+    .log-section:first-of-type{padding-top:0;margin-top:0;border-top:0}
+    .log-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
+    .log-section-head h3{margin:0}.log-section-head small,.live-log-summary{color:var(--muted);line-height:1.45}
+    .live-log-toolbar{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}
+    .live-log-toolbar button{width:auto;min-width:74px;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:#122230;color:var(--text)}
+    .live-log-list{max-height:390px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--line);border-radius:11px;background:#08131d}
+    .live-log-row{display:grid;grid-template-columns:minmax(92px,auto) minmax(120px,.7fr) minmax(0,1.5fr);gap:10px;padding:9px 11px;border-top:1px solid var(--line);align-items:start}
+    .live-log-row:first-child{border-top:0}.live-log-row time{color:var(--muted);font-variant-numeric:tabular-nums}.live-log-row b,.live-log-row small{overflow-wrap:anywhere}.live-log-row small{color:#b8cad5;white-space:pre-wrap}
+    @media(max-width:620px){.live-log-row{grid-template-columns:1fr}.live-log-row time{font-size:12px}.live-log-list{max-height:52vh}}
     .sms-row{cursor:pointer}
     .row-menu{transition:transform .2s ease}
     .sms-expanded .row-menu{transform:rotate(90deg)}
@@ -249,7 +260,21 @@ function enhanceHtml(html, model) {
   output = output.replace('<article class="card diag-card"><h3>APN details', '<article class="card diag-card" data-diag-section="connection network"><h3>APN details');
   output = output.replace('<article class="card diag-card"><h3>Ping / reachability</h3>', '<article class="card diag-card" data-diag-section="connection logs"><h3>Ping / reachability</h3>');
 
-  const logCard = `<article class="card diag-card diag-hidden" data-diag-section="logs"><h3>Diagnostic log <button class="help-button" type="button" data-help-key="diagnosticLog" aria-label="Explain Diagnostic log">?</button></h3><div id="diagnosticLog">${diagnosticsLogHtml(model)}</div></article>`;
+  const logCard = `<article class="card diag-card diag-hidden" data-diag-section="logs">
+    <div class="log-section">
+      <div class="log-section-head"><h3>Parser and endpoint log <button class="help-button" type="button" data-help-key="diagnosticLog" aria-label="Explain Diagnostic log">?</button></h3></div>
+      <div id="diagnosticLog">${diagnosticsLogHtml(model)}</div>
+    </div>
+    <div class="log-section">
+      <div class="log-section-head"><div><h3>Router event log</h3><small>Full PDP and Wi-Fi session details reported by detailed_log.</small></div></div>
+      <div id="routerEventLog" class="live-log-list"><div class="diag-empty">Router events have not loaded yet.</div></div>
+    </div>
+    <div class="log-section">
+      <div class="log-section-head"><div><h3>Live Scriptable log</h3><small id="liveLogStatus">0 events · live</small></div></div>
+      <div class="live-log-toolbar" aria-label="Live log controls"><button type="button" id="liveLogPause">Pause</button><button type="button" id="liveLogRefresh">Refresh</button><button type="button" id="liveLogClear">Clear view</button><button type="button" id="liveLogCopy">Copy · SMS hidden</button></div>
+      <div id="liveDiagnosticLog" class="live-log-list" aria-live="polite"><div class="diag-empty">No request events have been recorded yet.</div></div>
+    </div>
+  </article>`;
   output = output.replace('</section>\n  </div><footer class="footerbar">', `${logCard}</section>\n  </div><footer class="footerbar">`);
 
   // A replacement callback keeps the script's `$$` selector helper intact;

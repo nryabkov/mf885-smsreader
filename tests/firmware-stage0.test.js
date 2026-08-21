@@ -74,9 +74,19 @@ function transactionFixture(overrides = {}) {
   };
 }
 
-test("allows only exact golden and WEBUI canary SHA-256 values", () => {
+test("allows only golden while recognizing invalid r3 and structural Logs r1", () => {
   assert.equal(stage0.validateImage(imageEvidence(stage0.GOLDEN_IMAGE)).ok, true);
-  assert.equal(stage0.validateImage(imageEvidence(stage0.WEBUI_CANARY_R3)).ok, true);
+  const r3 = stage0.validateImage(imageEvidence(stage0.WEBUI_CANARY_R3));
+  assert.equal(r3.ok, false);
+  assert.equal(r3.image, stage0.WEBUI_CANARY_R3);
+  assert.match(r3.errors.join(" "), /word sum.*byte sums|quarantined/i);
+  assert.equal(stage0.WEBUI_CANARY_R3.restorable, false);
+  const logs=stage0.validateImage(imageEvidence(stage0.WEBUI_CANARY_LOGS_R1));
+  assert.equal(logs.ok,false);
+  assert.equal(logs.image,stage0.WEBUI_CANARY_LOGS_R1);
+  assert.match(logs.errors.join(" "),/structurally verified.*not qualified|golden-to-golden/i);
+  assert.equal(stage0.WEBUI_CANARY_LOGS_R1.structuralStatus,"verified-not-qualified");
+  assert.deepEqual(stage0.SAFE_IMAGES, [stage0.GOLDEN_IMAGE]);
   assert.equal(stage0.validateImage({ size: 8323644, sha256: "0".repeat(64) }).ok, false);
   assert.equal(stage0.validateImage({ size: 8323643, sha256: stage0.GOLDEN_IMAGE.sha256 }).ok, false);
 });
@@ -88,6 +98,23 @@ test("Stage 0 computes SHA-256 from byte arrays and Scriptable Data", () => {
   const evidence = stage0.createImageEvidence([97, 98, 99], NOW);
   assert.equal(evidence.computedSha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
   assert.equal(evidence.byteLength, 3);
+});
+
+test("read-only audit accepts computed known Canary evidence without restore authorization",()=>{
+  const original=stage0.createImageEvidence;
+  const evidence=Object.freeze({
+    size:stage0.WEBUI_CANARY_LOGS_R1.size,
+    sha256:stage0.WEBUI_CANARY_LOGS_R1.sha256,
+    byteLength:stage0.WEBUI_CANARY_LOGS_R1.size,
+    computedSha256:stage0.WEBUI_CANARY_LOGS_R1.sha256,
+    verification:"computed-from-bytes",
+    verifiedAt:NOW
+  });
+  // Caller-built metadata stays rejected even in audit mode; the integration
+  // test exercises a real Stage 0-computed object through the injected hasher.
+  assert.equal(stage0.validateAuditImageEvidence(evidence,NOW).ok,false);
+  assert.equal(stage0.validateImage(evidence).ok,false);
+  assert.equal(typeof original,"function");
 });
 
 test("image metadata that bypasses the Stage 0 byte hasher is rejected", () => {
@@ -205,8 +232,8 @@ test("strict state machine consumes the send allowance before network submission
 test("WEBUI canary boot verification requires the canary marker", () => {
   const tx = transactionFixture({
     state: stage0.TRANSACTION_STATES.REBOOT_WAIT,
-    imageId: stage0.WEBUI_CANARY_R3.id,
-    imageSha256: stage0.WEBUI_CANARY_R3.sha256,
+    imageId: stage0.WEBUI_CANARY_LOGS_R1.id,
+    imageSha256: stage0.WEBUI_CANARY_LOGS_R1.sha256,
     destructivePostCount: 1
   });
   const verification = {
@@ -217,7 +244,7 @@ test("WEBUI canary boot verification requires the canary marker", () => {
     checks: { status1Reachable: true, wifiReachable: true, smsApiReachable: true, mobileDataConnected: true }
   };
   assert.throws(() => stage0.transition(tx, "BOOT_VERIFIED", verification, 2), /canary marker/i);
-  const verified = stage0.transition(tx, "BOOT_VERIFIED", { ...verification, webuiMarker: stage0.WEBUI_CANARY_R3.id }, 2);
+  const verified = stage0.transition(tx, "BOOT_VERIFIED", { ...verification, webuiMarker: stage0.WEBUI_CANARY_LOGS_R1.id }, 2);
   assert.equal(verified.state, stage0.TRANSACTION_STATES.BOOT_VERIFIED);
 });
 

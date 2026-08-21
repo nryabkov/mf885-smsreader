@@ -17,6 +17,9 @@ It is **not vendor documentation**. Firmware revisions differ, and the presence 
 - [Authentication](AUTHENTICATION.md) — the router's unusual HTTP Digest flow.
 - [Firmware compatibility](FIRMWARE_COMPATIBILITY.md) — what is known for MF855/MF885 and firmware 2.5.94/2.5.96.
 - [MF885 2.5.94 static analysis](MF885_2.5.94_STATIC_ANALYSIS.md) — exact golden-image fingerprints, native Duster findings, firmware comparison, and the evidence status of reboot/shutdown commands.
+- [ZIMI / RestoreFw reverse engineering](RESTOREFW_REVERSE.md) — device-bound AES header, exact partition/checksum/archive formats, native multipart and restore state machine, the quarantined Canary r3 defect, and the bounded-risk no-dump route.
+- [SafeFlash Stage 0](FIRMWARE_FLASH_SAFETY.md) — destructive gates, one-shot journal semantics, and current production lock state.
+- [Firmware ladder](../FIRMWARE_LADDER.md) — the one-variable sequence from observer-only WEBI logging through SMS, USSD, TTL and finally IMEI, with a golden rollback at every gate.
 - [Power clients: stock WebUI and ZMI Android app](POWER_CLIENTS.md) — recovered reboot, power-off and factory-reset call chains, exact GET endpoints, APK provenance and the transport-aware runtime implementation.
 - [Read-only preflight](READ_ONLY_PREFLIGHT.md) — the fixed seven-endpoint GET allowlist, redacted report schema, exclusions, and first live-run procedure.
 - [Research notes](RESEARCH_NOTES.md) — debug mode, Telnet, firmware backup, CWMP/TR-069 and other reverse-engineering findings.
