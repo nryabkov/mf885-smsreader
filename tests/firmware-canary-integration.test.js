@@ -120,6 +120,174 @@ test("Stage 0 restore is compiled but makes zero calls while the transport allow
   assert.equal(sends,0);
 });
 
+test("a forged available report cannot bypass the atomic lease source gate",()=>{
+  const fakeStage0={...stage0,restoreAvailability:()=>({available:true,allowlistedContracts:1,atomicCrossProcessLeaseProven:true,reason:"forged"})};
+  const adapter={prepare(){},sendOnce(){},readStatus(){},classifyStatus(){},verifyBoot(){}};
+  const availability=app.firmwareRestoreAvailability(fakeStage0,adapter);
+  assert.equal(availability.available,false);
+  assert.equal(availability.atomicCrossProcessLeaseProven,false);
+  assert.match(availability.reason,/atomic.*lease/i);
+});
+
+test("RestoreFw dry-run hashes twice, round-trips multipart locally, and uses GET only",async()=>{
+  let getBytesCalls=0;
+  const bytes=[1,2,3,4],sha=stage0.sha256Hex(bytes),data={getBytes:()=>{getBytesCalls++;return bytes.slice();}};
+  const image={id:stage0.GOLDEN_IMAGE.id,file:stage0.GOLDEN_IMAGE.file,size:bytes.length,sha256:sha};
+  let evidenceCalls=0,sessionCalls=0,statusCalls=0,routeCalls=0,journalCalls=0;
+  const fakeStage0={
+    ...stage0,
+    createImageEvidence(value){assert.ok(value instanceof Uint8Array);assert.deepEqual(Array.from(value),bytes);evidenceCalls++;return Object.freeze({size:bytes.length,sha256:sha,byteLength:bytes.length,computedSha256:sha,verification:"computed-from-bytes",verifiedAt:NOW});},
+    validateImageEvidence(){return {ok:true,image,errors:[]};},
+    createKeychainJournal(){journalCalls++;throw new Error("live journal must not be touched");}
+  };
+  const routes=[
+    {id:"restore-status-direct",model:"GetRestoreStatus",method:"GET",query:"method=get&file=GetRestoreStatus",schema:"restore"},
+    {id:"upgrade-status-direct",model:"upgrade_firmware",method:"GET",query:"method=get&file=upgrade_firmware",schema:"upgrade"}
+  ];
+  const result=await app.runFirmwareRestoreDryRun({
+    stage0:fakeStage0,now:()=>NOW,routes,
+    documentPicker:{async openFile(){return "/private/mobile/Documents/stock-golden.bin";}},
+    fileManager:{read(){return data;}},
+    async createAppSession(){sessionCalls++;return {appLogin:{authHeaderPersisted:true,sessionCookieReceived:true}};},
+    async getAppStatus(){statusCalls++;return STATUS;},
+    async readRoute(_session,route){routeCalls++;return route.schema==="restore"?{statusCode:200,redirectCount:0,text:"<process><status>0</status><progress>0</progress><cause>No Error!</cause></process>"}:{statusCode:200,redirectCount:0,text:"<RGW><upgrade_firmware><support_32m_flash>1</support_32m_flash><restore_status>0</restore_status></upgrade_firmware></RGW>"};}
+  });
+  assert.equal(result.ok,true);
+  assert.equal(result.dryRunReady,true);
+  assert.equal(result.flashAllowed,false);
+  assert.equal(evidenceCalls,2);
+  assert.equal(getBytesCalls,1);
+  assert.equal(sessionCalls,1);
+  assert.equal(statusCalls,1);
+  assert.equal(routeCalls,2);
+  assert.equal(journalCalls,0);
+  assert.equal(result.report.wireManifest.payloadRoundTripVerified,true);
+  assert.equal(result.report.wireManifest.networkRequestConstructed,false);
+  assert.equal(result.report.safety.routerGetsAttempted,5);
+  assert.equal(result.report.safety.routerWritesAttempted,0);
+  assert.equal(result.report.safety.firmwarePostsAttempted,0);
+  assert.equal(result.report.safety.multipartNetworkRequestsConstructed,0);
+  assert.equal(result.report.safety.liveJournalTouched,false);
+  assert.equal(result.report.productionAvailability.available,false);
+  assert.doesNotMatch(result.text,/private\/mobile/);
+});
+
+test("RestoreFw dry-run rejects an unknown image before APP session or router GET",async()=>{
+  let sessions=0,statusReads=0;
+  const fakeStage0={
+    ...stage0,
+    createImageEvidence:()=>Object.freeze({size:1,sha256:"0".repeat(64)}),
+    validateImageEvidence:()=>({ok:false,image:null,errors:["Unknown firmware image."]})
+  };
+  await assert.rejects(app.runFirmwareRestoreDryRun({
+    stage0:fakeStage0,now:()=>NOW,
+    documentPicker:{async openFile(){return "/private/mobile/Documents/unknown.bin";}},
+    fileManager:{read(){return {getBytes:()=>[9]};}},
+    async createAppSession(){sessions++;throw new Error("must not run");},
+    async getAppStatus(){statusReads++;throw new Error("must not run");}
+  }),error=>{
+    assert.match(error.message,/Unknown firmware image/i);
+    assert.match(error.diagnostics,/"firmwarePostsAttempted": 0/);
+    assert.doesNotMatch(error.diagnostics,/private\/mobile/);
+    return true;
+  });
+  assert.equal(sessions,0);
+  assert.equal(statusReads,0);
+});
+
+test("RestoreFw dry-run cancellation performs no file or router work",async()=>{
+  let reads=0,sessions=0;
+  const result=await app.runFirmwareRestoreDryRun({
+    stage0,
+    documentPicker:{async openFile(){return "";}},
+    fileManager:{read(){reads++;return null;}},
+    async createAppSession(){sessions++;return {};}
+  });
+  assert.deepEqual(result,{cancelled:true,ok:false,flashAllowed:false});
+  assert.equal(reads,0);
+  assert.equal(sessions,0);
+});
+
+test("dashboard dispatcher rejects a concurrent dry-run and releases firmware-exclusive mode",async()=>{
+  const guard=()=>app.createInFlightGuard();
+  const web={async evaluateJavaScript(){return null;}};
+  let calls=0,powerCalls=0,releaseFirst,signalFirst;
+  const firstEntered=new Promise(resolve=>{signalFirst=resolve;});
+  const firstHeld=new Promise(resolve=>{releaseFirst=resolve;});
+  const dispatcher=app.createDashboardDispatcher({}, {sms:{messages:[]}}, web, {smsGuard:guard(),refreshGuard:guard(),powerGuard:guard(),firmwareGuard:guard()}, {
+    runFirmwareRestoreDryRun:async()=>{calls++;if(calls===1){signalFirst();await firstHeld;}return {ok:true,dryRunReady:true,flashAllowed:false};},
+    executePowerCommand:async()=>{powerCalls++;return {ok:true};}
+  });
+  const firstPending=dispatcher({id:"dry-1",action:"firmwareRestoreDryRun",params:{}});
+  await firstEntered;
+  const second=await dispatcher({id:"dry-2",action:"firmwareRestoreDryRun",params:{}});
+  const refresh=await dispatcher({id:"dry-refresh",action:"refresh",params:{}});
+  const reboot=await dispatcher({id:"dry-reboot",action:"reboot",params:{confirmed:true}});
+  releaseFirst();
+  const first=await firstPending;
+  const third=await dispatcher({id:"dry-3",action:"firmwareRestoreDryRun",params:{}});
+  assert.equal(second.ok,false);
+  assert.match(second.error,/exclusive mode.*active|operation.*active|not started/i);
+  assert.equal(refresh.ok,false);
+  assert.match(refresh.error,/Firmware-exclusive mode/i);
+  assert.equal(reboot.ok,false);
+  assert.match(reboot.error,/Firmware-exclusive mode/i);
+  assert.equal(powerCalls,0);
+  assert.equal(first.ok,true);
+  assert.equal(third.ok,true);
+  assert.equal(calls,2);
+  assert.equal(first.result.flashAllowed,false);
+});
+
+test("default dry-run transport constructs GET Requests only and never touches RestoreFw",async()=>{
+  const originalRequest=global.Request;
+  const requests=[];
+  class GetOnlyRequest {
+    constructor(url){this.url=url;this.method="GET";this.headers={};this.body=null;this.response=null;requests.push(this);}
+    async loadString(){
+      assert.equal(this.method,"GET");
+      assert.equal(this.body==null,true);
+      assert.doesNotMatch(this.url,/Action=RestoreFw/i);
+      if(/\/login\.cgi$/.test(this.url)){
+        this.response={statusCode:401,headers:{"WWW-Authenticate":'Digest realm="router", nonce="nonce-1", qop="auth"'}};
+        return "";
+      }
+      if(/\/login\.cgi\?/.test(this.url)){
+        this.response={statusCode:200,headers:{},cookies:[{name:"session",value:"fixture",domain:"192.168.21.1",path:"/"}]};
+        return "<?xml version=\"1.0\"?><RGW><login_status>OK</login_status></RGW>";
+      }
+      this.response={statusCode:200,headers:{"Content-Type":"text/xml"}};
+      if(/file=status1/.test(this.url))return STATUS;
+      if(/file=GetRestoreStatus/.test(this.url))return "<process><status>0</status><progress>0</progress><cause>No Error!</cause></process>";
+      if(/file=upgrade_firmware/.test(this.url))return "<RGW><upgrade_firmware><support_32m_flash>1</support_32m_flash><restore_status>0</restore_status></upgrade_firmware></RGW>";
+      throw new Error(`Unexpected GET fixture URL: ${this.url}`);
+    }
+  }
+  const bytes=[1,2,3,4],sha=stage0.sha256Hex(bytes),image={id:stage0.GOLDEN_IMAGE.id,file:stage0.GOLDEN_IMAGE.file,size:bytes.length,sha256:sha};
+  const fakeStage0={
+    ...stage0,
+    createImageEvidence(value){assert.ok(value instanceof Uint8Array);return Object.freeze({size:bytes.length,sha256:sha,byteLength:bytes.length,computedSha256:sha,verification:"computed-from-bytes",verifiedAt:NOW});},
+    validateImageEvidence(){return {ok:true,image,errors:[]};}
+  };
+  global.Request=GetOnlyRequest;
+  try{
+    const result=await app.runFirmwareRestoreDryRun({
+      stage0:fakeStage0,now:()=>NOW,
+      documentPicker:{async openFile(){return "/private/mobile/Documents/stock-golden.bin";}},
+      fileManager:{read(){return {getBytes:()=>bytes.slice()};}}
+    });
+    assert.equal(result.ok,true);
+    assert.equal(result.report.safety.routerGetsAttempted,7);
+    assert.equal(result.report.safety.firmwarePostsAttempted,0);
+    assert.equal(result.report.safety.multipartNetworkRequestsConstructed,0);
+    assert.equal(requests.length,7);
+    assert.ok(requests.every(request=>request.method==="GET"&&request.body==null));
+  }finally{
+    if(originalRequest===undefined)delete global.Request;
+    else global.Request=originalRequest;
+  }
+});
+
 test("software-only restore requires the explicit no-recovery native phrase",async()=>{
   let observed=null;
   const accepted=await app.confirmFirmwareRestore(
@@ -142,7 +310,8 @@ test("compiled Stage 0 flow rehashes the same Data and submits exactly once afte
   let evidenceCalls=0,statusReads=0,reads=0,sends=0,savedQualification=0;
   const fakeStage0={
     ...stage0,
-    restoreAvailability:()=>({available:true,allowlistedContracts:1,recoveryEvidenceRecords:1,reason:"reviewed"}),
+    ATOMIC_RESTORE_LEASE_PROVEN:true,
+    restoreAvailability:()=>({available:true,allowlistedContracts:1,recoveryEvidenceRecords:1,atomicCrossProcessLeaseProven:true,reason:"reviewed"}),
     createImageEvidence(value){assert.equal(value,data);evidenceCalls++;timeline.push(`hash${evidenceCalls}`);return {size:stage0.GOLDEN_IMAGE.size,sha256:stage0.GOLDEN_IMAGE.sha256};},
     validateImageEvidence:()=>({ok:true,image:stage0.GOLDEN_IMAGE,errors:[]}),
     loadJournal:async()=>null,

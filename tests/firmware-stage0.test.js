@@ -216,6 +216,13 @@ test("physical recovery evidence is a separate compiled destructive gate", () =>
   assert.equal(stage0.validateRecoveryEvidence({...candidate,fullDumpCopies:2}).ok,false);
 });
 
+test("production restore also requires a proven atomic cross-process lease",()=>{
+  const availability=stage0.restoreAvailability();
+  assert.equal(stage0.ATOMIC_RESTORE_LEASE_PROVEN,false);
+  assert.equal(availability.atomicCrossProcessLeaseProven,false);
+  assert.equal(availability.available,false);
+});
+
 test("software-only-risk-v1 is separate, compiled, fresh, and requires the 80 percent power gate", () => {
   const candidate=softwareRiskEvidence();
   const checked=stage0.validateSoftwareRiskEvidence(candidate,transportEvidence(),NOW);
@@ -344,6 +351,32 @@ test("one-shot executor reads back POST_ARMED before one sender call", async () 
   assert.equal(result.automaticRetries,0);
 });
 
+test("lease ownership must return exact true at both destructive boundaries",async()=>{
+  let sends=0;
+  const beforeArmJournal=stage0.createMemoryJournal(transactionFixture());
+  await assert.rejects(stage0.executeArmedRestoreOnce(beforeArmJournal,transactionFixture(),async()=>{sends++;return {accepted:true};},{exclusiveLease:{async assertOwner(){return false;}},now:()=>2}),/did not confirm ownership before arming/i);
+  assert.equal(sends,0);
+  assert.equal((await stage0.loadJournal(beforeArmJournal)).state,stage0.TRANSACTION_STATES.PRECHECK_OK);
+
+  for(const denied of [null,{owned:true}]){
+    const journal=stage0.createMemoryJournal(transactionFixture());
+    await assert.rejects(stage0.executeArmedRestoreOnce(journal,transactionFixture(),async()=>{sends++;return {accepted:true};},{exclusiveLease:{async assertOwner(){return denied;}},now:()=>2}),/did not confirm ownership before arming/i);
+    assert.equal((await stage0.loadJournal(journal)).state,stage0.TRANSACTION_STATES.PRECHECK_OK);
+  }
+
+  let checks=0;
+  const beforeSendJournal=stage0.createMemoryJournal(transactionFixture());
+  await assert.rejects(stage0.executeArmedRestoreOnce(beforeSendJournal,transactionFixture(),async()=>{sends++;return {accepted:true};},{exclusiveLease:{async assertOwner(){checks++;return checks===1;}},now:()=>2}),/did not confirm ownership before send/i);
+  assert.equal(sends,0);
+  assert.equal((await stage0.loadJournal(beforeSendJournal)).state,stage0.TRANSACTION_STATES.UNKNOWN);
+
+  checks=0;
+  const nullBeforeSend=stage0.createMemoryJournal(transactionFixture());
+  await assert.rejects(stage0.executeArmedRestoreOnce(nullBeforeSend,transactionFixture(),async()=>{sends++;return {accepted:true};},{exclusiveLease:{async assertOwner(){checks++;return checks===1?true:null;}},now:()=>2}),/did not confirm ownership before send/i);
+  assert.equal(sends,0);
+  assert.equal((await stage0.loadJournal(nullBeforeSend)).state,stage0.TRANSACTION_STATES.UNKNOWN);
+});
+
 test("one-shot timeout becomes terminal UNKNOWN and never calls the sender twice", async () => {
   const journal=stage0.createMemoryJournal(transactionFixture());
   let calls=0;
@@ -369,6 +402,17 @@ test("two concurrent callers sharing one journal cannot invoke two senders", asy
   release();
   await first;
   assert.equal(sends,1);
+});
+
+test("two distinct wrappers prove why non-atomic shared storage cannot unlock production",async()=>{
+  let raw=JSON.stringify(transactionFixture()),sends=0;
+  const wrapper=()=>({async load(){return raw;},async save(value){raw=JSON.stringify(value);},async clear(){raw=null;}});
+  const run=journal=>stage0.executeArmedRestoreOnce(journal,transactionFixture(),async()=>{sends++;return {accepted:true};},{exclusiveLease,now:()=>2});
+  const results=await Promise.allSettled([run(wrapper()),run(wrapper())]);
+  assert.equal(sends,2,"read/write/read storage permits two send callbacks through distinct wrappers");
+  assert.deepEqual(results.map(result=>result.status),["fulfilled","fulfilled"]);
+  assert.equal(stage0.ATOMIC_RESTORE_LEASE_PROVEN,false);
+  assert.equal(stage0.restoreAvailability().available,false);
 });
 
 test("GET-only monitor reaches BOOT_VERIFIED through the reviewed classifier", async () => {
@@ -452,9 +496,25 @@ test("restart before arming invalidates preflight without consuming a send", asy
 test("corrupt or unverifiable persistent storage fails closed", async () => {
   const corrupt = { async load() { return "{"; }, async save() {}, async clear() {} };
   await assert.rejects(stage0.loadJournal(corrupt), /journal is corrupt/i);
+  const empty = { async load() { return ""; }, async save() {}, async clear() {} };
+  await assert.rejects(stage0.loadJournal(empty), /journal is corrupt/i);
 
   const dropsWrites = { async load() { return null; }, async save() {}, async clear() {} };
   await assert.rejects(stage0.saveJournal(dropsWrites, transactionFixture()), /write could not be verified/i);
+
+  let stored=null;
+  const changesDetail={async load(){return stored;},async save(value){stored=JSON.stringify({...value,events:[...value.events,{at:99,event:"tampered"}]});},async clear(){stored=null;}};
+  await assert.rejects(stage0.saveJournal(changesDetail,transactionFixture()),/write could not be verified/i);
+});
+
+test("Keychain read errors are not treated as an absent journal",async()=>{
+  const journal=stage0.createKeychainJournal("broken-key",{contains:()=>true,get(){throw new Error("storage unavailable");},set(){},remove(){}});
+  await assert.rejects(stage0.loadJournal(journal),/journal read failed.*locked/i);
+  const containsFails=stage0.createKeychainJournal("contains-key",{contains(){throw new Error("storage unavailable");},get(){},set(){},remove(){}});
+  await assert.rejects(stage0.loadJournal(containsFails),/journal read failed.*locked/i);
+  const empty=stage0.createKeychainJournal("empty-key",{contains:()=>true,get:()=>"",set(){},remove(){}});
+  await assert.rejects(stage0.loadJournal(empty),/journal read failed.*locked/i);
+  assert.throws(()=>stage0.createKeychainJournal("unsafe-key",{get(){},set(){}}),/storage is unavailable/i);
 });
 
 test("Keychain journal persists and reads a transaction", async () => {
