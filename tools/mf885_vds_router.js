@@ -273,11 +273,19 @@ async function createFreshAppSession(options = {}) {
     port,
     authorization: login.authorization,
     cookie,
+    serverCookieReceived: cookie.length > 0,
     agent,
     localAddress: loginResponse.localAddress,
     createdAtMs: Date.now(),
     safety: Object.freeze({ methodsUsed: Object.freeze(["GET"]), requestBodiesPresent: false, automaticRetries: 0, redirectsAllowed: false })
   });
+}
+
+function appPostAuthorization(session, password = DEFAULT_PASSWORD) {
+  if (!session || typeof session.authorization !== "string") throw new RouterReadError("A fresh APP login header is required.", "ROUTER_AUTH_SESSION_INVALID");
+  const challenge = parseDigestParameters(session.authorization);
+  const proof = digestProof(challenge, String(password), "/cgi/xml_action.cgi", 4, crypto.randomBytes(8).toString("hex"), "POST");
+  return digestHeader(challenge, proof, "APP");
 }
 
 async function createFreshWebPostSession(options = {}) {
@@ -654,7 +662,59 @@ async function collectRestorePreflight(options = {}) {
   return Object.freeze({ report: safeReport, session: Object.freeze({ host: targetHost, port: targetPort, localAddress: webSession.localAddress, cookie: webSession.cookie, serverCookieReceived: webSession.serverCookieReceived, restoreAuthorization }), sessionProvenAtMs });
 }
 
-function buildGoldenRestoreCapsule(imagePath) {
+async function collectRestoreRetryPreflight(options = {}) {
+  const targetHost = String(options.host || ROUTER_HOST), targetPort = Number(options.port || ROUTER_PORT);
+  if (targetHost !== ROUTER_HOST || targetPort !== ROUTER_PORT) throw new RouterReadError("Restore retry preflight is bound to the reviewed MF885 endpoint.", "RESTORE_PREFLIGHT_ENDPOINT_MISMATCH");
+  const startedAt = Date.now();
+
+  // Prove the candidate APP POST profile in a disposable session. Its nc=4 is
+  // consumed only by a semantic SMS read and is never reused for RestoreFw.
+  const proofSession = await createFreshAppSession(options);
+  const proofIdentityRead = await sessionModelGet(proofSession, "status1", { operation: "APP retry proof identity" });
+  const proofAuthorization = appPostAuthorization(proofSession, options.password || DEFAULT_PASSWORD);
+  const postRead = await postSmsReadProbe({ ...proofSession, nextAuthorization: () => proofAuthorization });
+
+  // The destructive request gets a completely fresh APP challenge/login.
+  // After the three final GET gates, nc=4 is generated locally and reserved;
+  // there are no later router requests before the one RestoreFw dispatch.
+  const finalSession = await createFreshAppSession(options);
+  const identityRead = await sessionModelGet(finalSession, "status1", { operation: "APP retry final status1" });
+  const restoreRead = await sessionModelGet(finalSession, "GetRestoreStatus", { direct: true, operation: "APP retry direct GetRestoreStatus" });
+  const upgradeRead = await sessionModelGet(finalSession, "upgrade_firmware", { operation: "APP retry Duster upgrade_firmware" });
+  const sessionProvenAtMs = Date.now();
+  const restoreAuthorization = appPostAuthorization(finalSession, options.password || DEFAULT_PASSWORD);
+
+  const proofIdentity = identityFromStatus(proofIdentityRead.text);
+  const identity = identityFromStatus(identityRead.text);
+  const power = powerFromStatus(identityRead.text, identity);
+  const restoreStatus = parseRestoreStatus(restoreRead.text), upgradeStatus = parseUpgradeStatus(upgradeRead.text);
+  const errors = [];
+  if (identity.rawModel !== EXACT_MODEL || identity.hardware !== EXACT_HARDWARE || identity.firmware !== EXACT_FIRMWARE || identity.unitFingerprintSha256 !== core.RESTORE_UNIT_FINGERPRINT_SHA256) errors.push("Exact reviewed LV01 / MF96 Ver.D / 2.5.94 unit identity was not proven.");
+  if (proofIdentity.unitFingerprintSha256 !== identity.unitFingerprintSha256 || proofIdentity.firmware !== identity.firmware || proofIdentity.hardware !== identity.hardware) errors.push("Proof and final APP sessions did not observe the same exact router.");
+  if (proofSession.authorization === finalSession.authorization) errors.push("Proof and final APP sessions were not independently generated.");
+  if (!power.interpretationConfirmed || !power.externalPowerConnected || !Number.isInteger(power.batteryPercent) || power.batteryPercent < 80) errors.push("Battery must be at least 80% with externally powered LV01 semantics.");
+  if (restoreStatus.status !== "0" || restoreStatus.progress !== "0" || !/^No Error!?$/i.test(restoreStatus.cause)) errors.push("Direct GetRestoreStatus is not at the exact idle baseline.");
+  if (upgradeStatus.support32mFlash !== "1") errors.push("The 32 MiB flash capability flag is missing.");
+  if (proofSession.localAddress !== core.RESTORE_LOCAL_ADDRESS || finalSession.localAddress !== core.RESTORE_LOCAL_ADDRESS) errors.push("The exact reviewed VDS source interface was not proven.");
+  if (proofSession.serverCookieReceived !== false || finalSession.serverCookieReceived !== false || proofSession.cookie !== "" || finalSession.cookie !== "") errors.push("The exact no-server-cookie APP profile changed unexpectedly.");
+  const safeReport = Object.freeze({
+    schema: 2,
+    mode: "mf885-vds-restore-retry-preflight",
+    generatedAt: new Date(sessionProvenAtMs).toISOString(),
+    identity: Object.freeze({ model: identity.model, rawModel: identity.rawModel, hardware: identity.hardware, firmware: identity.firmware, unitFingerprintSha256: identity.unitFingerprintSha256 }),
+    power,
+    restoreStatus,
+    upgradeStatus,
+    networkBaseline: networkBaseline(identityRead.text),
+    session: Object.freeze({ profile: core.APP_RETRY_SESSION_PROFILE, localAddress: finalSession.localAddress, serverCookieReceived: false, appPostSmsReadProofPassed: true, proofAndFinalSessionsDistinct: proofSession.authorization !== finalSession.authorization, restoreNonceCount: 4, clientMarker: "APP", smsMessagesReturned: postRead.returnedMessages, provenAtMs: sessionProvenAtMs, elapsedMs: sessionProvenAtMs - startedAt }),
+    safety: Object.freeze({ methodsUsed: Object.freeze(["GET", "POST-read-sms"]), routerGetsAttempted: 8, readOnlyHttpPostsAttempted: 1, requestBodyBytes: postRead.requestBodyBytes, routerStateWritesAttempted: 0, firmwarePostsAttempted: 0, smsPayloadsEmitted: 0, automaticRetries: 0, redirectsAllowed: false }),
+    errors: Object.freeze(errors)
+  });
+  if (errors.length) throw new RouterReadError(errors.join(" "), "RESTORE_PREFLIGHT_FAILED", { report: safeReport });
+  return Object.freeze({ report: safeReport, session: Object.freeze({ host: targetHost, port: targetPort, localAddress: finalSession.localAddress, cookie: finalSession.cookie, serverCookieReceived: finalSession.serverCookieReceived, restoreAuthorization }), sessionProvenAtMs });
+}
+
+function buildGoldenRestoreCapsule(imagePath, options = {}) {
   const resolved = path.resolve(String(imagePath || ""));
   const stat = fs.lstatSync(resolved);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new RouterReadError("Golden image must be a real local file.", "GOLDEN_IMAGE_INVALID");
@@ -668,16 +728,18 @@ function buildGoldenRestoreCapsule(imagePath) {
   if (extracted.length !== source.length || core.sha256(extracted) !== firstSha256) throw new RouterReadError("Native-style multipart extraction did not reproduce the golden image.", "GOLDEN_MULTIPART_INVALID");
   const bodySha256 = core.sha256(body);
   if (bodySha256 !== GOLDEN_BODY_SHA256) throw new RouterReadError("Golden multipart body differs from the reviewed deterministic envelope.", "GOLDEN_MULTIPART_INVALID");
+  const retryV2 = options.retryV2 === true;
+  const authProfile = retryV2 ? core.APP_RETRY_SESSION_PROFILE : core.WEB_RESTORE_SESSION_PROFILE;
   const contract = Object.freeze({
     schema: 1,
-    profile: "mf885-vds-restore-transport-v1",
+    profile: retryV2 ? "mf885-vds-restore-transport-retry-v2" : "mf885-vds-restore-transport-v1",
     firmware: EXACT_FIRMWARE,
     operation: "RestoreFw",
     method: "POST",
     host: ROUTER_HOST,
     physicalRoute: core.RESTORE_ROUTE,
     digestUri: "/cgi/xml_action.cgi",
-    authProfile: "fresh-web-digest-sms-read-next-post-no-server-cookie-v1",
+    authProfile,
     multipart: Object.freeze({ boundary: built.boundary, field: built.field, filename: built.filename, mimeType: "application/octet-stream", bodyBytes: body.length, bodySha256, payloadBytes: source.length, payloadSha256: firstSha256 }),
     acceptance: Object.freeze({ statusCode: 200, contentType: "text/html", server: "Mongoose/3.0", bodySha256: core.sha256(Buffer.from("Server get upload file successfully\n")) }),
     status: Object.freeze({ method: "GET", path: "/xml_action.cgi?method=get&file=GetRestoreStatus", rawMap: Object.freeze({ "0": "AMBIGUOUS_AFTER_POST", "2": "RESTORING", "1": "REBOOT_WAIT", "3": "FAILED" }), maxPolls: 120, pollIntervalMs: 1000 }),
@@ -803,6 +865,7 @@ module.exports = {
   appLoginEnvelope,
   routerGetOnce,
   createFreshAppSession,
+  appPostAuthorization,
   createFreshWebPostSession,
   webSessionModelGet,
   validatePrivateSettingsEvidence,
@@ -815,6 +878,7 @@ module.exports = {
   parseRestoreStatus,
   parseUpgradeStatus,
   collectRestorePreflight,
+  collectRestoreRetryPreflight,
   buildGoldenRestoreCapsule,
   rawBackupDownload,
   captureGoldenBackup

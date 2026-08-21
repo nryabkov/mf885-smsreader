@@ -13,6 +13,7 @@ const FILE_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
 const MAX_RECORD_BYTES = 1024 * 1024;
 const GOLDEN_SLOT_ID = "golden-qualification-v1";
+const GOLDEN_RETRY_SLOT_ID = "golden-qualification-retry-v2";
 const GOLDEN_IMAGE_SHA256 = "2b5880fc26805918bb574d07341ea9b863f8261be34c3bf9766fac0929204531";
 const GOLDEN_BODY_BYTES = 8323893;
 const GOLDEN_BODY_SHA256 = "5a58dbb564229dc118d305c51dfbb4ecb925075574086aeb86bb05e1add39d22";
@@ -26,6 +27,12 @@ const FENCE_REPOSITORY = "nryabkov/mf885-smsreader";
 const FENCE_TARGET_COMMIT = "be1bc6902910afa1a4f83feadfb956280629c99e";
 const DEFAULT_FENCE_TIMEOUT_MS = 5000;
 const MIN_POST_DISPATCH_BUDGET_MS = 2000;
+const WEB_RESTORE_SESSION_PROFILE = "fresh-web-digest-sms-read-next-post-no-server-cookie-v1";
+const APP_RETRY_SESSION_PROFILE = "fresh-app-digest-post-nc4-client-app-no-server-cookie-v2";
+const V1_GATE_SHA256 = "77dfaa4aff412aa29a003d5274684c9dc8abcf35fa066219664ab26e5ab5226c";
+const V1_TERMINAL_RECORD_SHA256 = "915f05c09305720db6241eb53352f2086ebd222a7a1139115644bd9dd3c433d6";
+const V1_EXTERNAL_FENCE_RECORD_SHA256 = "8acb1b719142974f3c83480a8ee48ee38f357a49ea4ddf89bc09f4f2c1e42a6a";
+const V1_EXTERNAL_FENCE_REF = "refs/tags/mf885-restore-fence-v1-42063835281d6f41828bc7a1b1960e21559b6dad5dada8016991fd1dc0351167";
 
 const STATES = Object.freeze({
   PRECHECK_OK: "PRECHECK_OK",
@@ -152,6 +159,32 @@ function assertTimestamp(value, label = "timestamp") {
     throw new RestoreStateError(`${label} must be an ISO-8601 UTC timestamp.`);
   }
   return text;
+}
+
+function optionalDiagnosticText(value, label) {
+  if (value === undefined || value === null) return null;
+  const text = String(value);
+  if (text.length > 180 || /[\r\n\x00-\x1f\x7f]/.test(text)) {
+    throw new RestoreStateError(`${label} is invalid.`);
+  }
+  return text;
+}
+
+function safeRestoreHttpEvidence(error) {
+  const details = error && error.details && typeof error.details === "object" ? error.details : {};
+  const result = {};
+  const statusCode = Number(details.statusCode);
+  if (details.statusCode !== undefined && details.statusCode !== null && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599) result.httpStatus = statusCode;
+  if (typeof details.contentType === "string" && details.contentType.length <= 180 && !/[\r\n\x00-\x1f\x7f]/.test(details.contentType)) result.responseContentType = details.contentType;
+  if (typeof details.server === "string" && details.server.length <= 180 && !/[\r\n\x00-\x1f\x7f]/.test(details.server)) result.responseServer = details.server;
+  if (/^[0-9a-f]{64}$/.test(String(details.bodySha256 || ""))) result.responseBodySha256 = String(details.bodySha256);
+  const bodyBytes = Number(details.bodyBytes);
+  if (details.bodyBytes !== undefined && details.bodyBytes !== null && Number.isInteger(bodyBytes) && bodyBytes >= 0 && bodyBytes <= 4096) result.responseBodyBytes = bodyBytes;
+  if (/^[A-Z0-9._-]{1,100}$/.test(String(details.causeCode || ""))) result.networkCauseCode = String(details.causeCode);
+  for (const [source, target] of [["wwwAuthenticatePresent", "wwwAuthenticatePresent"], ["locationPresent", "locationPresent"], ["setCookiePresent", "setCookiePresent"]]) {
+    if (typeof details[source] === "boolean") result[target] = details[source];
+  }
+  return Object.freeze(result);
 }
 
 function checkedRealDirectory(directory, expectedMode = DIRECTORY_MODE) {
@@ -289,17 +322,25 @@ function publishImmutable(directory, filename, payload, options = {}) {
 
 function externalFenceSpec(input = {}) {
   const slotId = assertToken(input.slotId, "slotId", /^[A-Za-z0-9._-]{1,120}$/);
-  if (slotId !== GOLDEN_SLOT_ID) throw new RestoreStateError("This reviewed sender permits only the golden qualification slot.");
+  if (![GOLDEN_SLOT_ID, GOLDEN_RETRY_SLOT_ID].includes(slotId)) throw new RestoreStateError("This reviewed sender permits only the two fixed golden qualification slots.");
   const unitFingerprintSha256 = assertHex(input.unitFingerprintSha256, 32, "unitFingerprintSha256");
   if (unitFingerprintSha256 !== RESTORE_UNIT_FINGERPRINT_SHA256) throw new RestoreStateError("This reviewed sender permits only the exact live MF885 unit.");
   const imageSha256 = assertHex(input.imageSha256, 32, "imageSha256");
   if (imageSha256 !== GOLDEN_IMAGE_SHA256) throw new RestoreStateError("This reviewed sender permits only the exact stock golden image.");
+  const fenceVersion = slotId === GOLDEN_RETRY_SLOT_ID ? 2 : 1;
   const canonical = Buffer.from([
-    "mf885-restore-fence-v1",
+    `mf885-restore-fence-v${fenceVersion}`,
     `slot=${slotId}`,
     `unitFingerprintSha256=${unitFingerprintSha256}`,
     `imageSha256=${imageSha256}`,
     `route=${RESTORE_ROUTE}`,
+    ...(slotId === GOLDEN_RETRY_SLOT_ID ? [
+      `predecessorGateSha256=${V1_GATE_SHA256}`,
+      `predecessorTerminalRecordSha256=${V1_TERMINAL_RECORD_SHA256}`,
+      `predecessorFenceRef=${V1_EXTERNAL_FENCE_REF}`,
+      `localAddress=${RESTORE_LOCAL_ADDRESS}`,
+      `sessionProfile=${APP_RETRY_SESSION_PROFILE}`
+    ] : []),
     ""
   ].join("\n"), "utf8");
   const fenceIdSha256 = sha256(canonical);
@@ -308,7 +349,7 @@ function externalFenceSpec(input = {}) {
     profile: "github-create-reference-v1",
     repository: FENCE_REPOSITORY,
     targetCommit: FENCE_TARGET_COMMIT,
-    ref: `refs/tags/mf885-restore-fence-v1-${fenceIdSha256}`,
+    ref: `refs/tags/mf885-restore-fence-v${fenceVersion}-${fenceIdSha256}`,
     fenceIdSha256
   });
 }
@@ -336,6 +377,11 @@ function gatePayload(input = {}) {
     preflightEvidenceSha256: assertHex(input.preflightEvidenceSha256, 32, "preflightEvidenceSha256"),
     externalFenceIdSha256: fence.fenceIdSha256,
     externalFenceRef: fence.ref,
+    ...(slotId === GOLDEN_RETRY_SLOT_ID ? {
+      predecessorGateSha256: V1_GATE_SHA256,
+      predecessorTerminalRecordSha256: V1_TERMINAL_RECORD_SHA256,
+      predecessorFenceRef: V1_EXTERNAL_FENCE_REF
+    } : {}),
     bootId: assertToken(input.bootId, "bootId", /^[0-9a-f-]{36}$/),
     pid: Number.isSafeInteger(input.pid) && input.pid > 0 ? input.pid : (() => { throw new RestoreStateError("pid is invalid."); })(),
     createdAt: assertTimestamp(input.createdAt, "createdAt")
@@ -365,7 +411,9 @@ function readGate(directory) {
     throw new RestoreStateError("Permanent gate schema is invalid.", "RESTORE_STATE_CORRUPT");
   }
   const normalized = gatePayload(gate);
-  for (const key of ["slotId", "unitFingerprintSha256", "imageSha256", "bodySha256", "contractSha256", "preflightEvidenceSha256", "externalFenceIdSha256", "externalFenceRef"]) {
+  const keys = ["slotId", "unitFingerprintSha256", "imageSha256", "bodySha256", "contractSha256", "preflightEvidenceSha256", "externalFenceIdSha256", "externalFenceRef"];
+  if (gate.slotId === GOLDEN_RETRY_SLOT_ID) keys.push("predecessorGateSha256", "predecessorTerminalRecordSha256", "predecessorFenceRef");
+  for (const key of keys) {
     if (gate[key] !== normalized[key]) throw new RestoreStateError(`Permanent gate ${key} is invalid.`, "RESTORE_STATE_CORRUPT");
   }
   return gate;
@@ -381,7 +429,7 @@ function assertGateOwner(directory, receipt) {
 
 function journalFiles(directory) {
   const names = fs.readdirSync(directory);
-  const unexpected = names.filter(name => !/^(?:gate\.lock|armed\.json|external-fence\.json|journal-\d{6}\.json)$/.test(name));
+  const unexpected = names.filter(name => !/^(?:gate\.lock|armed\.json|external-fence\.json|http-response\.json|journal-\d{6}\.json)$/.test(name));
   if (unexpected.length) throw new RestoreStateError("Restore state contains an orphan or unexpected object.", "RESTORE_STATE_CORRUPT", { unexpected: unexpected.sort() });
   return names.filter(name => /^journal-\d{6}\.json$/.test(name)).sort();
 }
@@ -392,6 +440,7 @@ function validateJournalRecord(record, gate, previous, expectedRevision) {
   }
   if (!Object.values(STATES).includes(record.state)) throw new RestoreStateError("Journal state is unknown.", "RESTORE_STATE_CORRUPT");
   const bindings = ["transactionId", "unitFingerprintSha256", "imageSha256", "bodySha256", "contractSha256", "preflightEvidenceSha256", "externalFenceIdSha256"];
+  if (gate.slotId === GOLDEN_RETRY_SLOT_ID) bindings.push("predecessorGateSha256", "predecessorTerminalRecordSha256", "predecessorFenceRef");
   for (const key of bindings) if (record[key] !== gate[key]) throw new RestoreStateError(`Journal ${key} does not match the permanent gate.`, "RESTORE_STATE_CORRUPT");
   if (record.gateSha256 !== gate.recordSha256) throw new RestoreStateError("Journal gate checksum does not match.", "RESTORE_STATE_CORRUPT");
   const expectedPrevious = previous ? previous.recordSha256 : null;
@@ -407,6 +456,16 @@ function validateJournalRecord(record, gate, previous, expectedRevision) {
   }
   if (record.state === STATES.POST_ARMED && record.firmwarePostsAttempted !== 0) throw new RestoreStateError("POST_ARMED cannot claim a network attempt.", "RESTORE_STATE_CORRUPT");
   if (record.state === STATES.EXTERNAL_FENCE_COMMITTED && record.firmwarePostsAttempted !== 0) throw new RestoreStateError("The external fence state cannot claim a router POST.", "RESTORE_STATE_CORRUPT");
+  if (record.httpStatus !== undefined && record.httpStatus !== null && (!Number.isInteger(record.httpStatus) || record.httpStatus < 100 || record.httpStatus > 599)) throw new RestoreStateError("Journal HTTP status is invalid.", "RESTORE_STATE_CORRUPT");
+  for (const key of ["responseContentType", "responseServer"]) {
+    if (record[key] !== undefined && record[key] !== null) optionalDiagnosticText(record[key], `journal ${key}`);
+  }
+  if (record.responseBodySha256 !== undefined && record.responseBodySha256 !== null) assertHex(record.responseBodySha256, 32, "journal responseBodySha256");
+  if (record.responseBodyBytes !== undefined && record.responseBodyBytes !== null && (!Number.isInteger(record.responseBodyBytes) || record.responseBodyBytes < 0 || record.responseBodyBytes > 4096)) throw new RestoreStateError("Journal response body length is invalid.", "RESTORE_STATE_CORRUPT");
+  if (record.networkCauseCode !== undefined && record.networkCauseCode !== null) assertToken(record.networkCauseCode, "journal networkCauseCode", /^[A-Z0-9._-]{1,100}$/);
+  for (const key of ["wwwAuthenticatePresent", "locationPresent", "setCookiePresent"]) {
+    if (record[key] !== undefined && record[key] !== null && typeof record[key] !== "boolean") throw new RestoreStateError(`Journal ${key} is invalid.`, "RESTORE_STATE_CORRUPT");
+  }
   assertTimestamp(record.recordedAt, "journal recordedAt");
   return record;
 }
@@ -426,6 +485,19 @@ function readJournal(directory, suppliedGate = null) {
   const fenceJournal = records.find(record => record.state === STATES.EXTERNAL_FENCE_COMMITTED);
   if (fenceJournal && (!fenceRecord || fenceJournal.evidenceSha256 !== fenceRecord.recordSha256)) {
     throw new RestoreStateError("Journal external-fence evidence is missing or mismatched.", "RESTORE_STATE_CORRUPT");
+  }
+  const responseRecord = readRestoreHttpResponse(directory, gate, records);
+  const dispatchRecord = records.find(record => record.state === STATES.DISPATCH_STARTED) || null;
+  const acceptedRecord = records.find(record => record.state === STATES.POST_ACCEPTED) || null;
+  if (responseRecord && !dispatchRecord) throw new RestoreStateError("HTTP response evidence exists without a durable dispatch record.", "RESTORE_STATE_CORRUPT");
+  const terminalUnknown = records.find(record => record.state === STATES.UNKNOWN && record.firmwarePostsAttempted === 1) || null;
+  if (gate.slotId === GOLDEN_RETRY_SLOT_ID && (acceptedRecord || terminalUnknown)) {
+    if (!responseRecord) throw new RestoreStateError("Retry-v2 dispatched without durable HTTP response evidence.", "RESTORE_STATE_CORRUPT");
+    if (acceptedRecord) {
+      if (responseRecord.accepted !== true || acceptedRecord.evidenceSha256 !== responseRecord.recordSha256) throw new RestoreStateError("Accepted retry-v2 response is not bound to its journal transition.", "RESTORE_STATE_CORRUPT");
+    } else {
+      if (terminalUnknown && terminalUnknown.evidenceSha256 !== responseRecord.recordSha256) throw new RestoreStateError("Unknown retry-v2 response is not bound to its journal transition.", "RESTORE_STATE_CORRUPT");
+    }
   }
   return Object.freeze({ gate, records: Object.freeze(records), last: records[records.length - 1] || null });
 }
@@ -448,16 +520,32 @@ function journalPayload(gate, previous, state, input = {}) {
     contractSha256: gate.contractSha256,
     preflightEvidenceSha256: gate.preflightEvidenceSha256,
     externalFenceIdSha256: gate.externalFenceIdSha256,
+    ...(gate.slotId === GOLDEN_RETRY_SLOT_ID ? {
+      predecessorGateSha256: gate.predecessorGateSha256,
+      predecessorTerminalRecordSha256: gate.predecessorTerminalRecordSha256,
+      predecessorFenceRef: gate.predecessorFenceRef
+    } : {}),
     previousRecordSha256: previous ? previous.recordSha256 : null,
     allowanceConsumed,
     firmwarePostsAttempted: attempts,
     evidenceSha256: input.evidenceSha256 ? assertHex(input.evidenceSha256, 32, "evidenceSha256") : null,
     statusRaw: input.statusRaw === undefined || input.statusRaw === null ? null : assertToken(input.statusRaw, "statusRaw", /^[0-9]{1,3}$/),
     progress: input.progress === undefined || input.progress === null ? null : Number(input.progress),
-    reasonCode: input.reasonCode ? assertToken(input.reasonCode, "reasonCode", /^[A-Z0-9._-]{1,100}$/) : null
+    reasonCode: input.reasonCode ? assertToken(input.reasonCode, "reasonCode", /^[A-Z0-9._-]{1,100}$/) : null,
+    httpStatus: input.httpStatus === undefined || input.httpStatus === null ? null : Number(input.httpStatus),
+    responseContentType: optionalDiagnosticText(input.responseContentType, "responseContentType"),
+    responseServer: optionalDiagnosticText(input.responseServer, "responseServer"),
+    responseBodySha256: input.responseBodySha256 === undefined || input.responseBodySha256 === null ? null : assertHex(input.responseBodySha256, 32, "responseBodySha256"),
+    responseBodyBytes: input.responseBodyBytes === undefined || input.responseBodyBytes === null ? null : Number(input.responseBodyBytes),
+    networkCauseCode: input.networkCauseCode ? assertToken(input.networkCauseCode, "networkCauseCode", /^[A-Z0-9._-]{1,100}$/) : null,
+    wwwAuthenticatePresent: typeof input.wwwAuthenticatePresent === "boolean" ? input.wwwAuthenticatePresent : null,
+    locationPresent: typeof input.locationPresent === "boolean" ? input.locationPresent : null,
+    setCookiePresent: typeof input.setCookiePresent === "boolean" ? input.setCookiePresent : null
   };
   if (![0, 1].includes(payload.firmwarePostsAttempted)) throw new RestoreStateError("firmwarePostsAttempted must be zero or one.");
   if (payload.progress !== null && (!Number.isFinite(payload.progress) || payload.progress < 0 || payload.progress > 100)) throw new RestoreStateError("Journal progress is invalid.");
+  if (payload.httpStatus !== null && (!Number.isInteger(payload.httpStatus) || payload.httpStatus < 100 || payload.httpStatus > 599)) throw new RestoreStateError("Journal HTTP status is invalid.");
+  if (payload.responseBodyBytes !== null && (!Number.isInteger(payload.responseBodyBytes) || payload.responseBodyBytes < 0 || payload.responseBodyBytes > 4096)) throw new RestoreStateError("Journal response body length is invalid.");
   return payload;
 }
 
@@ -489,6 +577,11 @@ function armedPayload(gate, input = {}) {
     contractSha256: gate.contractSha256,
     externalFenceIdSha256: gate.externalFenceIdSha256,
     externalFenceRef: gate.externalFenceRef,
+    ...(gate.slotId === GOLDEN_RETRY_SLOT_ID ? {
+      predecessorGateSha256: gate.predecessorGateSha256,
+      predecessorTerminalRecordSha256: gate.predecessorTerminalRecordSha256,
+      predecessorFenceRef: gate.predecessorFenceRef
+    } : {}),
     allowanceConsumed: 1,
     armedAt: assertTimestamp(input.armedAt, "armedAt")
   };
@@ -500,7 +593,9 @@ function readArmed(directory, gate = null) {
   if (!fs.existsSync(file)) return null;
   const armed = readSealedJson(file, "armed.json");
   const expectedGate = gate || readGate(directory);
-  for (const key of ["transactionId", "unitFingerprintSha256", "imageSha256", "bodySha256", "contractSha256", "externalFenceIdSha256", "externalFenceRef"]) {
+  const bindings = ["transactionId", "unitFingerprintSha256", "imageSha256", "bodySha256", "contractSha256", "externalFenceIdSha256", "externalFenceRef"];
+  if (expectedGate.slotId === GOLDEN_RETRY_SLOT_ID) bindings.push("predecessorGateSha256", "predecessorTerminalRecordSha256", "predecessorFenceRef");
+  for (const key of bindings) {
     if (armed[key] !== expectedGate[key]) throw new RestoreStateError(`armed.json ${key} does not match the permanent gate.`, "RESTORE_STATE_CORRUPT");
   }
   if (armed.gateSha256 !== expectedGate.recordSha256 || armed.kind !== "mf885-restore-allowance-burn" || armed.allowanceConsumed !== 1) {
@@ -529,12 +624,106 @@ function readExternalFence(directory, gate = null) {
   return record;
 }
 
+function restoreHttpResponsePayload(gate, dispatchRecord, input = {}) {
+  if (!dispatchRecord || dispatchRecord.state !== STATES.DISPATCH_STARTED || dispatchRecord.gateSha256 !== gate.recordSha256) {
+    throw new RestoreStateError("HTTP response evidence requires the exact durable dispatch record.", "RESTORE_STATE_CORRUPT");
+  }
+  const encoded = input.responseBodyBase64 === undefined || input.responseBodyBase64 === null ? null : String(input.responseBodyBase64);
+  let body = null, bodyBytes = null, bodySha256 = null;
+  if (encoded !== null) {
+    if (encoded.length > 8192 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new RestoreStateError("HTTP response evidence is not bounded canonical base64.", "RESTORE_STATE_CORRUPT");
+    body = Buffer.from(encoded, "base64");
+    if (body.length > 4096 || body.toString("base64") !== encoded) throw new RestoreStateError("HTTP response evidence bytes are invalid.", "RESTORE_STATE_CORRUPT");
+    bodyBytes = body.length;
+    bodySha256 = sha256(body);
+    if (input.bodyBytes !== undefined && input.bodyBytes !== null && Number(input.bodyBytes) !== bodyBytes) throw new RestoreStateError("HTTP response evidence length changed.", "RESTORE_STATE_CORRUPT");
+    if (input.bodySha256 !== undefined && input.bodySha256 !== null && String(input.bodySha256) !== bodySha256) throw new RestoreStateError("HTTP response evidence checksum changed.", "RESTORE_STATE_CORRUPT");
+  }
+  const statusCode = input.statusCode === undefined || input.statusCode === null ? null : Number(input.statusCode);
+  if (statusCode !== null && (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599)) throw new RestoreStateError("HTTP response evidence status is invalid.", "RESTORE_STATE_CORRUPT");
+  const contentType = optionalDiagnosticText(input.contentType, "HTTP response contentType");
+  const server = optionalDiagnosticText(input.server, "HTTP response server");
+  const accepted = input.accepted === true;
+  const complete = input.responseComplete === true;
+  if (complete && body === null) throw new RestoreStateError("A complete HTTP response must retain its exact bytes.", "RESTORE_STATE_CORRUPT");
+  if (accepted) {
+    const expected = Buffer.from("Server get upload file successfully\n", "utf8");
+    if (!complete || statusCode !== 200 || contentType !== "text/html" || server !== "Mongoose/3.0" || !body || !body.equals(expected)) throw new RestoreStateError("Accepted HTTP response evidence does not match the native predicate.", "RESTORE_STATE_CORRUPT");
+  }
+  return {
+    schema: SCHEMA,
+    kind: "mf885-restore-http-response",
+    slotId: gate.slotId,
+    transactionId: gate.transactionId,
+    gateSha256: gate.recordSha256,
+    dispatchRecordSha256: dispatchRecord.recordSha256,
+    accepted,
+    requestAttempted: input.requestAttempted === true,
+    complete,
+    oversized: input.responseOversized === true,
+    statusCode,
+    contentType,
+    server,
+    bodyBytes,
+    bodySha256,
+    bodyBase64: encoded,
+    wwwAuthenticatePresent: input.wwwAuthenticatePresent === true,
+    locationPresent: input.locationPresent === true,
+    setCookiePresent: input.setCookiePresent === true,
+    networkCauseCode: input.causeCode ? assertToken(input.causeCode, "HTTP response networkCauseCode", /^[A-Z0-9._-]{1,100}$/) : null,
+    outcomeCode: assertToken(input.outcomeCode || (accepted ? "RESTORE_HTTP_ACCEPTED" : "RESTORE_HTTP_UNKNOWN"), "HTTP response outcomeCode", /^[A-Z0-9._-]{1,100}$/),
+    capturedAt: assertTimestamp(input.capturedAt, "HTTP response capturedAt")
+  };
+}
+
+function persistRestoreHttpResponse(directory, receipt, input = {}, options = {}) {
+  const gate = assertGateOwner(directory, receipt);
+  if (gate.slotId !== GOLDEN_RETRY_SLOT_ID) throw new RestoreStateError("Durable raw response evidence is restricted to retry-v2.");
+  const journal = readJournal(directory, gate);
+  const dispatchRecord = journal.last;
+  if (!dispatchRecord || dispatchRecord.state !== STATES.DISPATCH_STARTED) throw new RestoreStateError("HTTP response evidence can be committed only at DISPATCH_STARTED.");
+  const published = publishImmutable(directory, "http-response.json", restoreHttpResponsePayload(gate, dispatchRecord, input), options);
+  const reread = readRestoreHttpResponse(directory, gate, journal.records);
+  if (!reread || reread.recordSha256 !== published.recordSha256) throw new RestoreStateError("HTTP response evidence did not survive read-back.", "RESTORE_STATE_IO");
+  return reread;
+}
+
+function readRestoreHttpResponse(directory, suppliedGate = null, suppliedRecords = null) {
+  checkedRealDirectory(directory);
+  const file = path.join(directory, "http-response.json");
+  if (!fs.existsSync(file)) return null;
+  const gate = suppliedGate || readGate(directory);
+  const records = suppliedRecords || journalFiles(directory).map(name => readSealedJson(path.join(directory, name), name));
+  const dispatchRecord = records.find(record => record.state === STATES.DISPATCH_STARTED) || null;
+  const record = readSealedJson(file, "http-response.json");
+  const normalized = restoreHttpResponsePayload(gate, dispatchRecord, {
+    accepted: record.accepted,
+    requestAttempted: record.requestAttempted,
+    responseComplete: record.complete,
+    responseOversized: record.oversized,
+    statusCode: record.statusCode,
+    contentType: record.contentType,
+    server: record.server,
+    responseBodyBase64: record.bodyBase64,
+    bodyBytes: record.bodyBytes,
+    bodySha256: record.bodySha256,
+    wwwAuthenticatePresent: record.wwwAuthenticatePresent,
+    locationPresent: record.locationPresent,
+    setCookiePresent: record.setCookiePresent,
+    causeCode: record.networkCauseCode,
+    outcomeCode: record.outcomeCode,
+    capturedAt: record.capturedAt
+  });
+  for (const key of Object.keys(normalized)) if (record[key] !== normalized[key]) throw new RestoreStateError(`HTTP response evidence ${key} is invalid.`, "RESTORE_STATE_CORRUPT");
+  return record;
+}
+
 function githubFenceRequest(spec, token, options = {}) {
   const secret = String(token || "");
   if (!secret || secret.length > 512 || /[\s\x00-\x1f\x7f]/.test(secret)) {
     return Promise.reject(new RestoreStateError("A bounded GitHub token is required for the independent create-once fence.", "RESTORE_FENCE_AUTH_MISSING"));
   }
-  if (!spec || spec.repository !== FENCE_REPOSITORY || spec.targetCommit !== FENCE_TARGET_COMMIT || !/^refs\/tags\/mf885-restore-fence-v1-[0-9a-f]{64}$/.test(String(spec.ref || ""))) {
+  if (!spec || spec.repository !== FENCE_REPOSITORY || spec.targetCommit !== FENCE_TARGET_COMMIT || !/^refs\/tags\/mf885-restore-fence-v(?:1|2)-[0-9a-f]{64}$/.test(String(spec.ref || ""))) {
     return Promise.reject(new RestoreStateError("External fence specification is invalid.", "RESTORE_FENCE_PLAN_INVALID"));
   }
   const body = Buffer.from(JSON.stringify({ ref: spec.ref, sha: spec.targetCommit }), "utf8");
@@ -705,21 +894,22 @@ function validateRestoreRequestPlan(input = {}, body) {
   const localAddress = String(input.localAddress || "");
   if (net.isIP(localAddress) !== 4 || localAddress !== RESTORE_LOCAL_ADDRESS) throw new RestoreHttpError("The exact reviewed VDS router source interface is missing.", "RESTORE_HTTP_PLAN_INVALID");
   const sessionProfile = String(input.sessionProfile || "");
-  if (sessionProfile !== "fresh-web-digest-sms-read-next-post-no-server-cookie-v1") throw new RestoreHttpError("The fresh Web Digest SMS-read POST session proof is missing.", "RESTORE_HTTP_PLAN_INVALID");
+  if (![WEB_RESTORE_SESSION_PROFILE, APP_RETRY_SESSION_PROFILE].includes(sessionProfile)) throw new RestoreHttpError("The reviewed RestoreFw session proof is missing.", "RESTORE_HTTP_PLAN_INVALID");
   const sessionProvenAtMs = Number(input.sessionProvenAtMs);
   const maxSessionAgeMs = Number(input.maxSessionAgeMs);
   if (!Number.isFinite(sessionProvenAtMs) || !Number.isInteger(maxSessionAgeMs) || maxSessionAgeMs < 1000 || maxSessionAgeMs > 15000) throw new RestoreHttpError("The active-session freshness bound is invalid.", "RESTORE_HTTP_PLAN_INVALID");
   const sessionCookie = String(input.sessionCookie || "");
-  if (sessionCookie !== "locale=en; hard_ver=Ver.D; platform=mifi" || input.serverCookieReceived !== false) {
-    throw new RestoreHttpError("The exact reviewed Web session cookie profile is missing or unsafe.", "RESTORE_HTTP_PLAN_INVALID");
-  }
+  const expectedCookie = sessionProfile === WEB_RESTORE_SESSION_PROFILE ? "locale=en; hard_ver=Ver.D; platform=mifi" : "";
+  if (sessionCookie !== expectedCookie || input.serverCookieReceived !== false) throw new RestoreHttpError("The exact reviewed session cookie profile is missing or unsafe.", "RESTORE_HTTP_PLAN_INVALID");
   const sessionAuthorization = String(input.sessionAuthorization || "");
-  const digest = sessionAuthorization.match(/^Digest username="admin", realm="([^"\\]{1,180})", nonce="([^"\\]{1,300})", uri="\/cgi\/xml_action\.cgi", response="([0-9a-f]{32})", qop=auth, nc=00000004, cnonce="([0-9a-f]{16})"(?:, opaque="([^"\\]{1,300})")?$/);
+  const digest = sessionProfile === WEB_RESTORE_SESSION_PROFILE
+    ? sessionAuthorization.match(/^Digest username="admin", realm="([^"\\]{1,180})", nonce="([^"\\]{1,300})", uri="\/cgi\/xml_action\.cgi", response="([0-9a-f]{32})", qop=auth, nc=00000004, cnonce="([0-9a-f]{16})"(?:, opaque="([^"\\]{1,300})")?$/)
+    : sessionAuthorization.match(/^Digest username="admin", realm="([^"\\]{1,180})", nonce="([^"\\]{1,300})", uri="\/cgi\/xml_action\.cgi", response="([0-9a-f]{32})", qop=auth, nc=00000004, cnonce="([0-9a-f]{16})", client=APP$/);
   if (sessionAuthorization.length > 2048 || /[\r\n\x00-\x1f\x7f]/.test(sessionAuthorization) || !digest) {
-    throw new RestoreHttpError("The exact fresh Web Digest POST Authorization header is missing or unsafe.", "RESTORE_HTTP_PLAN_INVALID");
+    throw new RestoreHttpError("The exact reviewed POST Authorization header is missing or unsafe.", "RESTORE_HTTP_PLAN_INVALID");
   }
   const expectedDigestResponse = md5(`${md5(`admin:${digest[1]}:zimifi`)}:${digest[2]}:00000004:${digest[4]}:auth:${md5("POST:/cgi/xml_action.cgi")}`);
-  if (digest[3] !== expectedDigestResponse) throw new RestoreHttpError("The fresh Web Digest POST proof is internally invalid.", "RESTORE_HTTP_PLAN_INVALID");
+  if (digest[3] !== expectedDigestResponse) throw new RestoreHttpError("The reviewed POST Digest proof is internally invalid.", "RESTORE_HTTP_PLAN_INVALID");
   return Object.freeze({
     host,
     port,
@@ -777,30 +967,46 @@ function sendRestoreHttpOnce(plan) {
       }, response => {
         const chunks = [];
         let bytes = 0;
+        const snapshot = (complete, extra = {}) => {
+          const captured = Buffer.concat(chunks, bytes);
+          return {
+            statusCode: response.statusCode,
+            contentType: String(response.headers["content-type"] || "").trim().toLowerCase(),
+            server: String(response.headers.server || "").trim(),
+            bodySha256: sha256(captured),
+            bodyBytes: captured.length,
+            responseBodyBase64: captured.toString("base64"),
+            responseComplete: complete === true,
+            wwwAuthenticatePresent: !!response.headers["www-authenticate"],
+            locationPresent: !!response.headers.location,
+            setCookiePresent: !!response.headers["set-cookie"],
+            ...extra
+          };
+        };
         response.on("data", chunk => {
-          bytes += chunk.length;
-          if (bytes > 4096) {
+          const item = Buffer.from(chunk);
+          const remaining = 4096 - bytes;
+          if (item.length > remaining) {
+            if (remaining > 0) { chunks.push(item.subarray(0, remaining)); bytes += remaining; }
             response.destroy();
-            fail("Restore response exceeded the exact acceptance envelope.", "RESTORE_HTTP_RESPONSE_INVALID", { statusCode: response.statusCode });
+            fail("Restore response exceeded the exact acceptance envelope.", "RESTORE_HTTP_RESPONSE_INVALID", snapshot(false, { responseOversized: true }));
             return;
           }
-          chunks.push(Buffer.from(chunk));
+          chunks.push(item);
+          bytes += item.length;
         });
-        response.on("aborted", () => fail("Restore response was truncated.", "RESTORE_HTTP_RESPONSE_TRUNCATED", { statusCode: response.statusCode }));
-        response.on("error", error => fail("Restore response failed after dispatch.", "RESTORE_HTTP_RESPONSE_ERROR", { causeCode: error && error.code || "UNKNOWN" }));
+        response.on("aborted", () => fail("Restore response was truncated.", "RESTORE_HTTP_RESPONSE_TRUNCATED", snapshot(false)));
+        response.on("error", error => fail("Restore response failed after dispatch.", "RESTORE_HTTP_RESPONSE_ERROR", snapshot(false, { causeCode: error && error.code || "UNKNOWN" })));
         response.on("end", () => {
           if (settled) return;
           const body = Buffer.concat(chunks);
           const contentType = String(response.headers["content-type"] || "").trim().toLowerCase();
           const server = String(response.headers.server || "").trim();
+          const responseDiagnostics = snapshot(true);
           const accepted = response.statusCode === 200 && contentType === "text/html" && server === "Mongoose/3.0" && body.equals(expectedBody);
           if (!accepted) {
             fail("Restore response did not match the exact native acceptance predicate.", "RESTORE_HTTP_NOT_ACCEPTED", {
-              statusCode: response.statusCode,
-              contentType,
-              server,
-              bodySha256: sha256(body),
-              bodyBytes: body.length
+              ...responseDiagnostics
             });
             return;
           }
@@ -814,6 +1020,11 @@ function sendRestoreHttpOnce(plan) {
             server,
             bodyBytes: body.length,
             bodySha256: sha256(body),
+            responseBodyBase64: body.toString("base64"),
+            responseComplete: true,
+            wwwAuthenticatePresent: !!response.headers["www-authenticate"],
+            locationPresent: !!response.headers.location,
+            setCookiePresent: !!response.headers["set-cookie"],
             automaticRetries: 0,
             redirectsFollowed: 0
           }));
@@ -844,6 +1055,8 @@ async function dispatchRestoreAtMostOnce(input = {}) {
     throw new RestoreStateError("The fresh Web Digest session lacks enough remaining time for the external fence and one dispatch; no allowance was consumed.", "RESTORE_SESSION_BUDGET_LOW", { remainingSessionMs, requiredMs: fenceTimeoutMs + MIN_POST_DISPATCH_BUDGET_MS });
   }
   const gate = assertGateOwner(directory, receipt);
+  const expectedSessionProfile = gate.slotId === GOLDEN_RETRY_SLOT_ID ? APP_RETRY_SESSION_PROFILE : WEB_RESTORE_SESSION_PROFILE;
+  if (plan.sessionProfile !== expectedSessionProfile) throw new RestoreStateError("Restore session profile does not match the permanent slot.", "RESTORE_SESSION_PROFILE_MISMATCH");
   if (gate.bodySha256 !== plan.bodySha256) throw new RestoreStateError("Request body does not match the permanent gate.");
   const before = readJournal(directory, gate);
   if (!before.last || before.last.state !== STATES.PRECHECK_OK) throw new RestoreStateError("Restore dispatch is not at the preflight boundary.");
@@ -864,11 +1077,63 @@ async function dispatchRestoreAtMostOnce(input = {}) {
     const dispatchAgeMs = nowMs() - plan.sessionProvenAtMs;
     if (dispatchAgeMs < 0 || dispatchAgeMs > plan.maxSessionAgeMs) throw new RestoreHttpError("The Web Digest session expired after the durable dispatch record; router POST remains blocked.", "RESTORE_SESSION_STALE", { attempted: false });
     const response = await sendRestoreHttpOnce(plan);
-    appendJournal(directory, receipt, STATES.POST_ACCEPTED, { recordedAt: now(), evidenceSha256: response.bodySha256, firmwarePostsAttempted: 1 });
+    const responseRecord = gate.slotId === GOLDEN_RETRY_SLOT_ID ? persistRestoreHttpResponse(directory, receipt, {
+      accepted: true,
+      requestAttempted: response.attempted === true,
+      responseComplete: response.responseComplete === true,
+      statusCode: response.statusCode,
+      contentType: response.contentType,
+      server: response.server,
+      responseBodyBase64: response.responseBodyBase64,
+      bodyBytes: response.bodyBytes,
+      bodySha256: response.bodySha256,
+      wwwAuthenticatePresent: response.wwwAuthenticatePresent,
+      locationPresent: response.locationPresent,
+      setCookiePresent: response.setCookiePresent,
+      outcomeCode: "RESTORE_HTTP_ACCEPTED",
+      capturedAt: now()
+    }) : null;
+    appendJournal(directory, receipt, STATES.POST_ACCEPTED, { recordedAt: now(), evidenceSha256: responseRecord ? responseRecord.recordSha256 : response.bodySha256, firmwarePostsAttempted: 1 });
     return Object.freeze({ state: STATES.POST_ACCEPTED, response, firmwarePostsAttempted: 1, allowanceConsumed: true });
   } catch (error) {
     const evidence = sha256(canonicalJson({ code: error && error.code || "RESTORE_HTTP_UNKNOWN", details: error && error.details || {} }));
-    try { appendJournal(directory, receipt, STATES.UNKNOWN, { recordedAt: now(), evidenceSha256: evidence, reasonCode: error && error.code || "RESTORE_HTTP_UNKNOWN", firmwarePostsAttempted: 1 }); }
+    const httpEvidence = safeRestoreHttpEvidence(error);
+    let responseRecord = null;
+    if (gate.slotId === GOLDEN_RETRY_SLOT_ID) {
+      const details = error && error.details && typeof error.details === "object" ? error.details : {};
+      try { responseRecord = readRestoreHttpResponse(directory, gate); } catch (_) {}
+      if (!responseRecord && !(error instanceof RestoreHttpError)) {
+        if (!error.details || typeof error.details !== "object") error.details = {};
+        error.details.durableResponseCaptureFailed = true;
+        throw error;
+      }
+      try {
+        if (!responseRecord) responseRecord = persistRestoreHttpResponse(directory, receipt, {
+          accepted: false,
+          requestAttempted: details.attempted === true,
+          responseComplete: details.responseComplete === true,
+          responseOversized: details.responseOversized === true,
+          statusCode: details.statusCode,
+          contentType: details.contentType,
+          server: details.server,
+          responseBodyBase64: details.responseBodyBase64,
+          bodyBytes: details.bodyBytes,
+          bodySha256: details.bodySha256,
+          wwwAuthenticatePresent: details.wwwAuthenticatePresent,
+          locationPresent: details.locationPresent,
+          setCookiePresent: details.setCookiePresent,
+          causeCode: details.causeCode,
+          outcomeCode: error && error.code || "RESTORE_HTTP_UNKNOWN",
+          capturedAt: now()
+        });
+      } catch (captureError) {
+        if (!error.details || typeof error.details !== "object") error.details = {};
+        error.details.durableResponseCaptureFailed = true;
+        error.details.durableResponseCaptureCode = captureError && captureError.code || "RESTORE_STATE_IO";
+        throw error;
+      }
+    }
+    try { appendJournal(directory, receipt, STATES.UNKNOWN, { recordedAt: now(), evidenceSha256: responseRecord ? responseRecord.recordSha256 : evidence, reasonCode: error && error.code || "RESTORE_HTTP_UNKNOWN", firmwarePostsAttempted: 1, ...httpEvidence }); }
     catch (_) {}
     throw error;
   }
@@ -888,6 +1153,7 @@ module.exports = {
   SCHEMA,
   EXT4_MAGIC,
   GOLDEN_SLOT_ID,
+  GOLDEN_RETRY_SLOT_ID,
   GOLDEN_IMAGE_SHA256,
   GOLDEN_BODY_BYTES,
   GOLDEN_BODY_SHA256,
@@ -901,11 +1167,18 @@ module.exports = {
   FENCE_TARGET_COMMIT,
   DEFAULT_FENCE_TIMEOUT_MS,
   MIN_POST_DISPATCH_BUDGET_MS,
+  WEB_RESTORE_SESSION_PROFILE,
+  APP_RETRY_SESSION_PROFILE,
+  V1_GATE_SHA256,
+  V1_TERMINAL_RECORD_SHA256,
+  V1_EXTERNAL_FENCE_RECORD_SHA256,
+  V1_EXTERNAL_FENCE_REF,
   STATES,
   TERMINAL_STATES,
   RestoreStateError,
   RestoreHttpError,
   sha256,
+  safeRestoreHttpEvidence,
   canonicalJson,
   sealRecord,
   verifySealedRecord,
@@ -921,6 +1194,8 @@ module.exports = {
   readJournal,
   readArmed,
   readExternalFence,
+  readRestoreHttpResponse,
+  persistRestoreHttpResponse,
   githubFenceRequest,
   burnPostAllowance,
   inspectTransaction,

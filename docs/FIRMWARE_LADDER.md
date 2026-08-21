@@ -16,7 +16,7 @@ reviewed.
 | Gate | Image / action | Only new variable | Pass before continuing | Rollback |
 |---|---|---|---|---|
 | 0 | Scriptable on stock firmware | richer live logs and safe API exercises | status/SMS/detailed_log and every non-power control behave correctly; no shutdown test | no firmware change |
-| 1 | golden -> golden | RestoreFw transport itself | exactly one POST, bounded GET-only status, boot identity, Wi-Fi, mobile data and SMS all verified | the uploaded image is already golden |
+| 1 | golden -> golden | RestoreFw transport itself | one bounded firmware POST, GET-only status/boot observation, then exact identity/WebUI plus one non-mutating SMS-history read | the uploaded image is already golden |
 | 2 | `0.0-logs-r1` | WEBI loader + observer-only log panel | marker loads; login and normal menus still work; XHR/fetch/forms/errors and `detailed_log` appear; SMS payloads stay hidden | exact golden |
 | 3 | `0.0-sms-r1` | repair/simplify the existing stock SMS page | list/send/delete each verified independently; duplicate submission blocked; Logs explain failures | exact golden |
 | 4 | `0.0-ussd-r1` | one WebUI USSD form using a Scriptable-proven exact contract | one known non-destructive carrier code, one POST, bounded GET polling, response visible; no replay on timeout | exact golden |
@@ -58,8 +58,21 @@ only fresh APP identity/status GETs; it never constructs a POST Request or
 touches the live journal. The exact golden fixture round-trips 8,323,644 payload
 bytes inside an 8,323,893-byte body. The exclusive sender, actual Scriptable
 multipart wire behavior, atomic cross-process lease and production RestoreFw
-transport are still unqualified. Therefore `0.0-logs-r1` is available for
-audit, not for upload.
+transport were still unqualified at that point. The VDS-only sender then
+consumed its one permanent golden-to-golden allowance: the remote fence was
+created and exactly one RestoreFw POST was dispatched, but the reply failed the
+strict native acceptance predicate. The journal is terminal `UNKNOWN` and
+cannot be acknowledged or replayed. Two minutes of subsequent GET-only
+observation found the same stock firmware continuously online with restore
+status `0/0/No Error!` and no reboot boundary. Gate 1 therefore did not pass.
+An explicitly authorized retry-v2 is the one final qualification exception: it
+preserves v1 byte-for-byte, uses a separate create-once fence, and replaces the
+failed Web Digest hypothesis with a separately proven fresh APP `nc=4,
+client=APP` session. Its payload is still the exact golden image; every complete
+HTTP response is privately retained and every ambiguous result locks the new
+slot. There is no v3. Until retry-v2 reaches full boot verification, the
+production Scriptable transport remains locked and `0.0-logs-r1` is available
+for audit only, not upload.
 
 The structural artifact is 8,323,644 bytes with SHA-256
 `65e5f5b507b9fcf49609a6fd1f010daa6f18111dc6a829d5655fa6bd30553517`.

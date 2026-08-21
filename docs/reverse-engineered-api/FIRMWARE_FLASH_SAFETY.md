@@ -100,6 +100,43 @@ It does not promise exactly-once delivery or exactly-once flash effect. Private
 firmware/configuration bytes, Digest material, cookies and transaction evidence
 remain ignored under `.runtime/` and are never committed.
 
+The single live golden-to-golden allowance was consumed on 2026-08-21. Both
+fresh backups, the settings bundle, exact unit fingerprint, 100% battery,
+external power, idle restore status, multipart payload/body hashes and fresh
+session plan passed immediately beforehand. The remote fence was created and
+the sender dispatched exactly one POST. Its reply did not match the strict
+native HTTP acceptance predicate, so revision 5 entered terminal `UNKNOWN` with
+`firmwarePostsAttempted=1`, `allowanceConsumed=true` and `postAllowed=false`.
+No replay or clearing of that v1 transaction is permitted. A subsequent two-minute GET-only observation saw the
+same stock identity continuously online, restore status fixed at
+`0/0/No Error!`, and no reboot boundary. This does not qualify RestoreFw or
+unlock Canary, but it does show that the reviewed router remained healthy after
+the rejected or ambiguous upload attempt.
+
+The operator subsequently authorized exactly one separate retry-v2 to test the
+strongest remaining authentication hypothesis. This is a new fixed transaction,
+not a mutation or reset of v1. Its gate and deterministic GitHub v2 fence bind
+the exact immutable v1 gate hash, terminal-record hash and fence reference, plus
+the same unit, source address, golden image/body and route. An arbitrary slot or
+v3 is rejected. A disposable fresh APP session proves a semantic SMS-history
+read at Digest `nc=4, client=APP`; a second fresh APP session performs the final
+identity, power and idle GET gates and reserves its own independently generated
+`nc=4, client=APP` proof for RestoreFw. No router request occurs between that
+reservation and the one core-owned POST. Synthetic Web cookies are forbidden.
+
+Retry-v2 has its own permanent local allowance and create-once remote tag. It
+can add at most one more RestoreFw POST, making the reviewed lifetime bound two
+attempts including v1. The complete HTTP response up to the 4096-byte bound is
+captured byte-for-byte in private mode-`0600` evidence and bound to the gate and
+journal record; public diagnostics expose only status, content type, server,
+length, SHA-256 and sensitive-header presence. Partial/oversized responses are
+explicitly labeled, never accepted. Exact acceptance starts bounded GET-only
+status and reboot-boundary observation; the final postboot health proof adds one
+semantic SMS-history read POST with zero message mutation. Two consecutive transport failures can prove
+an immediate reboot boundary even if status `1` was too brief to sample, but
+full exact identity, WebUI and SMS-read verification remains mandatory. Every
+ambiguous or rejected result consumes v2 permanently. There is no third attempt.
+
 Image metadata is also insufficient. Stage 0 computes SHA-256 itself from the exact Scriptable `Data`/byte array selected for upload and seals that evidence for the current process; caller-built metadata is rejected. The installer retains immutable native `Data` privately and completes the second hash before authentication/arming, so no fallible local hash occurs after `POST_ARMED`. Device identity, unit fingerprint, hardware revision, firmware, battery level, and charger state come from the final live status observation of the prepared session immediately before arming.
 
 The Scriptable dashboard exposes **Audit WEBUI Canary Logs r1 (no flash)** as a
